@@ -301,7 +301,7 @@ void MonClient::flush_log()
 void MonClient::handle_monmap(MMonMap *m)
 {
   ldout(cct, 10) << "handle_monmap " << *m << dendl;
-  bufferlist::iterator p = m->monmapbl.begin();
+  auto p = m->monmapbl.begin();
   ::decode(monmap, p);
 
   assert(!cur_mon.empty());
@@ -460,7 +460,7 @@ int MonClient::authenticate(double timeout)
 void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
 {
   std::unique_ptr<thunk> cb;
-  bufferlist::iterator p = m->result_bl.begin();
+  auto p = m->result_bl.begin();
   if (state == MC_STATE_NEGOTIATING) {
     if (!auth || (int)m->protocol != auth->get_protocol()) {
       auth.reset(get_auth_client_handler(cct, m->protocol,
@@ -655,11 +655,9 @@ void MonClient::_reopen_session(int rank, string name)
   ::encode(global_id, m->auth_payload);
   _send_mon_message(std::move(m), true);
 
-  for (map<string,ceph_mon_subscribe_item>::iterator p = sub_sent.begin();
-       p != sub_sent.end();
-       ++p) {
-    if (sub_new.count(p->first) == 0)
-      sub_new[p->first] = p->second;
+  for (const auto& p : sub_sent) {
+    if (sub_new.count(p.first) == 0)
+      sub_new[p.first] = p.second;
   }
   if (!sub_new.empty())
     _renew_subs();
