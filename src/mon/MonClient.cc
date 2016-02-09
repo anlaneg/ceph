@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,9 +7,9 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software 
+ * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
- * 
+ *
  */
 
 #include "msg/Messenger.h"
@@ -310,9 +310,9 @@ bool MonClient::ms_dispatch(Message *m)
 void MonClient::send_log()
 {
   if (log_client) {
-    Message *lm = log_client->get_mon_log_message();
+    MessageRef lm(log_client->get_mon_log_message(), false);
     if (lm)
-      _send_mon_message(lm);
+      _send_mon_message(std::move(lm));
     more_log_pending = log_client->are_pending();
   }
 }
@@ -418,12 +418,12 @@ void MonClient::shutdown()
     version_requests.erase(version_requests.begin());
   }
 
-  while (!waiting_for_session.empty()) {
+  for (auto m : waiting_for_session) {
     ldout(cct, 20) << __func__ << " discarding pending message "
-		   << *waiting_for_session.front() << dendl;
-    waiting_for_session.front()->put();
-    waiting_for_session.pop_front();
+		   << *m << dendl;
+    m.reset();
   }
+  waiting_for_session.clear();
 
   l.unlock();
 
@@ -519,11 +519,11 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
   m->put();
 
   if (ret == -EAGAIN) {
-    MAuth *ma = new MAuth;
+    boost::intrusive_ptr<MAuth> ma(new MAuth, false);
     ma->protocol = auth->get_protocol();
     auth->prepare_build_request();
     ret = auth->build_request(ma->auth_payload);
-    _send_mon_message(ma, true);
+    _send_mon_message(std::move(ma), true);
     return;
   }
 
@@ -533,10 +533,9 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
   if (ret == 0) {
     if (state != MC_STATE_HAVE_SESSION) {
       state = MC_STATE_HAVE_SESSION;
-      while (!waiting_for_session.empty()) {
-	_send_mon_message(waiting_for_session.front());
-	waiting_for_session.pop_front();
-      }
+      for (auto& p : waiting_for_session)
+	_send_mon_message(std::move(p));
+      waiting_for_session.clear();
 
       _resend_mon_commands();
 
@@ -563,7 +562,7 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
 
 // ---------
 
-void MonClient::_send_mon_message(Message *m, bool force)
+void MonClient::_send_mon_message(MessageRef&& m, bool force)
 {
   // monc_lock must be locked
   assert(!cur_mon.empty());
@@ -571,9 +570,9 @@ void MonClient::_send_mon_message(Message *m, bool force)
     assert(cur_con);
     ldout(cct, 10) << "_send_mon_message to mon." << cur_mon
 		   << " at " << cur_con->get_peer_addr() << dendl;
-    cur_con->send_message(m);
+    cur_con->send_message(m.detach());
   } else {
-    waiting_for_session.push_back(m);
+    waiting_for_session.emplace_back(std::move(m));
   }
 }
 
@@ -621,10 +620,10 @@ void MonClient::_reopen_session(int rank, string name)
 		 << dendl;
 
   // throw out old queued messages
-  while (!waiting_for_session.empty()) {
-    waiting_for_session.front()->put();
-    waiting_for_session.pop_front();
-  }
+  for (auto p : waiting_for_session)
+    p->put();
+
+  waiting_for_session.clear();
 
   // throw out version check requests
   while (!version_requests.empty()) {
@@ -651,7 +650,7 @@ void MonClient::_reopen_session(int rank, string name)
   // authentication).
   cur_con->send_keepalive();
 
-  MAuth *m = new MAuth;
+  boost::intrusive_ptr<MAuth> m(new MAuth, false);
   m->protocol = 0;
   m->monmap_epoch = monmap.get_epoch();
   __u8 struct_v = 1;
@@ -659,7 +658,7 @@ void MonClient::_reopen_session(int rank, string name)
   ::encode(auth_supported->get_supported_set(), m->auth_payload);
   ::encode(entity_name, m->auth_payload);
   ::encode(global_id, m->auth_payload);
-  _send_mon_message(m, true);
+  _send_mon_message(std::move(m), true);
 
   for (map<string,ceph_mon_subscribe_item>::iterator p = sub_sent.begin();
        p != sub_sent.end();
@@ -777,9 +776,9 @@ void MonClient::_renew_subs()
     if (sub_renew_sent == ceph::real_time::min())
       sub_renew_sent = ceph::real_clock::now(cct);
 
-    MMonSubscribe *m = new MMonSubscribe;
+    boost::intrusive_ptr<MMonSubscribe> m(new MMonSubscribe, false);
     m->what = sub_new;
-    _send_mon_message(m);
+    _send_mon_message(std::move(m));
 
     sub_sent.insert(sub_new.begin(), sub_new.end());
     sub_new.clear();
@@ -808,11 +807,11 @@ int MonClient::_check_auth_tickets()
   if (state == MC_STATE_HAVE_SESSION && auth) {
     if (auth->need_tickets()) {
       ldout(cct, 10) << "_check_auth_tickets getting new tickets!" << dendl;
-      MAuth *m = new MAuth;
+      boost::intrusive_ptr<MAuth> m(new MAuth, false);
       m->protocol = auth->get_protocol();
       auth->prepare_build_request();
       auth->build_request(m->auth_payload);
-      _send_mon_message(m);
+      _send_mon_message(std::move(m));
     }
 
     _check_auth_rotating();
@@ -847,10 +846,10 @@ int MonClient::_check_auth_rotating()
 
   ldout(cct, 10) << "_check_auth_rotating renewing rotating keys (they "
     "expired before " << cutoff << ")" << dendl;
-  MAuth *m = new MAuth;
+  boost::intrusive_ptr<MAuth> m(new MAuth, false);
   m->protocol = auth->get_protocol();
   if (auth->build_rotating_request(m->auth_payload)) {
-    _send_mon_message(m);
+    _send_mon_message(std::move(m));
   } else {
     m->put();
   }
@@ -913,11 +912,11 @@ void MonClient::_send_command(MonCommand *r)
   }
 
   ldout(cct, 10) << "_send_command " << r->tid << " " << r->cmd << dendl;
-  MMonCommand *m = new MMonCommand(monmap.fsid);
+  boost::intrusive_ptr<MMonCommand> m(new MMonCommand(monmap.fsid), false);
   m->set_tid(r->tid);
   m->cmd = r->cmd;
   m->set_data(r->inbl);
-  _send_mon_message(m);
+  _send_mon_message(std::move(m));
   return;
 }
 
@@ -1060,11 +1059,11 @@ void MonClient::get_version(string map, version_t *newest, version_t *oldest, Co
   version_req_d *req = new version_req_d(onfinish, newest, oldest);
   ldout(cct, 10) << "get_version " << map << " req " << req << dendl;
   lock_guard l(monc_lock);
-  MMonGetVersion *m = new MMonGetVersion();
+  boost::intrusive_ptr<MMonGetVersion> m(new MMonGetVersion, false);
   m->what = map;
   m->handle = ++version_req_id;
   version_requests[m->handle] = req;
-  _send_mon_message(m);
+  _send_mon_message(std::move(m));
 }
 
 void MonClient::handle_get_version_reply(MMonGetVersionReply* m)
