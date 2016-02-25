@@ -234,6 +234,7 @@ noinst_HEADERS += \
 	common/PrebufferedStreambuf.h \
 	common/RWLock.h \
 	common/Semaphore.h \
+	common/SimpleRNG.h \
 	common/TextTable.h \
 	common/Thread.h \
 	common/Throttle.h \
@@ -282,9 +283,7 @@ noinst_HEADERS += \
 	common/ceph_timer.h \
 	common/align.h \
 	common/mutex_debug.h \
-	common/shunique_lock.h \
-	common/cxx_function.hpp \
-	common/waiter.h
+	common/shunique_lock.h
 
 if ENABLE_XIO
 noinst_HEADERS += \

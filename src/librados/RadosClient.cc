@@ -26,7 +26,6 @@
 #include "common/config.h"
 #include "common/common_init.h"
 #include "common/errno.h"
-#include "common/waiter.h"
 #include "include/buffer.h"
 #include "include/stringify.h"
 
@@ -766,26 +765,18 @@ int librados::RadosClient::mon_command(const vector<string>& cmd,
 				       const bufferlist &inbl,
 				       bufferlist *outbl, string *outs)
 {
-  ceph::waiter<int, string, bufferlist> w;
+  Mutex mylock("RadosClient::mon_command::mylock");
+  Cond cond;
+  bool done;
   int rval;
   lock.Lock();
-  monclient.start_mon_command(cmd, inbl, w.ref());
+  monclient.start_mon_command(cmd, inbl, outbl, outs,
+			       new C_SafeCond(&mylock, &cond, &done, &rval));
   lock.Unlock();
-  // Slightly annoying, but we have to support the original interface,
-  // and I'd rather copy directly into pointed-to memory when
-  // available than make a temporary copy her and then conditionally
-  // copy it out. In the long term I'd prefer newer interfaces
-  // returned tuples rather than passing in output pointers.
-  if (outs) {
-    if (outbl)
-      std::tie(rval, *outs, *outbl) = w.wait();
-    else
-      std::tie(rval, *outs, std::ignore) = w.wait();
-  } else if (outbl) {
-    std::tie(rval, std::ignore, *outbl) = w.wait();
-  } else {
-    std::tie(rval, std::ignore, std::ignore) = w.wait();
-  }
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
   return rval;
 }
 
@@ -793,21 +784,18 @@ int librados::RadosClient::mon_command(int rank, const vector<string>& cmd,
 				       const bufferlist &inbl,
 				       bufferlist *outbl, string *outs)
 {
-  waiter<int, string, bufferlist> w;
+  Mutex mylock("RadosClient::mon_command::mylock");
+  Cond cond;
+  bool done;
   int rval;
   lock.Lock();
-  monclient.start_mon_command(rank, cmd, inbl, w.ref());
+  monclient.start_mon_command(rank, cmd, inbl, outbl, outs,
+			       new C_SafeCond(&mylock, &cond, &done, &rval));
   lock.Unlock();
-  if (outs) {
-    if (outbl)
-      std::tie(rval, *outs, *outbl) = w.wait();
-    else
-      std::tie(rval, *outs, std::ignore) = w.wait();
-  } else if (outbl) {
-    std::tie(rval, std::ignore, *outbl) = w.wait();
-  } else {
-    std::tie(rval, std::ignore, std::ignore) = w.wait();
-  }
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
   return rval;
 }
 
@@ -815,23 +803,18 @@ int librados::RadosClient::mon_command(string name, const vector<string>& cmd,
 				       const bufferlist &inbl,
 				       bufferlist *outbl, string *outs)
 {
-  waiter<int, string, bufferlist> w;
+  Mutex mylock("RadosClient::mon_command::mylock");
+  Cond cond;
+  bool done;
   int rval;
   lock.Lock();
-  monclient.start_mon_command(name, cmd, inbl, w.ref());
+  monclient.start_mon_command(name, cmd, inbl, outbl, outs,
+			       new C_SafeCond(&mylock, &cond, &done, &rval));
   lock.Unlock();
-  // And no, you can't use the ternary operator and std::ignore,
-  // because it has a different type than anything else.
-  if (outs) {
-    if (outbl)
-      std::tie(rval, *outs, *outbl) = w.wait();
-    else
-      std::tie(rval, *outs, std::ignore) = w.wait();
-  } else if (outbl) {
-    std::tie(rval, std::ignore, *outbl) = w.wait();
-  } else {
-    std::tie(rval, std::ignore, std::ignore) = w.wait();
-  }
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
   return rval;
 }
 

@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,9 +7,9 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software
+ * License version 2.1, as published by the Free Software 
  * Foundation.  See file COPYING.
- *
+ * 
  */
 
 #include "msg/Messenger.h"
@@ -43,14 +43,48 @@
 
 #include "common/config.h"
 
+
 #define dout_subsys ceph_subsys_monc
 #undef dout_prefix
 #define dout_prefix *_dout << "monclient" << (hunting ? "(hunting)":"") << ": "
 
 MonClient::MonClient(CephContext *cct_) :
-  Dispatcher(cct_), rng(getpid()), finisher(cct_) { }
+  Dispatcher(cct_),
+  state(MC_STATE_NONE),
+  messenger(NULL),
+  cur_con(NULL),
+  rng(getpid()),
+  monc_lock("MonClient::monc_lock"),
+  timer(cct_, monc_lock), finisher(cct_),
+  authorize_handler_registry(NULL),
+  initialized(false),
+  no_keyring_disabled_cephx(false),
+  log_client(NULL),
+  more_log_pending(false),
+  auth_supported(NULL),
+  hunting(true),
+  want_monmap(true),
+  want_keys(0), global_id(0),
+  authenticate_err(0),
+  session_established_context(NULL),
+  had_a_connection(false),
+  reopen_interval_multiplier(1.0),
+  auth(NULL),
+  keyring(NULL),
+  rotating_secrets(NULL),
+  last_mon_command_tid(0),
+  version_req_id(0)
+{
+}
 
-MonClient::~MonClient() {}
+MonClient::~MonClient()
+{
+  delete auth_supported;
+  delete session_established_context;
+  delete auth;
+  delete keyring;
+  delete rotating_secrets;
+}
 
 int MonClient::build_initial_monmap()
 {
@@ -61,13 +95,14 @@ int MonClient::build_initial_monmap()
 int MonClient::get_monmap()
 {
   ldout(cct, 10) << "get_monmap" << dendl;
-  unique_lock l(monc_lock);
-
+  Mutex::Locker l(monc_lock);
+  
   _sub_want("monmap", 0, 0);
   if (cur_mon.empty())
     _reopen_session();
 
-  map_cond.wait(l, [this] { return !want_monmap; });
+  while (want_monmap)
+    map_cond.Wait(monc_lock);
 
   ldout(cct, 10) << "get_monmap done" << dendl;
   return 0;
@@ -76,33 +111,18 @@ int MonClient::get_monmap()
 int MonClient::get_monmap_privately()
 {
   ldout(cct, 10) << "get_monmap_privately" << dendl;
-  unique_lock l(monc_lock);
+  Mutex::Locker l(monc_lock);
 
-  auto dm = [this, &l](Messenger* m) {
-    if (cur_con) {
-      cur_con->mark_down();
-      cur_con.reset(nullptr);
-      cur_mon.clear();
-    }
-    l.unlock();
-    m->shutdown();
-    if (m)
-      m->wait();
-    messenger = nullptr;
-    delete m;
-    l.lock();
-  };
-  std::unique_ptr<Messenger, decltype(dm)> smessenger(
-    nullptr, dm);
+  bool temp_msgr = false;
+  Messenger* smessenger = NULL;
   if (!messenger) {
-    smessenger.reset(Messenger::create_client_messenger(
-		       cct, "temp_mon_client"));
-
-    if (!smessenger)
-      return -1;
-    messenger = smessenger.get();
+    messenger = smessenger = Messenger::create_client_messenger(cct, "temp_mon_client");
+    if (NULL == messenger) {
+        return -1;
+    }
     messenger->add_dispatcher_head(this);
     smessenger->start();
+    temp_msgr = true;
   }
 
   int attempt = 10;
@@ -121,17 +141,33 @@ int MonClient::get_monmap_privately()
     if (--attempt == 0)
       break;
 
-    auto interval = ceph::make_timespan(cct->_conf->mon_client_hunt_interval);
-    map_cond.wait_for(l, interval);
+    utime_t interval;
+    interval.set_from_double(cct->_conf->mon_client_hunt_interval);
+    map_cond.WaitInterval(cct, monc_lock, interval);
 
     if (monmap.fsid.is_zero() && cur_con) {
       cur_con->mark_down();  // nope, clean that connection up
     }
   }
 
+  if (temp_msgr) {
+    if (cur_con) {
+      cur_con->mark_down();
+      cur_con.reset(NULL);
+      cur_mon.clear();
+    }
+    monc_lock.Unlock();
+    messenger->shutdown();
+    if (smessenger)
+      smessenger->wait();
+    delete messenger;
+    messenger = 0;
+    monc_lock.Lock();
+  }
+
   hunting = true;  // reset this to true!
   cur_mon.clear();
-  cur_con.reset(nullptr);
+  cur_con.reset(NULL);
 
   if (!monmap.fsid.is_zero())
     return 0;
@@ -184,40 +220,35 @@ int MonClient::ping_monitor(const string &mon_id, string *result_reply)
     return -EINVAL;
   } else if (!monmap.contains(new_mon_id)) {
     ldout(cct, 10) << __func__ << " no such monitor 'mon." << new_mon_id << "'"
-		   << dendl;
+                   << dendl;
     return -ENOENT;
   }
 
-  std::unique_ptr<MonClientPinger> pinger(
-    new MonClientPinger(cct, result_reply));
+  MonClientPinger *pinger = new MonClientPinger(cct, result_reply);
 
-
-  auto dm = [this](Messenger* m) {
-    m->shutdown();
-    m->wait();
-    delete m;
-  };
-  std::unique_ptr<Messenger, decltype(dm)> smsgr(
-    Messenger::create_client_messenger(cct, "temp_ping_client"),
-    dm);
-  smsgr->add_dispatcher_head(pinger.get());
+  Messenger *smsgr = Messenger::create_client_messenger(cct, "temp_ping_client");
+  smsgr->add_dispatcher_head(pinger);
   smsgr->start();
 
   ConnectionRef con = smsgr->get_connection(monmap.get_inst(new_mon_id));
   ldout(cct, 10) << __func__ << " ping mon." << new_mon_id
-		 << " " << con->get_peer_addr() << dendl;
+                 << " " << con->get_peer_addr() << dendl;
   con->send_message(new MPing);
 
-  MonClientPinger::unique_lock pl(pinger->lock);
-  int ret = pinger->wait_for_reply(pl, cct->_conf->client_mount_timeout);
+  pinger->lock.Lock();
+  int ret = pinger->wait_for_reply(cct->_conf->client_mount_timeout);
   if (ret == 0) {
     ldout(cct,10) << __func__ << " got ping reply" << dendl;
   } else {
     ret = -ret;
   }
-  pl.unlock();
+  pinger->lock.Unlock();
 
   con->mark_down();
+  smsgr->shutdown();
+  smsgr->wait();
+  delete smsgr;
+  delete pinger;
   return ret;
 }
 
@@ -239,7 +270,7 @@ bool MonClient::ms_dispatch(Message *m)
     return false;
   }
 
-  unique_lock l(monc_lock);
+  Mutex::Locker lock(monc_lock);
 
   // ignore any messages outside our current session
   if (m->get_connection() != cur_con) {
@@ -253,7 +284,7 @@ bool MonClient::ms_dispatch(Message *m)
     handle_monmap(static_cast<MMonMap*>(m));
     break;
   case CEPH_MSG_AUTH_REPLY:
-    handle_auth(l, static_cast<MAuthReply*>(m));
+    handle_auth(static_cast<MAuthReply*>(m));
     break;
   case CEPH_MSG_MON_SUBSCRIBE_ACK:
     handle_subscribe_ack(static_cast<MMonSubscribeAck*>(m));
@@ -291,20 +322,19 @@ void MonClient::send_log()
 
 void MonClient::flush_log()
 {
-  lock_guard l(monc_lock);
+  Mutex::Locker l(monc_lock);
   send_log();
 }
 
 void MonClient::handle_monmap(MMonMap *m)
 {
   ldout(cct, 10) << "handle_monmap " << *m << dendl;
-  auto p = m->monmapbl.begin();
+  bufferlist::iterator p = m->monmapbl.begin();
   ::decode(monmap, p);
 
   assert(!cur_mon.empty());
   ldout(cct, 10) << " got monmap " << monmap.epoch
-		 << ", mon." << cur_mon << " is now rank "
-		 << monmap.get_rank(cur_mon)
+		 << ", mon." << cur_mon << " is now rank " << monmap.get_rank(cur_mon)
 		 << dendl;
   ldout(cct, 10) << "dump:\n";
   monmap.print(*_dout);
@@ -317,7 +347,7 @@ void MonClient::handle_monmap(MMonMap *m)
     _reopen_session();  // can't find the mon we were talking to (above)
   }
 
-  map_cond.notify_one();
+  map_cond.Signal();
   want_monmap = false;
 
   m->put();
@@ -333,23 +363,22 @@ int MonClient::init()
 
   entity_name = cct->_conf->name;
 
-  lock_guard l(monc_lock);
+  Mutex::Locker l(monc_lock);
 
   string method;
-  if (!cct->_conf->auth_supported.empty())
-    method = cct->_conf->auth_supported;
-  else if (entity_name.get_type() == CEPH_ENTITY_TYPE_OSD ||
-	   entity_name.get_type() == CEPH_ENTITY_TYPE_MDS ||
-	   entity_name.get_type() == CEPH_ENTITY_TYPE_MON)
-    method = cct->_conf->auth_cluster_required;
-  else
-    method = cct->_conf->auth_client_required;
-  auth_supported.reset(new AuthMethodList(cct, method));
-  ldout(cct, 10) << "auth_supported " << auth_supported->get_supported_set()
-		 << " method " << method << dendl;
+    if (!cct->_conf->auth_supported.empty())
+      method = cct->_conf->auth_supported;
+    else if (entity_name.get_type() == CEPH_ENTITY_TYPE_OSD ||
+             entity_name.get_type() == CEPH_ENTITY_TYPE_MDS ||
+             entity_name.get_type() == CEPH_ENTITY_TYPE_MON)
+      method = cct->_conf->auth_cluster_required;
+    else
+      method = cct->_conf->auth_client_required;
+  auth_supported = new AuthMethodList(cct, method);
+  ldout(cct, 10) << "auth_supported " << auth_supported->get_supported_set() << " method " << method << dendl;
 
   int r = 0;
-  keyring.reset(new KeyRing); // initializing keyring anyway
+  keyring = new KeyRing; // initializing keyring anyway
 
   if (auth_supported->is_supported_auth(CEPH_AUTH_CEPHX)) {
     r = keyring->from_ceph_context(cct);
@@ -359,8 +388,7 @@ int MonClient::init()
 	r = 0;
 	no_keyring_disabled_cephx = true;
       } else {
-	lderr(cct) << "ERROR: missing keyring, cannot use cephx for "
-	  "authentication" << dendl;
+	lderr(cct) << "ERROR: missing keyring, cannot use cephx for authentication" << dendl;
       }
     }
   }
@@ -369,13 +397,13 @@ int MonClient::init()
     return r;
   }
 
-  rotating_secrets.reset(new RotatingKeyRing(
-			   cct, cct->get_module_type(), keyring.get()));
+  rotating_secrets = new RotatingKeyRing(cct, cct->get_module_type(), keyring);
 
   initialized = true;
 
+  timer.init();
   finisher.start();
-  timer.add_event(tick_time(), &MonClient::timer, this);
+  schedule_tick();
 
   return 0;
 }
@@ -383,41 +411,40 @@ int MonClient::init()
 void MonClient::shutdown()
 {
   ldout(cct, 10) << __func__ << dendl;
-  unique_lock l(monc_lock);
+  monc_lock.Lock();
   while (!version_requests.empty()) {
-    std::move(version_requests.begin()->second)(-ECANCELED, version_t(),
-						version_t());
+    version_requests.begin()->second->context->complete(-ECANCELED);
     ldout(cct, 20) << __func__ << " canceling and discarding version request "
-		   << version_requests.begin()->first << dendl;
+		   << version_requests.begin()->second << dendl;
+    delete version_requests.begin()->second;
     version_requests.erase(version_requests.begin());
   }
 
-  for (auto m : waiting_for_session) {
-    ldout(cct, 20) << __func__ << " discarding pending message "
-		   << *m << dendl;
-    m->put();
+  while (!waiting_for_session.empty()) {
+    ldout(cct, 20) << __func__ << " discarding pending message " << *waiting_for_session.front() << dendl;
+    waiting_for_session.front()->put();
+    waiting_for_session.pop_front();
   }
-  waiting_for_session.clear();
 
-  l.unlock();
+  monc_lock.Unlock();
 
   if (initialized) {
     finisher.stop();
   }
-  l.lock();
-  timer.cancel_all_events();
+  monc_lock.Lock();
+  timer.shutdown();
 
   if (cur_con)
     cur_con->mark_down();
   cur_con.reset(NULL);
   cur_mon.clear();
 
-  l.unlock();
+  monc_lock.Unlock();
 }
 
 int MonClient::authenticate(double timeout)
 {
-  unique_lock l(monc_lock);
+  Mutex::Locker lock(monc_lock);
 
   if (state == MC_STATE_HAVE_SESSION) {
     ldout(cct, 5) << "already authenticated" << dendl;
@@ -428,18 +455,20 @@ int MonClient::authenticate(double timeout)
   if (cur_mon.empty())
     _reopen_session();
 
-  auto auth_check = [this]{ return state == MC_STATE_HAVE_SESSION ||
-			    authenticate_err; };
-  if (timeout > 0.0) {
-    auto dur = ceph::make_timespan(timeout);
-    ldout(cct, 10) << "authenticate will time out after " << dur << dendl;
-    bool authed = auth_cond.wait_for(l, dur, auth_check);
-    if (!authed) {
-      ldout(cct, 0) << "authenticate timed out after " << timeout << dendl;
-      authenticate_err = -ETIMEDOUT;
+  utime_t until = ceph_clock_now(cct);
+  until += timeout;
+  if (timeout > 0.0)
+    ldout(cct, 10) << "authenticate will time out at " << until << dendl;
+  while (state != MC_STATE_HAVE_SESSION && !authenticate_err) {
+    if (timeout > 0.0) {
+      int r = auth_cond.WaitUntil(monc_lock, until);
+      if (r == ETIMEDOUT) {
+	ldout(cct, 0) << "authenticate timed out after " << timeout << dendl;
+	authenticate_err = -r;
+      }
+    } else {
+      auth_cond.Wait(monc_lock);
     }
-  } else {
-    auth_cond.wait(l, auth_check);
   }
 
   if (state == MC_STATE_HAVE_SESSION) {
@@ -447,29 +476,27 @@ int MonClient::authenticate(double timeout)
   }
 
   if (authenticate_err < 0 && no_keyring_disabled_cephx) {
-    lderr(cct) << "authenticate NOTE: no keyring found; "
-      "disabled cephx authentication" << dendl;
+    lderr(cct) << "authenticate NOTE: no keyring found; disabled cephx authentication" << dendl;
   }
 
   return authenticate_err;
 }
 
-void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
+void MonClient::handle_auth(MAuthReply *m)
 {
-  std::unique_ptr<thunk> cb;
-  auto p = m->result_bl.begin();
+  Context *cb = NULL;
+  bufferlist::iterator p = m->result_bl.begin();
   if (state == MC_STATE_NEGOTIATING) {
     if (!auth || (int)m->protocol != auth->get_protocol()) {
-      auth.reset(get_auth_client_handler(cct, m->protocol,
-					 rotating_secrets.get()));
+      delete auth;
+      auth = get_auth_client_handler(cct, m->protocol, rotating_secrets);
       if (!auth) {
 	ldout(cct, 10) << "no handler for protocol " << m->protocol << dendl;
 	if (m->result == -ENOTSUP) {
-	  ldout(cct, 10)
-	    << "none of our auth protocols are supported by the server"
-	    << dendl;
+	  ldout(cct, 10) << "none of our auth protocols are supported by the server"
+			 << dendl;
 	  authenticate_err = m->result;
-	  auth_cond.notify_all();
+	  auth_cond.SignalAll();
 	}
 	m->put();
 	return;
@@ -507,9 +534,10 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
   if (ret == 0) {
     if (state != MC_STATE_HAVE_SESSION) {
       state = MC_STATE_HAVE_SESSION;
-      for (auto p : waiting_for_session)
-	_send_mon_message(p);
-      waiting_for_session.clear();
+      while (!waiting_for_session.empty()) {
+	_send_mon_message(waiting_for_session.front());
+	waiting_for_session.pop_front();
+      }
 
       _resend_mon_commands();
 
@@ -517,18 +545,19 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
 	log_client->reset_session();
 	send_log();
       }
-      if (session_established) {
-	cb = std::move(session_established);
+      if (session_established_context) {
+        cb = session_established_context;
+        session_established_context = NULL;
       }
     }
-
+  
     _check_auth_tickets();
   }
-  auth_cond.notify_all();
+  auth_cond.SignalAll();
   if (cb) {
-    l.unlock();
-    std::move(*cb)();
-    l.lock();
+    monc_lock.Unlock();
+    cb->complete(0);
+    monc_lock.Lock();
   }
 }
 
@@ -537,7 +566,7 @@ void MonClient::handle_auth(unique_lock& l, MAuthReply *m)
 
 void MonClient::_send_mon_message(Message *m, bool force)
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   assert(!cur_mon.empty());
   if (force || state == MC_STATE_HAVE_SESSION) {
     assert(cur_con);
@@ -563,35 +592,16 @@ string MonClient::_pick_random_mon()
 	max--;
     }
 
-    std::uniform_int_distribution<int32_t> d(0, max - 1);
-    int32_t n = d(rng);
+    int32_t n = rng() % max;
     if (o >= 0 && n >= o)
       n++;
     return monmap.get_name(n);
   }
 }
 
-/// Since we don't have generalized lambdas, we need a helper to
-/// handle move capture
-struct Version_CB_Helper {
-  MonClient::Version_cb f;
-  int r;
-  version_t newest;
-  version_t oldest;
-
-  Version_CB_Helper(MonClient::Version_cb&& f, int r, version_t newest,
-		     version_t oldest)
-    : f(std::move(f)), r(r), newest(newest), oldest(oldest) {}
-
-  void operator()() {
-    std::move(f)(r, newest, oldest);
-  }
-};
-
-
 void MonClient::_reopen_session(int rank, string name)
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   ldout(cct, 10) << "_reopen_session rank " << rank << " name " << name << dendl;
 
   if (rank < 0 && name.length() == 0) {
@@ -606,22 +616,21 @@ void MonClient::_reopen_session(int rank, string name)
     cur_con->mark_down();
   }
   cur_con = messenger->get_connection(monmap.get_inst(cur_mon));
-
+	
   ldout(cct, 10) << "picked mon." << cur_mon << " con " << cur_con
 		 << " addr " << cur_con->get_peer_addr()
 		 << dendl;
 
   // throw out old queued messages
-  for (auto p : waiting_for_session)
-    p->put();
-
-  waiting_for_session.clear();
+  while (!waiting_for_session.empty()) {
+    waiting_for_session.front()->put();
+    waiting_for_session.pop_front();
+  }
 
   // throw out version check requests
   while (!version_requests.empty()) {
-    finisher.enqueue(cxx_function::in_place_t<Version_CB_Helper>{},
-		     std::move(version_requests.begin()->second),
-		     -EAGAIN, version_t(), version_t());
+    finisher.queue(version_requests.begin()->second->context, -EAGAIN);
+    delete version_requests.begin()->second;
     version_requests.erase(version_requests.begin());
   }
 
@@ -629,9 +638,9 @@ void MonClient::_reopen_session(int rank, string name)
   if (had_a_connection) {
     reopen_interval_multiplier *= cct->_conf->mon_client_hunt_interval_backoff;
     if (reopen_interval_multiplier >
-	cct->_conf->mon_client_hunt_interval_max_multiple)
+          cct->_conf->mon_client_hunt_interval_max_multiple)
       reopen_interval_multiplier =
-	cct->_conf->mon_client_hunt_interval_max_multiple;
+          cct->_conf->mon_client_hunt_interval_max_multiple;
   }
 
   // restart authentication handshake
@@ -653,9 +662,11 @@ void MonClient::_reopen_session(int rank, string name)
   ::encode(global_id, m->auth_payload);
   _send_mon_message(m, true);
 
-  for (const auto& p : sub_sent) {
-    if (sub_new.count(p.first) == 0)
-      sub_new[p.first] = p.second;
+  for (map<string,ceph_mon_subscribe_item>::iterator p = sub_sent.begin();
+       p != sub_sent.end();
+       ++p) {
+    if (sub_new.count(p->first) == 0)
+      sub_new[p->first] = p->second;
   }
   if (!sub_new.empty())
     _renew_subs();
@@ -664,19 +675,17 @@ void MonClient::_reopen_session(int rank, string name)
 
 bool MonClient::ms_handle_reset(Connection *con)
 {
-  lock_guard l(monc_lock);
+  Mutex::Locker lock(monc_lock);
 
   if (con->get_peer_type() == CEPH_ENTITY_TYPE_MON) {
     if (cur_mon.empty() || con != cur_con) {
-      ldout(cct, 10) << "ms_handle_reset stray mon " << con->get_peer_addr()
-		     << dendl;
+      ldout(cct, 10) << "ms_handle_reset stray mon " << con->get_peer_addr() << dendl;
       return true;
     } else {
-      ldout(cct, 10) << "ms_handle_reset current mon " << con->get_peer_addr()
-		     << dendl;
+      ldout(cct, 10) << "ms_handle_reset current mon " << con->get_peer_addr() << dendl;
       if (hunting)
 	return true;
-
+      
       ldout(cct, 0) << "hunting for new mon" << dendl;
       _reopen_session();
     }
@@ -686,9 +695,9 @@ bool MonClient::ms_handle_reset(Connection *con)
 
 void MonClient::_finish_hunting()
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   if (hunting) {
-    ldout(cct, 1) << "found mon." << cur_mon << dendl;
+    ldout(cct, 1) << "found mon." << cur_mon << dendl; 
     hunting = false;
     had_a_connection = true;
     reopen_interval_multiplier /= 2.0;
@@ -699,17 +708,16 @@ void MonClient::_finish_hunting()
 
 void MonClient::tick()
 {
-  lock_guard l(monc_lock);
   ldout(cct, 10) << "tick" << dendl;
 
   _check_auth_tickets();
-
+  
   if (hunting) {
     ldout(cct, 1) << "continuing hunt" << dendl;
     _reopen_session();
   } else if (!cur_mon.empty()) {
     // just renew as needed
-    auto now = ceph::real_clock::now(cct);
+    utime_t now = ceph_clock_now(cct);
     if (!cur_con->has_feature(CEPH_FEATURE_MON_STATEFUL_SUB)) {
       ldout(cct, 10) << "renew subs? (now: " << now
 		     << "; renew after: " << sub_renew_after << ") -- "
@@ -724,11 +732,9 @@ void MonClient::tick()
     if (state == MC_STATE_HAVE_SESSION) {
       if (cct->_conf->mon_client_ping_timeout > 0 &&
 	  cur_con->has_feature(CEPH_FEATURE_MSGR_KEEPALIVE2)) {
-	auto lk = ceph::real_clock::from_ceph_timespec(
-	  cur_con->get_last_keepalive_ack());
-	auto interval = now - lk;
-	if (interval > ceph::make_timespan(
-	      cct->_conf->mon_client_ping_timeout)) {
+	utime_t lk = cur_con->get_last_keepalive_ack();
+	utime_t interval = now - lk;
+	if (interval > cct->_conf->mon_client_ping_timeout) {
 	  ldout(cct, 1) << "no keepalive since " << lk << " (" << interval
 			<< " seconds), reconnecting" << dendl;
 	  _reopen_session();
@@ -739,22 +745,23 @@ void MonClient::tick()
     }
   }
 
-  timer.reschedule_me(tick_time());
+  schedule_tick();
 }
 
-ceph::timespan MonClient::tick_time()
+void MonClient::schedule_tick()
 {
-  return ceph::make_timespan(
-    hunting ?
-    cct->_conf->mon_client_hunt_interval * reopen_interval_multiplier :
-    cct->_conf->mon_client_ping_interval);
+  if (hunting)
+    timer.add_event_after(cct->_conf->mon_client_hunt_interval
+                          * reopen_interval_multiplier, new C_Tick(this));
+  else
+    timer.add_event_after(cct->_conf->mon_client_ping_interval, new C_Tick(this));
 }
 
 // ---------
 
 void MonClient::_renew_subs()
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   if (sub_new.empty()) {
     ldout(cct, 10) << "renew_subs - empty" << dendl;
     return;
@@ -764,8 +771,8 @@ void MonClient::_renew_subs()
   if (cur_mon.empty())
     _reopen_session();
   else {
-    if (sub_renew_sent == ceph::real_time::min())
-      sub_renew_sent = ceph::real_clock::now(cct);
+    if (sub_renew_sent == utime_t())
+      sub_renew_sent = ceph_clock_now(cct);
 
     MMonSubscribe *m = new MMonSubscribe;
     m->what = sub_new;
@@ -778,13 +785,13 @@ void MonClient::_renew_subs()
 
 void MonClient::handle_subscribe_ack(MMonSubscribeAck *m)
 {
-  if (sub_renew_sent != ceph::real_time::min()) {
+  if (sub_renew_sent != utime_t()) {
     // NOTE: this is only needed for legacy (infernalis or older)
     // mons; see tick().
     sub_renew_after = sub_renew_sent;
-    sub_renew_after += ceph::make_timespan(m->interval / 2.0);
+    sub_renew_after += m->interval / 2.0;
     ldout(cct, 10) << "handle_subscribe_ack sent " << sub_renew_sent << " renew after " << sub_renew_after << dendl;
-    sub_renew_sent = ceph::real_time::min();
+    sub_renew_sent = utime_t();
   } else {
     ldout(cct, 10) << "handle_subscribe_ack sent " << sub_renew_sent << ", ignoring" << dendl;
   }
@@ -794,7 +801,7 @@ void MonClient::handle_subscribe_ack(MMonSubscribeAck *m)
 
 int MonClient::_check_auth_tickets()
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   if (state == MC_STATE_HAVE_SESSION && auth) {
     if (auth->need_tickets()) {
       ldout(cct, 10) << "_check_auth_tickets getting new tickets!" << dendl;
@@ -812,11 +819,10 @@ int MonClient::_check_auth_tickets()
 
 int MonClient::_check_auth_rotating()
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
   if (!rotating_secrets ||
       !auth_principal_needs_rotating_keys(entity_name)) {
-    ldout(cct, 20) << "_check_auth_rotating not needed by " << entity_name
-		   << dendl;
+    ldout(cct, 20) << "_check_auth_rotating not needed by " << entity_name << dendl;
     return 0;
   }
 
@@ -825,18 +831,15 @@ int MonClient::_check_auth_rotating()
     return 0;
   }
 
-  ceph::real_time cutoff = ceph::real_clock::now();
-  cutoff -= ceph::make_timespan(
-    std::min(30.0, cct->_conf->auth_service_ticket_ttl / 4.0));
+  utime_t cutoff = ceph_clock_now(cct);
+  cutoff -= MIN(30.0, cct->_conf->auth_service_ticket_ttl / 4.0);
   if (!rotating_secrets->need_new_secrets(cutoff)) {
-    ldout(cct, 10) << "_check_auth_rotating have uptodate secrets "
-      "(they expire after " << cutoff << ")" << dendl;
+    ldout(cct, 10) << "_check_auth_rotating have uptodate secrets (they expire after " << cutoff << ")" << dendl;
     rotating_secrets->dump_rotating();
     return 0;
   }
 
-  ldout(cct, 10) << "_check_auth_rotating renewing rotating keys (they "
-    "expired before " << cutoff << ")" << dendl;
+  ldout(cct, 10) << "_check_auth_rotating renewing rotating keys (they expired before " << cutoff << ")" << dendl;
   MAuth *m = new MAuth;
   m->protocol = auth->get_protocol();
   if (auth->build_rotating_request(m->auth_payload)) {
@@ -849,67 +852,69 @@ int MonClient::_check_auth_rotating()
 
 int MonClient::wait_auth_rotating(double timeout)
 {
-  unique_lock l(monc_lock);
+  Mutex::Locker l(monc_lock);
+  utime_t until = ceph_clock_now(cct);
+  until += timeout;
 
   if (auth->get_protocol() == CEPH_AUTH_NONE)
     return 0;
-
+  
   if (!rotating_secrets)
     return 0;
 
-  ldout(cct, 10) << "wait_auth_rotating waiting for " << timeout << dendl;
-  auth_cond.wait_for(
-    l, ceph::make_timespan(timeout),
-    [this] {
-      return !(auth_principal_needs_rotating_keys(entity_name) &&
-	       rotating_secrets->need_new_secrets()); });
+  while (auth_principal_needs_rotating_keys(entity_name) &&
+	 rotating_secrets->need_new_secrets()) {
+    utime_t now = ceph_clock_now(cct);
+    if (now >= until) {
+      ldout(cct, 0) << "wait_auth_rotating timed out after " << timeout << dendl;
+      return -ETIMEDOUT;
+    }
+    ldout(cct, 10) << "wait_auth_rotating waiting (until " << until << ")" << dendl;
+    auth_cond.WaitUntil(monc_lock, until);
+  }
   ldout(cct, 10) << "wait_auth_rotating done" << dendl;
   return 0;
 }
 
 // ---------
 
-void MonClient::_send_command(MonCommand& r)
+void MonClient::_send_command(MonCommand *r)
 {
-  if (r.target_rank >= 0 &&
-      r.target_rank != monmap.get_rank(cur_mon)) {
-    ldout(cct, 10) << "_send_command " << r.tid << " " << r.cmd
-		   << " wants rank " << r.target_rank
+  if (r->target_rank >= 0 &&
+      r->target_rank != monmap.get_rank(cur_mon)) {
+    ldout(cct, 10) << "_send_command " << r->tid << " " << r->cmd
+		   << " wants rank " << r->target_rank
 		   << ", reopening session"
 		   << dendl;
-    if (r.target_rank >= (int)monmap.size()) {
-      ldout(cct, 10) << " target " << r.target_rank << " >= max mon "
-		     << monmap.size() << dendl;
-      _finish_command(_reclaim_mon_command(mon_commands.iterator_to(r)),
-		      -ENOENT, string("mon rank dne"), bufferlist());
+    if (r->target_rank >= (int)monmap.size()) {
+      ldout(cct, 10) << " target " << r->target_rank << " >= max mon " << monmap.size() << dendl;
+      _finish_command(r, -ENOENT, "mon rank dne");
       return;
     }
-    _reopen_session(r.target_rank, string());
+    _reopen_session(r->target_rank, string());
     return;
   }
 
-  if (r.target_name.length() &&
-      r.target_name != cur_mon) {
-    ldout(cct, 10) << "_send_command " << r.tid << " " << r.cmd
-		   << " wants mon " << r.target_name
+  if (r->target_name.length() &&
+      r->target_name != cur_mon) {
+    ldout(cct, 10) << "_send_command " << r->tid << " " << r->cmd
+		   << " wants mon " << r->target_name
 		   << ", reopening session"
 		   << dendl;
-    if (!monmap.contains(r.target_name)) {
-      ldout(cct, 10) << " target " << r.target_name
-		     << " not present in monmap" << dendl;
-      _finish_command(_reclaim_mon_command(mon_commands.iterator_to(r)),
-		      -ENOENT, string("mon dne"), bufferlist());
+    if (!monmap.contains(r->target_name)) {
+      ldout(cct, 10) << " target " << r->target_name << " not present in monmap" << dendl;
+      _finish_command(r, -ENOENT, "mon dne");
       return;
     }
-    _reopen_session(-1, r.target_name);
+    _reopen_session(-1, r->target_name);
     return;
   }
 
-  ldout(cct, 10) << "_send_command " << r.tid << " " << r.cmd << dendl;
+  ldout(cct, 10) << "_send_command " << r->tid << " " << r->cmd << dendl;
   MMonCommand *m = new MMonCommand(monmap.fsid);
-  m->set_tid(r.tid);
-  m->cmd = r.cmd;
-  m->set_data(r.inbl);
+  m->set_tid(r->tid);
+  m->cmd = r->cmd;
+  m->set_data(r->inbl);
   _send_mon_message(m);
   return;
 }
@@ -917,48 +922,43 @@ void MonClient::_send_command(MonCommand& r)
 void MonClient::_resend_mon_commands()
 {
   // resend any requests
-  for (auto& p : mon_commands)
-    _send_command(p);
+  for (map<uint64_t,MonCommand*>::iterator p = mon_commands.begin();
+       p != mon_commands.end();
+       ++p) {
+    _send_command(p->second);
+  }
 }
 
 void MonClient::handle_mon_command_ack(MMonCommandAck *ack)
 {
+  MonCommand *r = NULL;
   uint64_t tid = ack->get_tid();
-  if (mon_commands.empty()) {
-    ldout(cct, 10) << "handle_mon_command_ack " << ack->get_tid()
-		   << " not found" << dendl;
-    ack->put();
-    return;
-  }
 
-  auto p = (tid == 0) ? mon_commands.begin()
-    : mon_commands.find(tid, MonCommand::compare());
-
-  if (tid == 0)
-    ldout(cct, 10) << "handle_mon_command_ack has tid 0, assuming it is "
-		   << p->tid << dendl;
-
-  if (p == mon_commands.end()) {
-      ldout(cct, 10) << "handle_mon_command_ack " << ack->get_tid()
-		     << " not found" << dendl;
+  if (tid == 0 && !mon_commands.empty()) {
+    r = mon_commands.begin()->second;
+    ldout(cct, 10) << "handle_mon_command_ack has tid 0, assuming it is " << r->tid << dendl;
+  } else {
+    map<uint64_t,MonCommand*>::iterator p = mon_commands.find(tid);
+    if (p == mon_commands.end()) {
+      ldout(cct, 10) << "handle_mon_command_ack " << ack->get_tid() << " not found" << dendl;
       ack->put();
       return;
+    }
+    r = p->second;
   }
 
-  auto r = _reclaim_mon_command(p);
-
-  ldout(cct, 10) << "handle_mon_command_ack " << r->tid << " " << r->cmd
-		 << dendl;
-  _finish_command(std::move(r), ack->r, std::move(ack->rs),
-		  std::move(ack->get_data()));
+  ldout(cct, 10) << "handle_mon_command_ack " << r->tid << " " << r->cmd << dendl;
+  if (r->poutbl)
+    r->poutbl->claim(ack->get_data());
+  _finish_command(r, ack->r, ack->rs);
   ack->put();
 }
 
 int MonClient::_cancel_mon_command(uint64_t tid, int r)
 {
-  // monc_lock must be locked
+  assert(monc_lock.is_locked());
 
-  auto it = mon_commands.find(tid, MonCommand::compare());
+  map<ceph_tid_t, MonCommand*>::iterator it = mon_commands.find(tid);
   if (it == mon_commands.end()) {
     ldout(cct, 10) << __func__ << " tid " << tid << " dne" << dendl;
     return -ENOENT;
@@ -966,58 +966,42 @@ int MonClient::_cancel_mon_command(uint64_t tid, int r)
 
   ldout(cct, 10) << __func__ << " tid " << tid << dendl;
 
-  auto cmd = _reclaim_mon_command(it);
-  _finish_command(std::move(cmd), -ETIMEDOUT, "", bufferlist());
+  MonCommand *cmd = it->second;
+  _finish_command(cmd, -ETIMEDOUT, "");
   return 0;
 }
 
-/// Since we don't have generalized lambdas, we need a helper to
-/// handle move capture
-struct MonCmd_CB_Helper {
-  MonClient::MonCommand_cb f;
-  int r;
-  string s;
-  bufferlist bl;
-
-  MonCmd_CB_Helper(MonClient::MonCommand_cb&& f, int r, string&& s,
-		   bufferlist&& bl)
-    : f(std::move(f)), r(r), s(std::move(s)), bl(std::move(bl)) {}
-
-  void operator()() {
-    std::move(f)(r, s, bl);
-  }
-};
-
-void MonClient::_finish_command(std::unique_ptr<MonCommand> r,
-				int ret, string&& rs, bufferlist&& bl)
+void MonClient::_finish_command(MonCommand *r, int ret, string rs)
 {
-  ldout(cct, 10) << "_finish_command " << r->tid << " = " << ret << " "
-		 << rs << dendl;
+  ldout(cct, 10) << "_finish_command " << r->tid << " = " << ret << " " << rs << dendl;
+  if (r->prval)
+    *(r->prval) = ret;
+  if (r->prs)
+    *(r->prs) = rs;
   if (r->onfinish)
-    finisher.enqueue(cxx_function::in_place_t<MonCmd_CB_Helper>{},
-		     std::move(r->onfinish), ret, std::move(rs),
-		     std::move(bl));
+    finisher.queue(r->onfinish, ret);
+  mon_commands.erase(r->tid);
+  delete r;
 }
 
 int MonClient::start_mon_command(const vector<string>& cmd,
 				 const bufferlist& inbl,
-				 MonCommand_cb&& onfinish)
+				 bufferlist *outbl, string *outs,
+				 Context *onfinish)
 {
-  lock_guard l(monc_lock);
-  std::unique_ptr<MonCommand> r(new MonCommand(++last_mon_command_tid));
+  Mutex::Locker l(monc_lock);
+  MonCommand *r = new MonCommand(++last_mon_command_tid);
   r->cmd = cmd;
   r->inbl = inbl;
-  r->onfinish = std::move(onfinish);
+  r->poutbl = outbl;
+  r->prs = outs;
+  r->onfinish = onfinish;
   if (cct->_conf->rados_mon_op_timeout > 0) {
-    auto tid = r->tid;
-    r->ontimeout = timer.add_event(
-      ceph::make_timespan(cct->_conf->rados_mon_op_timeout),
-      [this, tid] {
-	unique_lock l(monc_lock);
-	_cancel_mon_command(tid, -ETIMEDOUT);
-      });
+    r->ontimeout = new C_CancelMonCommand(r->tid, this);
+    timer.add_event_after(cct->_conf->rados_mon_op_timeout, r->ontimeout);
   }
-  _send_and_record(std::move(r));
+  mon_commands[r->tid] = r;
+  _send_command(r);
   // can't fail
   return 0;
 }
@@ -1025,15 +1009,19 @@ int MonClient::start_mon_command(const vector<string>& cmd,
 int MonClient::start_mon_command(const string &mon_name,
 				 const vector<string>& cmd,
 				 const bufferlist& inbl,
-				 MonCommand_cb&& onfinish)
+				 bufferlist *outbl, string *outs,
+				 Context *onfinish)
 {
-  lock_guard l(monc_lock);
-  std::unique_ptr<MonCommand> r(new MonCommand(++last_mon_command_tid));
+  Mutex::Locker l(monc_lock);
+  MonCommand *r = new MonCommand(++last_mon_command_tid);
   r->target_name = mon_name;
   r->cmd = cmd;
   r->inbl = inbl;
-  r->onfinish = std::move(onfinish);
-  _send_and_record(std::move(r));
+  r->poutbl = outbl;
+  r->prs = outs;
+  r->onfinish = onfinish;
+  mon_commands[r->tid] = r;
+  _send_command(r);
   // can't fail
   return 0;
 }
@@ -1041,34 +1029,53 @@ int MonClient::start_mon_command(const string &mon_name,
 int MonClient::start_mon_command(int rank,
 				 const vector<string>& cmd,
 				 const bufferlist& inbl,
-				 MonCommand_cb&& onfinish)
+				 bufferlist *outbl, string *outs,
+				 Context *onfinish)
 {
-  lock_guard l(monc_lock);
-  std::unique_ptr<MonCommand> r(new MonCommand(++last_mon_command_tid));
+  Mutex::Locker l(monc_lock);
+  MonCommand *r = new MonCommand(++last_mon_command_tid);
   r->target_rank = rank;
   r->cmd = cmd;
   r->inbl = inbl;
-  r->onfinish = std::move(onfinish);
-  _send_and_record(std::move(r));
+  r->poutbl = outbl;
+  r->prs = outs;
+  r->onfinish = onfinish;
+  mon_commands[r->tid] = r;
+  _send_command(r);
   return 0;
 }
 
 // ---------
 
+void MonClient::get_version(string map, version_t *newest, version_t *oldest, Context *onfinish)
+{
+  version_req_d *req = new version_req_d(onfinish, newest, oldest);
+  ldout(cct, 10) << "get_version " << map << " req " << req << dendl;
+  Mutex::Locker l(monc_lock);
+  MMonGetVersion *m = new MMonGetVersion();
+  m->what = map;
+  m->handle = ++version_req_id;
+  version_requests[m->handle] = req;
+  _send_mon_message(m);
+}
+
 void MonClient::handle_get_version_reply(MMonGetVersionReply* m)
 {
-  // monc_lock must be locked
-  auto iter = version_requests.find(m->handle);
+  assert(monc_lock.is_locked());
+  map<ceph_tid_t, version_req_d*>::iterator iter = version_requests.find(m->handle);
   if (iter == version_requests.end()) {
     ldout(cct, 0) << __func__ << " version request with handle " << m->handle
 		  << " not found" << dendl;
   } else {
-    ldout(cct, 10) << __func__ << " finishing " << iter->first << " version "
-		   << m->version << dendl;
-    finisher.enqueue(cxx_function::in_place_t<Version_CB_Helper>{},
-		     std::move(iter->second), 0, m->version,
-		     m->oldest_version);
+    version_req_d *req = iter->second;
+    ldout(cct, 10) << __func__ << " finishing " << req << " version " << m->version << dendl;
     version_requests.erase(iter);
+    if (req->newest)
+      *req->newest = m->version;
+    if (req->oldest)
+      *req->oldest = m->oldest_version;
+    finisher.queue(req->context, 0);
+    delete req;
   }
   m->put();
 }

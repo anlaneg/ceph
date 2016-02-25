@@ -36,6 +36,7 @@
 #include "osd/OSDMap.h"
 
 #include "common/LogClient.h"
+#include "common/SimpleRNG.h"
 #include "common/cmdparse.h"
 
 #include "auth/cephx/CephxKeyServer.h"
