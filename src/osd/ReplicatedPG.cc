@@ -2431,7 +2431,7 @@ void ReplicatedPG::do_proxy_read(OpRequestRef op)
 
   dout(10) << __func__ << " Start proxy read for " << *m << dendl;
 
-  ProxyReadOpRef prdop(new ProxyReadOp(op, soid, m->ops));
+  ProxyReadOpRef prdop(std::make_shared<ProxyReadOp>(op, soid, m->ops));
 
   ObjectOperation obj_op;
   obj_op.dup(prdop->ops);
@@ -2616,7 +2616,7 @@ void ReplicatedPG::do_proxy_write(OpRequestRef op, const hobject_t& missing_oid)
   unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY;
   dout(10) << __func__ << " Start proxy write for " << *m << dendl;
 
-  ProxyWriteOpRef pwop(new ProxyWriteOp(op, soid, m->ops, m->get_reqid()));
+  ProxyWriteOpRef pwop(std::make_shared<ProxyWriteOp>(op, soid, m->ops, m->get_reqid()));
   pwop->ctx = new OpContext(op, m->get_reqid(), pwop->ops, this);
   pwop->mtime = m->get_mtime();
 
@@ -3117,7 +3117,7 @@ void ReplicatedPG::do_scan(
 		<< ratio << ", which exceeds " << full_ratio << dendl;
 	queue_peering_event(
 	  CephPeeringEvtRef(
-	    new CephPeeringEvt(
+	    std::make_shared<CephPeeringEvt>(
 	      get_osdmap()->get_epoch(),
 	      get_osdmap()->get_epoch(),
 	      BackfillTooFull())));
@@ -3195,7 +3195,7 @@ void ReplicatedPG::do_backfill(OpRequestRef op)
       osd->send_message_osd_cluster(reply, m->get_connection());
       queue_peering_event(
 	CephPeeringEvtRef(
-	  new CephPeeringEvt(
+	  std::make_shared<CephPeeringEvt>(
 	    get_osdmap()->get_epoch(),
 	    get_osdmap()->get_epoch(),
 	    RecoveryDone())));
@@ -6999,7 +6999,7 @@ void ReplicatedPG::start_copy(CopyCallback *cb, ObjectContextRef obc,
     cancel_copy(cop, false);
   }
 
-  CopyOpRef cop(new CopyOp(cb, obc, src, oloc, version, flags,
+  CopyOpRef cop(std::make_shared<CopyOp>(cb, obc, src, oloc, version, flags,
 			   mirror_snapset, src_obj_fadvise_flags,
 			   dest_obj_fadvise_flags));
   copy_ops[dest] = cop;
@@ -7852,7 +7852,7 @@ int ReplicatedPG::start_flush(
       NULL /* no callback, we'll rely on the ordering w.r.t the next op */);
   }
 
-  FlushOpRef fop(new FlushOp);
+  FlushOpRef fop(std::make_shared<FlushOp>());
   fop->obc = obc;
   fop->flushed_version = oi.user_version;
   fop->blocking = blocking;
@@ -9701,7 +9701,7 @@ void ReplicatedPG::on_activate()
     dout(10) << "activate not all replicas are up-to-date, queueing recovery" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
-	new CephPeeringEvt(
+	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
 	  DoRecovery())));
@@ -9709,7 +9709,7 @@ void ReplicatedPG::on_activate()
     dout(10) << "activate queueing backfill" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
-	new CephPeeringEvt(
+	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
 	  RequestBackfill())));
@@ -9717,7 +9717,7 @@ void ReplicatedPG::on_activate()
     dout(10) << "activate all replicas clean, no recovery" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
-	new CephPeeringEvt(
+	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
 	  AllReplicasRecovered())));
@@ -10070,7 +10070,7 @@ bool ReplicatedPG::start_recovery_ops(
 	backfill_reserving = true;
 	queue_peering_event(
 	  CephPeeringEvtRef(
-	    new CephPeeringEvt(
+	    std::make_shared<CephPeeringEvt>(
 	      get_osdmap()->get_epoch(),
 	      get_osdmap()->get_epoch(),
 	      RequestBackfill())));
@@ -10123,7 +10123,7 @@ bool ReplicatedPG::start_recovery_ops(
       dout(10) << "recovery done, queuing backfill" << dendl;
       queue_peering_event(
         CephPeeringEvtRef(
-          new CephPeeringEvt(
+          std::make_shared<CephPeeringEvt>(
             get_osdmap()->get_epoch(),
             get_osdmap()->get_epoch(),
             RequestBackfill())));
@@ -10131,7 +10131,7 @@ bool ReplicatedPG::start_recovery_ops(
       dout(10) << "recovery done, no backfill" << dendl;
       queue_peering_event(
         CephPeeringEvtRef(
-          new CephPeeringEvt(
+          std::make_shared<CephPeeringEvt>(
             get_osdmap()->get_epoch(),
             get_osdmap()->get_epoch(),
             AllReplicasRecovered())));
@@ -10141,7 +10141,7 @@ bool ReplicatedPG::start_recovery_ops(
     dout(10) << "recovery done, backfill done" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
-        new CephPeeringEvt(
+        std::make_shared<CephPeeringEvt>(
           get_osdmap()->get_epoch(),
           get_osdmap()->get_epoch(),
           Backfilled())));
