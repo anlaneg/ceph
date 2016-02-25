@@ -1011,6 +1011,8 @@ def get_conf_with_default(cluster, variable):
                 '--show-config-value={variable}'.format(
                     variable=variable,
                 ),
+                '--setuser', get_ceph_user(),
+                '--setgroup', get_ceph_user(),
             ],
             close_fds=True,
         )
@@ -1295,16 +1297,22 @@ def check_journal_reqs(args):
         'ceph-osd', '--check-allows-journal',
         '-i', '0',
         '--cluster', args.cluster,
+        '--setuser', get_ceph_user(),
+        '--setgroup', get_ceph_user(),
     ])
     _, _, wants_journal = command([
         'ceph-osd', '--check-wants-journal',
         '-i', '0',
         '--cluster', args.cluster,
+        '--setuser', get_ceph_user(),
+        '--setgroup', get_ceph_user(),
     ])
     _, _, needs_journal = command([
         'ceph-osd', '--check-needs-journal',
         '-i', '0',
         '--cluster', args.cluster,
+        '--setuser', get_ceph_user(),
+        '--setgroup', get_ceph_user(),
     ])
     return (not allows_journal, not wants_journal, not needs_journal)
 
@@ -3032,6 +3040,8 @@ def main_activate(args):
                     '--id={osd_id}'.format(osd_id=osd_id),
                     '--osd-data={path}'.format(path=osd_data),
                     '--osd-journal={path}/journal'.format(path=osd_data),
+                    '--setuser', get_ceph_user(),
+                    '--setgroup', get_ceph_user(),
                 ],
             )
 
@@ -3319,6 +3329,8 @@ def get_space_osd_uuid(name, path):
                 'ceph-osd',
                 '--get-device-fsid',
                 path,
+                '--setuser', get_ceph_user(),
+                '--setgroup', get_ceph_user(),
             ],
             close_fds=True,
         )
