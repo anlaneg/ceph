@@ -21,6 +21,7 @@
 #include "common/ceph_context.h"
 #include "common/valgrind.h"
 
+//实现简单的引用计数功能,通过继承此对象,可使得子类获得引入计数功能.
 struct RefCountedObject {
 private:
   atomic_t nref;

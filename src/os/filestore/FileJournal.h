@@ -36,6 +36,8 @@ using std::deque;
  *
  * Lock ordering is write_lock > aio_lock > (completions_lock | finisher_lock)
  */
+//提拱journal机制,用于在提交文件前,将文件写入journal,
+//为了优化小字节写,journal引入了Throttle,用于将多次写组装成一次写来完成.
 class FileJournal :
   public Journal,
   public md_config_obs_t {

@@ -18,6 +18,7 @@
 
 #include "Messenger.h"
 
+//添加了策略
 class SimplePolicyMessenger : public Messenger
 {
 private:

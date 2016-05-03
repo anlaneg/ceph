@@ -262,6 +262,7 @@ void *Pipe::DelayedDelivery::entry()
   lgeneric_subdout(pipe->msgr->cct, ms, 20) << *pipe << "DelayedDelivery::entry start" << dendl;
 
   while (!stop_delayed_delivery) {
+	//如果delay_queue为空,则阻塞
     if (delay_queue.empty()) {
       lgeneric_subdout(pipe->msgr->cct, ms, 30) << *pipe << "DelayedDelivery::entry sleeping on delay_cond because delay queue is empty" << dendl;
       delay_cond.Wait(delay_lock);
@@ -313,7 +314,7 @@ void Pipe::DelayedDelivery::stop_fast_dispatching() {
     delay_cond.Wait(delay_lock);
 }
 
-
+//尝试着建立连接.
 int Pipe::accept()
 {
   ldout(msgr->cct,10) << "accept" << dendl;
@@ -379,7 +380,7 @@ int Pipe::accept()
   socket_addr.set_sockaddr((sockaddr*)&ss);
   ::encode(socket_addr, addrs, 0);  // legacy
 
-  r = tcp_write(addrs.c_str(), addrs.length());
+  r = tcp_write(addrs.c_str(), addrs.length());//通告自已地址,对方地址
   if (r < 0) {
     ldout(msgr->cct,10) << "accept couldn't write my+peer addr" << dendl;
     goto fail_unlocked;
@@ -388,7 +389,7 @@ int Pipe::accept()
   ldout(msgr->cct,1) << "accept sd=" << sd << " " << socket_addr << dendl;
   
   // identify peer
-  if (tcp_read(banner, strlen(CEPH_BANNER)) < 0) {
+  if (tcp_read(banner, strlen(CEPH_BANNER)) < 0) {//获取对方地址(后面实际上是自已地址)
     ldout(msgr->cct,10) << "accept couldn't read banner" << dendl;
     goto fail_unlocked;
   }
@@ -407,12 +408,14 @@ int Pipe::accept()
   }
   {
     bufferlist::iterator ti = addrbl.begin();
-    ::decode(peer_addr, ti);
+    ::decode(peer_addr, ti);//仅解码对方地址
   }
 
   ldout(msgr->cct,10) << "accept peer addr is " << peer_addr << dendl;
   if (peer_addr.is_blank_ip()) {
     // peer apparently doesn't know what ip they have; figure it out for them.
+    //对方写过来的地址是0.0.0.0类地址,说明对方不知道自已用的是哪个地址,利用getpeername
+    //函数获取到的数据对本对象的peer_addr进行重新填充.
     int port = peer_addr.get_port();
     peer_addr.u = socket_addr.u;
     peer_addr.set_port(port);
@@ -431,7 +434,7 @@ int Pipe::accept()
     connect.features = ceph_sanitize_features(connect.features);
 
     authorizer.clear();
-    if (connect.authorizer_len) {
+    if (connect.authorizer_len) {//如果有校验字段,则读取校验字段
       bp = buffer::create(connect.authorizer_len);
       if (tcp_read(bp.c_str(), connect.authorizer_len) < 0) {
         ldout(msgr->cct,10) << "accept couldn't read connect authorizer" << dendl;
@@ -504,6 +507,7 @@ int Pipe::accept()
 
     pipe_lock.Unlock();
 
+    //校验处理
     if (!msgr->verify_authorizer(connection_state.get(), peer_type, connect.authorizer_protocol, authorizer,
 				 authorizer_reply, authorizer_valid, session_key) ||
 	!authorizer_valid) {
@@ -884,7 +888,7 @@ int Pipe::accept()
   fault();
   return -1;
 }
-
+//设置socket options
 void Pipe::set_socket_options()
 {
   // disable Nagle algorithm?

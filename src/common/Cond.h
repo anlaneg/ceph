@@ -25,7 +25,8 @@
 #include "common/Mutex.h"
 #include "common/Clock.h"
 
-
+//实现对pthread_cond_t的封装,未提供多余的功能
+//封装的不怎么好,接口存在重复,功能不单一.
 class Cond {
   // my bits
   pthread_cond_t _c;
@@ -131,6 +132,7 @@ class Cond {
  * Generic context to signal a cond and store the return value.  We
  * assume the caller is holding the appropriate lock.
  */
+//注入式的无锁cond-context
 class C_Cond : public Context {
   Cond *cond;   ///< Cond to signal
   bool *done;   ///< true if finish() has been called
@@ -153,6 +155,7 @@ public:
  * lock in the finish() callback, so the finish() caller must not
  * already hold it.
  */
+//注入式的有锁cond-context
 class C_SafeCond : public Context {
   Mutex *lock;    ///< Mutex to take
   Cond *cond;     ///< Cond to signal
@@ -178,6 +181,7 @@ public:
  * The context will not be deleted as part of complete and must live
  * until wait() returns.
  */
+//非注入式的cond-context
 class C_SaferCond : public Context {
   Mutex lock;    ///< Mutex to take
   Cond cond;     ///< Cond to signal

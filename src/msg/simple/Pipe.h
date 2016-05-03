@@ -50,7 +50,7 @@ static const int SM_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
     public:
       explicit Reader(Pipe *p) : pipe(p) {}
       void *entry() { pipe->reader(); return 0; }
-    } reader_thread;
+    } reader_thread;//此线程,执行pipe->reader()函数.
 
     /**
      * The Writer thread handles all writes to the socket (after startup).
@@ -61,7 +61,7 @@ static const int SM_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
     public:
       explicit Writer(Pipe *p) : pipe(p) {}
       void *entry() { pipe->writer(); return 0; }
-    } writer_thread;
+    } writer_thread;//此线程执行pipe->writer()函数
 
     class DelayedDelivery;
     DelayedDelivery *delay_thread;

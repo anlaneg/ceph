@@ -25,6 +25,11 @@ class PerfCounters;
  * excessive requests for more of them are delayed, until some slots are put
  * back, so @p get_current() drops below the limit after fulfills the requests.
  */
+//这个类比较不好理解
+//首先我们说最简单的情况:
+//Throttle看成一个队列,put向队列里放数据,每次放k个,一经放入即通过条件变量唤醒wait线程
+//wait监听队列,在队列的数据量少于m时,阻塞当前线程,当大于m时,放通当前线程.(_should_wait来解决这个逻辑)
+//take 类似于put,但其不进行唤醒.
 class Throttle {
   CephContext *cct;
   const std::string name;

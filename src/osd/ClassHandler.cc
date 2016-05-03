@@ -32,7 +32,7 @@ int ClassHandler::open_class(const string& cname, ClassData **pcls)
   ClassData *cls = _get_class(cname, true);
   if (!cls)
     return -EPERM;
-  if (cls->status != ClassData::CLASS_OPEN) {
+  if (cls->status != ClassData::CLASS_OPEN) {//检查是否已载入
     int r = _load_class(cls);
     if (r)
       return r;
@@ -50,9 +50,10 @@ int ClassHandler::open_all_classes()
 
   struct dirent *pde = nullptr;
   int r = 0;
-  while ((pde = ::readdir(dir))) {
+  while ((pde = ::readdir(dir))) {//pde参数用来dirent指针
     if (pde->d_name[0] == '.')
       continue;
+    //检查是否以libcls_开头,是否以.so结束
     if (strlen(pde->d_name) > sizeof(CLS_PREFIX) - 1 + sizeof(CLS_SUFFIX) - 1 &&
 	strncmp(pde->d_name, CLS_PREFIX, sizeof(CLS_PREFIX) - 1) == 0 &&
 	strcmp(pde->d_name + strlen(pde->d_name) - (sizeof(CLS_SUFFIX) - 1), CLS_SUFFIX) == 0) {
@@ -62,7 +63,7 @@ int ClassHandler::open_all_classes()
       dout(10) << __func__ << " found " << cname << dendl;
       ClassData *cls;
       // skip classes that aren't in 'osd class load list'
-      r = open_class(cname, &cls);
+      r = open_class(cname, &cls);//尝试着加载libcls_$cname.so
       if (r < 0 && r != -EPERM)
 	goto out;
     }
@@ -104,6 +105,7 @@ bool ClassHandler::in_class_list(const std::string& cname,
   return it != end;
 }
 
+//通过名称查找ClassData,如果指出的名称不存在,则构造一个空的ClassData
 ClassHandler::ClassData *ClassHandler::_get_class(const string& cname,
     bool check_allowed)
 {
@@ -126,6 +128,9 @@ ClassHandler::ClassData *ClassHandler::_get_class(const string& cname,
   return cls;
 }
 
+//尝试着载入cls,如果cls已载入,则成功返回
+//否则检查其class_deps指明的库,是否已载入,如未载入,则递归载入,
+//如已打开,则尝试着调用__cls_init,并置入已载入
 int ClassHandler::_load_class(ClassData *cls)
 {
   // already open
@@ -140,7 +145,7 @@ int ClassHandler::_load_class(ClassData *cls)
 	     cls->name.c_str());
     dout(10) << "_load_class " << cls->name << " from " << fname << dendl;
 
-    cls->handle = dlopen(fname, RTLD_NOW);
+    cls->handle = dlopen(fname, RTLD_NOW);//打开.so
     if (!cls->handle) {
       struct stat st;
       int r = ::stat(fname, &st);
@@ -159,9 +164,10 @@ int ClassHandler::_load_class(ClassData *cls)
 
     cls_deps_t *(*cls_deps)();
     cls_deps = (cls_deps_t *(*)())dlsym(cls->handle, "class_deps");
-    if (cls_deps) {
+    if (cls_deps) {//检查当前.so是否存在class_deps符号,如果存在解决class依赖
       cls_deps_t *deps = cls_deps();
-      while (deps) {
+      while (deps) {//检查当前.so是否存在class_deps符号,如果存在解决class依赖
+
 	if (!deps->name)
 	  break;
 	ClassData *cls_dep = _get_class(deps->name, false);
@@ -177,7 +183,7 @@ int ClassHandler::_load_class(ClassData *cls)
   set<ClassData*>::iterator p = cls->missing_dependencies.begin();
   while (p != cls->missing_dependencies.end()) {
     ClassData *dc = *p;
-    int r = _load_class(dc);
+    int r = _load_class(dc);//递归解决class depend问题
     if (r < 0) {
       cls->status = ClassData::CLASS_MISSING_DEPS;
       return r;
@@ -188,7 +194,7 @@ int ClassHandler::_load_class(ClassData *cls)
   }
   
   // initialize
-  void (*cls_init)() = (void (*)())dlsym(cls->handle, "__cls_init");
+  void (*cls_init)() = (void (*)())dlsym(cls->handle, "__cls_init");//调用__cls_init
   if (cls_init) {
     cls->status = ClassData::CLASS_INITIALIZING;
     cls_init();
@@ -200,7 +206,7 @@ int ClassHandler::_load_class(ClassData *cls)
 }
 
 
-
+//cname的注册必须在initializing状态下进行,否则报错
 ClassHandler::ClassData *ClassHandler::register_class(const char *cname)
 {
   assert(mutex.is_locked());
@@ -215,11 +221,13 @@ ClassHandler::ClassData *ClassHandler::register_class(const char *cname)
   return cls;
 }
 
+//反注册,目前为空实现
 void ClassHandler::unregister_class(ClassHandler::ClassData *cls)
 {
   /* FIXME: do we really need this one? */
 }
 
+//向指定class注册相应方法名及回调
 ClassHandler::ClassMethod *ClassHandler::ClassData::register_method(const char *mname,
                                                                     int flags,
 								    cls_method_call_t func)
@@ -239,6 +247,7 @@ ClassHandler::ClassMethod *ClassHandler::ClassData::register_method(const char *
   return &method;
 }
 
+//向指定class注册相应方法名及回调,支持c++
 ClassHandler::ClassMethod *ClassHandler::ClassData::register_cxx_method(const char *mname,
                                                                         int flags,
 									cls_method_cxx_call_t func)
@@ -253,6 +262,7 @@ ClassHandler::ClassMethod *ClassHandler::ClassData::register_cxx_method(const ch
   return &method;
 }
 
+//注册相应过滤名及函数
 ClassHandler::ClassFilter *ClassHandler::ClassData::register_cxx_filter(
     const std::string &filter_name,
     cls_cxx_filter_factory_t fn)

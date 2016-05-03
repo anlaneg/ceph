@@ -198,6 +198,7 @@ int SimpleMessenger::get_proto_version(int peer_type, bool connect)
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, this)
 
+//reaper线程入口
 void SimpleMessenger::reaper_entry()
 {
   ldout(cct,10) << "reaper_entry start" << dendl;
