@@ -87,6 +87,7 @@ public:
     }
     int get_method_flags(const char *mname);
 
+    //通过filter_name获取filter
     ClassFilter *get_filter(const std::string &filter_name)
     {
       Mutex::Locker l(handler->mutex);

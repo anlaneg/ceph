@@ -41,6 +41,7 @@ int ClassHandler::open_class(const string& cname, ClassData **pcls)
   return 0;
 }
 
+//加载cct->_conf->osd_class_dir下所有的libcls_xx.so
 int ClassHandler::open_all_classes()
 {
   dout(10) << __func__ << dendl;
@@ -73,6 +74,7 @@ int ClassHandler::open_all_classes()
   return r;
 }
 
+//关注所有打开的.so
 void ClassHandler::shutdown()
 {
   for (auto& cls : classes) {
@@ -274,6 +276,7 @@ ClassHandler::ClassFilter *ClassHandler::ClassData::register_cxx_filter(
   return &filter;
 }
 
+//通过methodname 获取classMethod
 ClassHandler::ClassMethod *ClassHandler::ClassData::_get_method(const char *mname)
 {
   map<string, ClassHandler::ClassMethod>::iterator iter = methods_map.find(mname);
@@ -291,6 +294,7 @@ int ClassHandler::ClassData::get_method_flags(const char *mname)
   return method->flags;
 }
 
+//反注册方法
 void ClassHandler::ClassData::unregister_method(ClassHandler::ClassMethod *method)
 {
   /* no need for locking, called under the class_init mutex */
@@ -300,11 +304,13 @@ void ClassHandler::ClassData::unregister_method(ClassHandler::ClassMethod *metho
    methods_map.erase(iter);
 }
 
+//反注册当前方法
 void ClassHandler::ClassMethod::unregister()
 {
   cls->unregister_method(this);
 }
 
+//反注册filter
 void ClassHandler::ClassData::unregister_filter(ClassHandler::ClassFilter *filter)
 {
   /* no need for locking, called under the class_init mutex */
@@ -314,11 +320,13 @@ void ClassHandler::ClassData::unregister_filter(ClassHandler::ClassFilter *filte
    filters_map.erase(iter);
 }
 
+//反注册当前filter
 void ClassHandler::ClassFilter::unregister()
 {
   cls->unregister_filter(this);
 }
 
+//method执行,直接调用classmethod中注册的回调
 int ClassHandler::ClassMethod::exec(cls_method_context_t ctx, bufferlist& indata, bufferlist& outdata)
 {
   int ret;
