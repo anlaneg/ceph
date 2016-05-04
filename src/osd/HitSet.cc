@@ -17,6 +17,7 @@
 
 // -- HitSet --
 
+//依据不同类型,构造不同的HitSet
 HitSet::HitSet(const HitSet::Params& params)
   : sealed(false)
 {
@@ -146,6 +147,7 @@ void HitSet::Params::encode(bufferlist &bl) const
   ENCODE_FINISH(bl);
 }
 
+//按不同类型,持有不同的对象
 bool HitSet::Params::create_impl(impl_type_t type)
 {
   switch ((impl_type_t)type) {
