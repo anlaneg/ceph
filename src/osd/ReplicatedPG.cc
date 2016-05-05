@@ -1747,6 +1747,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  //尝试着初始化rmw_flags,后面的函数将通过OpRequest相关函数进行使用
   if (op->rmw_flags == 0) {
     int r = osd->osd->init_op_flags(op);
     if (r) {

@@ -50,14 +50,14 @@ void OpHistory::cleanup(utime_t now)
 {
   while (arrived.size() &&
 	 (now - arrived.begin()->first >
-	  (double)(history_duration))) {
+	  (double)(history_duration))) {//清除所有持续时间超过histroy_duration的记录
     duration.erase(make_pair(
 	arrived.begin()->second->get_duration(),
 	arrived.begin()->second));
     arrived.erase(arrived.begin());
   }
 
-  while (duration.size() > history_size) {
+  while (duration.size() > history_size) {//保证duration长度不超过histroy_size
     arrived.erase(make_pair(
 	duration.begin()->second->get_initiated(),
 	duration.begin()->second));

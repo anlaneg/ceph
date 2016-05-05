@@ -9261,6 +9261,8 @@ void OSD::get_latest_osdmap()
 
 // --------------------------------
 
+//一个osd消息体内可能包含多个操作,针对每个操作
+//设置op的标记.
 int OSD::init_op_flags(OpRequestRef& op)
 {
   MOSDOp *m = static_cast<MOSDOp*>(op->get_req());

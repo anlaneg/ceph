@@ -21,6 +21,13 @@
 #include "include/unordered_set.h"
 #include "common/bloom_filter.hpp"
 #include "common/hobject.h"
+//定义HitSet接口,并在其约定的接口下,并提供了explicit_hash,explicit_object,bloom三种
+//实现
+//explicit_hash需要的内存比bloom要多,explicit_object需要的内存比explicit_hash要多
+//explicit_object适用于小数目对象的情况下,但采用的是精确查找.
+//explicit_hash需要的内存中等,适用于较大数目的对象的情况,非精确查找,需要仍据hash再查找一遍.
+//bloom则称之为filter,它需要的内存最少,适用于特大数目的对象的情况,它只对"不存在"这种结论负责
+//而对"存在"这一结论不负责,它说的存在,可能也是不存在.
 
 /**
  * generic container for a HitSet
@@ -29,7 +36,6 @@
  * to users and wrap the encoded object with a type so that it can be
  * safely decoded later.
  */
-
 class HitSet {
 public:
   typedef enum {

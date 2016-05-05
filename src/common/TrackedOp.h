@@ -32,10 +32,10 @@ class OpHistory {
   set<pair<utime_t, TrackedOpRef> > arrived;
   set<pair<double, TrackedOpRef> > duration;
   Mutex ops_history_lock;
-  void cleanup(utime_t now);
-  bool shutdown;
-  uint32_t history_size;
-  uint32_t history_duration;
+  void cleanup(utime_t now);//针对now进行history维护
+  bool shutdown;//指示是否关闭
+  uint32_t history_size;//最大数
+  uint32_t history_duration;//持续时间的最大数
 
 public:
   OpHistory() : ops_history_lock("OpHistory::Lock"), shutdown(false),
