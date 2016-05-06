@@ -4632,7 +4632,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       ctx->delta_stats.num_rd++;
       break;
 
-    case CEPH_OSD_OP_CALL:
+    case CEPH_OSD_OP_CALL://处理对class的调用
       {
 	string cname, mname;
 	bufferlist indata;

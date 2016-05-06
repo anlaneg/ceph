@@ -1185,11 +1185,11 @@ class OSD : public Dispatcher,
 	    public md_config_obs_t {
   /** OSD **/
   Mutex osd_lock;			// global lock
-  SafeTimer tick_timer;    // safe timer (osd_lock)
+  SafeTimer tick_timer;    // safe timer (osd_lock)//用于向MON上报状态的timer
 
   // Tick timer for those stuff that do not need osd_lock
   Mutex tick_timer_lock;
-  SafeTimer tick_timer_without_osd_lock;
+  SafeTimer tick_timer_without_osd_lock;//另一种上报
 public:
   // config observer bits
   virtual const char** get_tracked_conf_keys() const;
@@ -1341,7 +1341,7 @@ public:
   }
 
 private:
-  std::atomic_int state{STATE_INITIALIZING};
+  std::atomic_int state{STATE_INITIALIZING};//osd状态,其有效状态由osd_state_t指定
 
 public:
   int get_state() const {
@@ -1371,10 +1371,10 @@ public:
 
 private:
 
-  ThreadPool osd_tp;
-  ShardedThreadPool osd_op_tp;
-  ThreadPool disk_tp;
-  ThreadPool command_tp;
+  ThreadPool osd_tp;//负责peering_wq队列(也可以有其它队列,例如OSDService.op_gen_wq)
+  ShardedThreadPool osd_op_tp;//负责op_shardedwq队列
+  ThreadPool disk_tp;//负责remove_wq队列
+  ThreadPool command_tp;//负责command_wq队
 
   void set_disk_tp_priority();
   void get_latest_osdmap();
@@ -1677,7 +1677,7 @@ private:
       osd->heartbeat_entry();
       return 0;
     }
-  } heartbeat_thread;
+  } heartbeat_thread;//负责与peer进行心跳的线程
 
 public:
   bool heartbeat_dispatch(Message *m);
@@ -2258,7 +2258,10 @@ protected:
   void handle_pg_remove(OpRequestRef op);
   void _remove_pg(PG *pg);
 
-  // -- commands --
+  // -- commands -- //定义适配ThreadPool的工作队列及内容处理
+  //command_tp负责处理command_wq队列,command_wq队列实际上是对command_queue的
+  //一层封闭(没办法,非得抢着用ThreadPool,就得定义队列)
+  //osd->do_command负责命令行的处理,osd->handle_command负责入队
   struct Command {
     vector<string> cmd;
     ceph_tid_t tid;
@@ -2268,6 +2271,7 @@ protected:
     Command(vector<string>& c, ceph_tid_t t, bufferlist& bl, Connection *co)
       : cmd(c), tid(t), indata(bl), con(co) {}
   };
+
   list<Command*> command_queue;
   struct CommandWQ : public ThreadPool::WorkQueue<Command> {
     OSD *osd;
@@ -2331,6 +2335,7 @@ protected:
   bool scrub_time_permit(utime_t now);
 
   // -- removing --
+  //由disktp线程池处理,为pg的删除操作
   struct RemoveWQ :
     public ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> > {
     ObjectStore *&store;

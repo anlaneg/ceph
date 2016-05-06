@@ -2027,8 +2027,8 @@ int OSD::init()
   if (is_stopping())
     return 0;
 
-  tick_timer.init();
-  tick_timer_without_osd_lock.init();
+  tick_timer.init();//为tick_timer启动线程,准备处理事件
+  tick_timer_without_osd_lock.init();//为tick_timer_without_osd_lock启动线程
   service.backfill_request_timer.init();
 
   // mount.
@@ -2143,6 +2143,7 @@ int OSD::init()
       goto out;
   }
 
+  //加载class
   class_handler = new ClassHandler(cct);
   cls_initialize(class_handler);
 
@@ -2245,7 +2246,7 @@ int OSD::init()
   set_disk_tp_priority();
 
   // start the heartbeat
-  heartbeat_thread.create("osd_srv_heartbt");
+  heartbeat_thread.create("osd_srv_heartbt");//开始heartbeat
 
   // tick
   tick_timer.add_event_after(cct->_conf->osd_heartbeat_interval, new C_Tick(this));
@@ -4184,6 +4185,7 @@ void OSD::handle_osd_ping(MOSDPing *m)
   m->put();
 }
 
+//与各peer保持heartbeat
 void OSD::heartbeat_entry()
 {
   Mutex::Locker l(heartbeat_lock);

@@ -523,6 +523,7 @@ unsigned pg_t::get_split_bits(unsigned pg_num) const {
     return p - 1;
 }
 
+//将当前m_seed 最高有效位清0
 pg_t pg_t::get_parent() const
 {
   unsigned bits = cbits(m_seed);

@@ -436,7 +436,7 @@ namespace std {
     }
   };
 } // namespace std
-
+//可共享的pg
 struct spg_t {
   pg_t pgid;
   shard_id_t shard;

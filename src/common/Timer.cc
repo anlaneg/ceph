@@ -29,7 +29,7 @@
 #include <sys/time.h>
 #include <math.h>
 
-
+//timer的运行线程
 class SafeTimerThread : public Thread {
   SafeTimer *parent;
 public:

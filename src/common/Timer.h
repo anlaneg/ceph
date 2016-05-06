@@ -25,6 +25,7 @@ class CephContext;
 class Context;
 class SafeTimerThread;
 
+//一种timer的实现,通过将事件添加入schedule队列,通过tier_thread线程来进行触发
 class SafeTimer
 {
   CephContext *cct;
