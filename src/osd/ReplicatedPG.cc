@@ -2040,6 +2040,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     }
   }
 
+  //尝试着支hit_set中查找
   bool in_hit_set = false;
   if (hit_set) {
     if (obc.get()) {
@@ -2049,12 +2050,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       if (missing_oid != hobject_t() && hit_set->contains(missing_oid))
         in_hit_set = true;
     }
-    if (!op->hitset_inserted) {
+    if (!op->hitset_inserted) {//默认是false
       hit_set->insert(oid);
       op->hitset_inserted = true;
       if (hit_set->is_full() ||
           hit_set_start_stamp + pool.info.hit_set_period <= m->get_recv_stamp()) {
-        hit_set_persist();
+        hit_set_persist();//这个函数是什么意思?刷缓存?
       }
     }
   }
