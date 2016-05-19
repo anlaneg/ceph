@@ -3185,7 +3185,7 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
       do_osd_op_effects(ctx, m->get_connection());
 
     if (ctx->pending_async_reads.empty()) {
-      complete_read_ctx(result, ctx);
+      complete_read_ctx(result, ctx);//将读取到的信息返回.(同步)
     } else {
       in_progress_async_reads.push_back(make_pair(op, ctx));
       ctx->start_async_reads(this);

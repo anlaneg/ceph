@@ -102,6 +102,7 @@ void cls_unregister_filter(cls_filter_handle_t handle)
   filter->unregister();
 }
 
+//实现CEPH_OSD_OP_CALL调用,{indata,datalen}用来指出入参,{outdata,outdatalen}用来指出出参.
 int cls_call(cls_method_context_t hctx, const char *cls, const char *method,
                                  char *indata, int datalen,
                                  char **outdata, int *outdatalen)
@@ -132,6 +133,7 @@ int cls_call(cls_method_context_t hctx, const char *cls, const char *method,
   return r;
 }
 
+//实现CEPH_OSD_OP_GETXATTR调用
 int cls_getxattr(cls_method_context_t hctx, const char *name,
                                  char **outdata, int *outdatalen)
 {
@@ -156,7 +158,7 @@ int cls_getxattr(cls_method_context_t hctx, const char *name,
 
   return r;
 }
-
+//实现CEPH_OSD_OP_SETXATTR调用
 int cls_setxattr(cls_method_context_t hctx, const char *name,
                                  const char *value, int val_len)
 {
@@ -175,7 +177,7 @@ int cls_setxattr(cls_method_context_t hctx, const char *name,
 
   return r;
 }
-
+//实现CEPH_OSD_OP_SYNC_READ调用
 int cls_read(cls_method_context_t hctx, int ofs, int len,
                                  char **outdata, int *outdatalen)
 {
@@ -699,6 +701,7 @@ void cls_cxx_subop_version(cls_method_context_t hctx, string *s)
   *s = buf;
 }
 
+//log输出,在输出时,考虑了动态变换buf大小.这样的好处是什么?感觉这个函数的实现没什么好处!
 int cls_log(int level, const char *format, ...)
 {
    int size = 256;
