@@ -2669,7 +2669,7 @@ void ReplicatedPG::do_proxy_read(OpRequestRef op)
 {
   MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
   object_locator_t oloc(m->get_object_locator());
-  oloc.pool = pool.info.tier_of;
+  oloc.pool = pool.info.tier_of; //变更pool
 
   hobject_t soid(m->get_oid(),
 		 m->get_object_locator().key,
@@ -11913,15 +11913,15 @@ void ReplicatedPG::hit_set_in_memory_trim(uint32_t max_in_memory)
 void ReplicatedPG::agent_setup()
 {
   assert(is_locked());
-  if (!is_active() ||
-      !is_primary() ||
-      pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE ||
-      pool.info.tier_of < 0 ||
-      !get_osdmap()->have_pg_pool(pool.info.tier_of)) {
+  if (!is_active() || //pg未active
+      !is_primary() || //pg不是主
+      pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE || //cache模式未配置
+      pool.info.tier_of < 0 || //这个pool不是tier
+      !get_osdmap()->have_pg_pool(pool.info.tier_of)) { //这个tier代理的pool不存在
     agent_clear();
     return;
   }
-  if (!agent_state) {
+  if (!agent_state) { //未初始化agent状态
     agent_state.reset(new TierAgentState);
 
     // choose random starting position
@@ -11955,7 +11955,7 @@ void ReplicatedPG::agent_clear()
 bool ReplicatedPG::agent_work(int start_max, int agent_flush_quota)
 {
   lock();
-  if (!agent_state) {
+  if (!agent_state) { //agent_state未初始化
     dout(10) << __func__ << " no agent state, stopping" << dendl;
     unlock();
     return true;
@@ -12120,7 +12120,7 @@ bool ReplicatedPG::agent_work(int start_max, int agent_flush_quota)
 
 void ReplicatedPG::agent_load_hit_sets()
 {
-  if (agent_state->evict_mode == TierAgentState::EVICT_MODE_IDLE) {
+  if (agent_state->evict_mode == TierAgentState::EVICT_MODE_IDLE) {//
     return;
   }
 
@@ -12173,12 +12173,12 @@ void ReplicatedPG::agent_load_hit_sets()
 
 bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
 {
-  if (!obc->obs.oi.is_dirty()) {
+  if (!obc->obs.oi.is_dirty()) {//如果oi不是脏数据,无需修改
     dout(20) << __func__ << " skip (clean) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
-  if (obc->obs.oi.is_cache_pinned()) {
+  if (obc->obs.oi.is_cache_pinned()) {//如果cache被pin住,则无需flush
     dout(20) << __func__ << " skip (cache_pinned) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
@@ -12193,15 +12193,15 @@ bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
   }
   bool evict_mode_full =
     (agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL);
-  if (!evict_mode_full &&
+  if (!evict_mode_full && //未满
       obc->obs.oi.soid.snap == CEPH_NOSNAP &&  // snaps immutable; don't delay
-      (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) {
+      (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) { //时间未到
     dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
 
-  if (osd->agent_is_active_oid(obc->obs.oi.soid)) {
+  if (osd->agent_is_active_oid(obc->obs.oi.soid)) { //已被加入,见osd>agent_start_op
     dout(20) << __func__ << " skip (flushing) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
@@ -12215,7 +12215,7 @@ bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
   hobject_t oid = obc->obs.oi.soid;
   osd->agent_start_op(oid);
   // no need to capture a pg ref, can't outlive fop or ctx
-  std::function<void()> on_flush = [this, oid]() {
+  std::function<void()> on_flush = [this, oid]() { //C++比较闭包语法,不好看,用于定义一个小函数.on_flush
     osd->agent_finish_op(oid);
   };
 
@@ -12237,7 +12237,7 @@ bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
 bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc, bool after_flush)
 {
   const hobject_t& soid = obc->obs.oi.soid;
-  if (!after_flush && obc->obs.oi.is_dirty()) {
+  if (!after_flush && obc->obs.oi.is_dirty()) { //如果不是刷新以后,就跳过脏对象
     dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
     return false;
   }
@@ -12271,7 +12271,7 @@ bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc, bool after_flush)
     } else {
       ob_local_mtime = obc->obs.oi.mtime;
     }
-    if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {
+    if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {  //未到期
       dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
       osd->logger->inc(l_osd_agent_skip);
       return false;
