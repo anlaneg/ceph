@@ -1333,7 +1333,7 @@ protected:
   map<ceph_tid_t, ProxyReadOpRef> proxyread_ops;
 
   void do_proxy_read(OpRequestRef op);
-  void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);
+  void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);//代理读完成时会被调用
   void cancel_proxy_read(ProxyReadOpRef prdop);
 
   friend struct C_ProxyRead;

@@ -2367,15 +2367,15 @@ ReplicatedPG::cache_result_t ReplicatedPG::maybe_handle_cache_detail(
       op->get_req() &&
       op->get_req()->get_type() == CEPH_MSG_OSD_OP &&
       (static_cast<MOSDOp *>(op->get_req())->get_flags() &
-       CEPH_OSD_FLAG_IGNORE_CACHE)) {
+       CEPH_OSD_FLAG_IGNORE_CACHE)) { //如果cache需要忽略,则返回NOOP
     dout(20) << __func__ << ": ignoring cache due to flag" << dendl;
     return cache_result_t::NOOP;
   }
   // return quickly if caching is not enabled
-  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE)
+  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) //如果pool被配置为NONE
     return cache_result_t::NOOP;
 
-  must_promote = must_promote || op->need_promote();
+  must_promote = must_promote || op->need_promote();//检查是否需要提升
 
   if (obc)
     dout(25) << __func__ << " " << obc->obs.oi << " "
@@ -2425,31 +2425,31 @@ ReplicatedPG::cache_result_t ReplicatedPG::maybe_handle_cache_detail(
   OpRequestRef promote_op;
 
   switch (pool.info.cache_mode) {
-  case pg_pool_t::CACHEMODE_WRITEBACK:
+  case pg_pool_t::CACHEMODE_WRITEBACK: //回写模式
     if (agent_state &&
 	agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL) {
       if (!op->may_write() && !op->may_cache() &&
-	  !write_ordered && !must_promote) {
+	  !write_ordered && !must_promote) {//读操作
 	dout(20) << __func__ << " cache pool full, proxying read" << dendl;
-	do_proxy_read(op);
+	do_proxy_read(op);//执行代理读
 	return cache_result_t::HANDLED_PROXY;
       }
       dout(20) << __func__ << " cache pool full, waiting" << dendl;
-      block_write_on_full_cache(missing_oid, op);
+      block_write_on_full_cache(missing_oid, op); //阻塞写
       return cache_result_t::BLOCKED_FULL;
     }
 
     if (must_promote || (!hit_set && !op->need_skip_promote())) {
-      promote_object(obc, missing_oid, oloc, op, promote_obc);
+      promote_object(obc, missing_oid, oloc, op, promote_obc);//提升object
       return cache_result_t::BLOCKED_PROMOTE;
     }
 
     if (op->may_write() || op->may_cache()) {
       if (can_proxy_write) {
-        do_proxy_write(op, missing_oid);
+        do_proxy_write(op, missing_oid);//代理写
       } else {
 	// promote if can't proxy the write
-	promote_object(obc, missing_oid, oloc, op, promote_obc);
+	promote_object(obc, missing_oid, oloc, op, promote_obc);//提升后写
 	return cache_result_t::BLOCKED_PROMOTE;
       }
 

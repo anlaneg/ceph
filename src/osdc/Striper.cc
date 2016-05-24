@@ -66,7 +66,7 @@ void Striper::file_to_extents(
     ldout(cct, 20) << " sc is one, reset su to os" << dendl;
     su = object_size;
   }
-  uint64_t stripes_per_object = object_size / su;
+  uint64_t stripes_per_object = object_size / su; //一个object里有多少个stripes
   ldout(cct, 20) << " su " << su << " sc " << stripe_count << " os "
 		 << object_size << " stripes_per_object " << stripes_per_object
 		 << dendl;
@@ -75,39 +75,39 @@ void Striper::file_to_extents(
   uint64_t left = len;
   while (left > 0) {
     // layout into objects
-    uint64_t blockno = cur / su; // which block
+    uint64_t blockno = cur / su; // which block stripe块的编号,从这个可以知道当前offset位于哪个stripe块上
     // which horizontal stripe (Y)
-    uint64_t stripeno = blockno / stripe_count;
+    uint64_t stripeno = blockno / stripe_count;//从每stripe_count划为一组,可知道(横向看),stripeno位于哪一行(这个行是每个strip unit看做一行).(用除的方式)
     // which object in the object set (X)
-    uint64_t stripepos = blockno % stripe_count;
+    uint64_t stripepos = blockno % stripe_count;//从每stripe_coutnt划为一组,可知道(纵向看),stripepos位于哪一列(用取余的方式)
     // which object set
-    uint64_t objectsetno = stripeno / stripes_per_object;
+    uint64_t objectsetno = stripeno / stripes_per_object;//由于一个对象内针有stripes_per_object个stripe,故通过/,可以知道objectsetno
     // object id
-    uint64_t objectno = objectsetno * stripe_count + stripepos;
+    uint64_t objectno = objectsetno * stripe_count + stripepos;//获得对象的编号
 
     // find oid, extent
     char buf[strlen(object_format) + 32];
     snprintf(buf, sizeof(buf), object_format, (long long unsigned)objectno);
-    object_t oid = buf;
+    object_t oid = buf;//设置对象.id
 
     // map range into object
-    uint64_t block_start = (stripeno % stripes_per_object) * su;
-    uint64_t block_off = cur % su;
-    uint64_t max = su - block_off;
+    uint64_t block_start = (stripeno % stripes_per_object) * su; //(blockno/stripe_count)%stripes_per_object 知道是一个object中的哪一行,再算上su,就是strip unit起始位置.
+    uint64_t block_off = cur % su;//一个su内的偏移量.
+    uint64_t max = su - block_off;//这个stripe,目前我们可以读取的最大大小.
 
-    uint64_t x_offset = block_start + block_off;
+    uint64_t x_offset = block_start + block_off;//读取的起始位置
     uint64_t x_len;
     if (left > max)
       x_len = max;
     else
-      x_len = left;
+      x_len = left;//修正x_len用于保证最后一片不多读.
 
     ldout(cct, 20) << " off " << cur << " blockno " << blockno << " stripeno "
 		   << stripeno << " stripepos " << stripepos << " objectsetno "
 		   << objectsetno << " objectno " << objectno
 		   << " block_start " << block_start << " block_off "
 		   << block_off << " " << x_offset << "~" << x_len
-		   << dendl;
+		   << dendl;//行到此处,我们已经知道,要读取的所有信息{object-id,offset,len}
 
     ObjectExtent *ex = 0;
     vector<ObjectExtent>& exv = object_extents[oid];
@@ -140,7 +140,7 @@ void Striper::file_to_extents(
     //		  << " ... left " << left << dendl;
 
     left -= x_len;
-    cur += x_len;
+    cur += x_len;//更新数据,准备下一次.
   }
 }
 
