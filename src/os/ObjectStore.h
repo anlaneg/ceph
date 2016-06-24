@@ -67,7 +67,7 @@ const int SKIP_MOUNT_OMAP = 1 << 1;
 
 class ObjectStore {
 protected:
-  string path;
+  string path;//指出数据存放的位置
 
 public:
   /**
@@ -80,6 +80,7 @@ public:
    * @param journal path (or other descriptor) for journal (optional)
    * @param flags which filestores should check if applicable
    */
+  //定义构造objectStore的方法
   static ObjectStore *create(CephContext *cct,
 			     const string& type,
 			     const string& data,
@@ -540,14 +541,17 @@ public:
     Transaction& operator=(const Transaction& other) = default;
 
     /* Operations on callback contexts */
+    //注册on_applied回调
     void register_on_applied(Context *c) {
       if (!c) return;
       on_applied.push_back(c);
     }
+    //注册on_commit回调
     void register_on_commit(Context *c) {
       if (!c) return;
       on_commit.push_back(c);
     }
+    //注册on_applied_sync回调
     void register_on_applied_sync(Context *c) {
       if (!c) return;
       on_applied_sync.push_back(c);
@@ -559,6 +563,9 @@ public:
       register_on_commit(new ContainerContext<RunOnDeleteRef>(_complete));
     }
 
+    //收集用户为当前一组事务定义的applied,commit,applied_sync回调,通过参数返回.
+    //如果是多个事务,每个事务将注册一个,故可能存在多个applied的情况,此时list_to_context会返回
+    //一个可封闭多个transaction的context.
     static void collect_contexts(
       vector<Transaction>& t,
       Context **out_on_applied,

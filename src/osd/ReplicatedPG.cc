@@ -1525,9 +1525,11 @@ int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
   return r;
 }
 
+//计算可trim的version,更新pg_trim_to成员
 void ReplicatedPG::calc_trim_to()
 {
   size_t target = cct->_conf->osd_min_pg_log_entries;
+  //如果处理这些状态,则变更为max_pg_log_entity
   if (is_degraded() ||
       state_test(PG_STATE_RECOVERING |
 		 PG_STATE_RECOVERY_WAIT |
@@ -1544,9 +1546,11 @@ void ReplicatedPG::calc_trim_to()
       limit != pg_trim_to &&
       pg_log.get_log().approx_size() > target) {
     size_t num_to_trim = pg_log.get_log().approx_size() - target;
+    //要是太小,就不trim了.
     if (num_to_trim < cct->_conf->osd_pg_log_trim_min) {
       return;
     }
+    //考虑num_to_trim时遇到还没有ondisk的log,因此在排除这些item
     list<pg_log_entry_t>::const_iterator it = pg_log.get_log().log.begin();
     eversion_t new_trim_to;
     for (size_t i = 0; i < num_to_trim; ++i) {
@@ -1600,7 +1604,7 @@ void ReplicatedPG::do_request(
   if (can_discard_request(op)) {
     return;
   }
-  if (flushes_in_progress > 0) {
+  if (flushes_in_progress > 0) {//恢复时此值大于1.表示pg正在处理
     dout(20) << flushes_in_progress
 	     << " flushes_in_progress pending "
 	     << "waiting for active on " << op << dendl;
@@ -1609,6 +1613,7 @@ void ReplicatedPG::do_request(
     return;
   }
 
+  //没有peered时,挂起
   if (!is_peered()) {
     // Delay unless PGBackend says it's ok
     if (pgbackend->can_handle_while_inactive(op)) {
@@ -1623,18 +1628,20 @@ void ReplicatedPG::do_request(
   }
 
   assert(is_peered() && flushes_in_progress == 0);
-  if (pgbackend->handle_message(op))
+  if (pgbackend->handle_message(op))//交给pg后端处理此操作,如果后端不处理,则返回false
+	  //这里,读写流程在此处返回的是false
+	  //这里,如果是osd发给副本的消息,则在此处将被处理,不再继续下去
     return;
 
   switch (op->get_req()->get_type()) {
   case CEPH_MSG_OSD_OP:
-    if (!is_active()) {
+    if (!is_active()) {//未active
       dout(20) << " peered, not active, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);
       op->mark_delayed("waiting for active");
       return;
     }
-    if (is_replay()) {
+    if (is_replay()) {//pg状态是重做.
       dout(20) << " replay, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);
       op->mark_delayed("waiting for replay end");
@@ -1646,11 +1653,12 @@ void ReplicatedPG::do_request(
       osd->reply_op_error(op, -EOPNOTSUPP);
       return;
     }
+    //处理操作
     do_op(op); // do it now
     break;
 
   case MSG_OSD_SUBOP:
-    do_sub_op(op);
+    do_sub_op(op);//处理复本操作
     break;
 
   case MSG_OSD_SUBOPREPLY:
@@ -1756,6 +1764,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     }
   }
 
+  //仅主可以处理读写.
   if ((m->get_flags() & (CEPH_OSD_FLAG_BALANCE_READS |
 			 CEPH_OSD_FLAG_LOCALIZE_READS)) &&
       op->may_read() &&
@@ -1768,11 +1777,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   } else {
     // normal case; must be primary
     if (!is_primary()) {
-      osd->handle_misdirected_op(this, op);
+      osd->handle_misdirected_op(this, op);//报错
       return;
     }
   }
 
+  //如果有pg自身的操作,则做pg操作
   if (op->includes_pg_op()) {
     if (pg_op_must_wait(m)) {
       wait_for_all_missing(op);
@@ -1791,6 +1801,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 		 info.pgid.pool(), m->get_object_locator().nspace);
 
   // object name too long?
+  //对象名字长不长
   if (m->get_oid().name.size() > g_conf->osd_max_object_name_len) {
     dout(4) << "do_op name is longer than "
             << g_conf->osd_max_object_name_len
@@ -2065,6 +2076,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       return;
   }
 
+  //缓存处理
   if (maybe_handle_cache(op,
 			 write_ordered,
 			 obc,
@@ -2308,6 +2320,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   op->mark_started();
   ctx->src_obc.swap(src_obc);
 
+  //执行
   execute_ctx(ctx);
   utime_t prepare_latency = ceph_clock_now(cct);
   prepare_latency -= op->get_dequeued_time();
@@ -3058,6 +3071,7 @@ void ReplicatedPG::promote_object(ObjectContextRef obc,
   info.stats.stats.sum.num_promote++;
 }
 
+//读写流程总入口
 void ReplicatedPG::execute_ctx(OpContext *ctx)
 {
   dout(10) << __func__ << " " << ctx << dendl;
@@ -3199,7 +3213,7 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
   assert(op->may_write() || op->may_cache());
 
   // trim log?
-  calc_trim_to();
+  calc_trim_to();//计算trim的version值,知道pglog可以trim到哪个版本.
 
   // verify that we are doing this in order?
   if (cct->_conf->osd_debug_op_order && m->get_source().is_client() &&
@@ -3257,7 +3271,7 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
 	}
 	reply->add_flags(CEPH_OSD_FLAG_ACK);
 	dout(10) << " sending ack: " << *m << " " << reply << dendl;
-	osd->send_message_osd_client(reply, m->get_connection());
+	osd->send_message_osd_client(reply, m->get_connection());//回应ack
 	ctx->sent_ack = true;
       }
 
@@ -3284,9 +3298,9 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
 	  reply->set_reply_versions(ctx->at_version,
 				    ctx->user_at_version);
 	}
-	reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+	reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);//回应ack与ondisk
 	dout(10) << " sending commit on " << *m << " " << reply << dendl;
-	osd->send_message_osd_client(reply, m->get_connection());
+	osd->send_message_osd_client(reply, m->get_connection());//发送消息给客户端
 	ctx->sent_disk = true;
 	ctx->op->mark_commit_sent();
       }
@@ -3304,12 +3318,14 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
     });
 
   // issue replica writes
-  ceph_tid_t rep_tid = osd->get_tid();
+  ceph_tid_t rep_tid = osd->get_tid();//分配tid{这个id到时pglog也会用到}
 
+  //构造repop,将ctx刚才注册的几个回调,封闭起来,以便
+  //在eval_repop中进行调用.
   RepGather *repop = new_repop(ctx, obc, rep_tid);
 
-  issue_repop(repop, ctx);
-  eval_repop(repop);
+  issue_repop(repop, ctx);//触发副本操作
+  eval_repop(repop);//这个代码是为了保证同步操作而加入的.
   repop->put();
 }
 
@@ -8416,6 +8432,7 @@ void ReplicatedPG::repop_all_applied(RepGather *repop)
   }
 }
 
+//所有幅本操作均commit时被调用
 class C_OSD_RepopCommit : public Context {
   ReplicatedPGRef pg;
   boost::intrusive_ptr<ReplicatedPG::RepGather> repop;
@@ -8472,11 +8489,12 @@ void ReplicatedPG::op_applied(const eversion_t &applied_version)
   }
 }
 
+//注要是回调触发,on_commit,on_applited,on_success回调
 void ReplicatedPG::eval_repop(RepGather *repop)
 {
   MOSDOp *m = NULL;
   if (repop->op)
-    m = static_cast<MOSDOp *>(repop->op->get_req());
+    m = static_cast<MOSDOp *>(repop->op->get_req());//取出请求消息
 
   if (m)
     dout(10) << "eval_repop " << *repop
@@ -8497,7 +8515,7 @@ void ReplicatedPG::eval_repop(RepGather *repop)
     for (auto p = repop->on_committed.begin();
 	 p != repop->on_committed.end();
 	 repop->on_committed.erase(p++)) {
-      (*p)();
+      (*p)();//触发on_committed回调
     }
     // send dup commits, in order
     if (waiting_for_ondisk.count(repop->v)) {
@@ -8526,7 +8544,7 @@ void ReplicatedPG::eval_repop(RepGather *repop)
     for (auto p = repop->on_applied.begin();
 	 p != repop->on_applied.end();
 	 repop->on_applied.erase(p++)) {
-      (*p)();
+      (*p)();//触发on_applied回调
     }
 
     // send dup acks, in order
@@ -8548,16 +8566,17 @@ void ReplicatedPG::eval_repop(RepGather *repop)
   }
 
   // done.
+  //primary及replicate均已完成commited及applied
   if (repop->all_applied && repop->all_committed) {
     repop->rep_done = true;
 
     publish_stats_to_osd();
-    calc_min_last_complete_ondisk();
+    calc_min_last_complete_ondisk();//计算最小的已完成version
 
     for (auto p = repop->on_success.begin();
 	 p != repop->on_success.end();
 	 repop->on_success.erase(p++)) {
-      (*p)();
+      (*p)();//触发on_success回调
     }
 
     dout(10) << " removing " << *repop << dendl;
@@ -8609,7 +8628,7 @@ void ReplicatedPG::issue_repop(RepGather *repop, OpContext *ctx)
     ctx->op_t->add_obc(ctx->snapset_obc);
   }
 
-  Context *on_all_commit = new C_OSD_RepopCommit(this, repop);
+  Context *on_all_commit = new C_OSD_RepopCommit(this, repop);//所有幅本均提交时,使用此回调
   Context *on_all_applied = new C_OSD_RepopApplied(this, repop);
   Context *onapplied_sync = new C_OSD_OndiskWriteUnlock(
     ctx->obc,
@@ -8627,7 +8646,7 @@ void ReplicatedPG::issue_repop(RepGather *repop, OpContext *ctx)
     ctx->delta_stats,
     ctx->at_version,
     std::move(ctx->op_t),
-    pg_trim_to,
+    pg_trim_to,//指定pglog trim到哪个版本
     min_last_complete_ondisk,
     ctx->log,
     ctx->updated_hset_history,
@@ -10809,7 +10828,7 @@ uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
   dout(10) << __func__ << "(" << max << ")" << dendl;
   uint64_t started = 0;
 
-  PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
+  PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();//构造recoveryhandle
 
   // this is FAR from an optimal recovery order.  pretty lame, really.
   assert(!actingbackfill.empty());
@@ -11922,7 +11941,7 @@ void ReplicatedPG::agent_setup()
     return;
   }
   if (!agent_state) { //未初始化agent状态
-    agent_state.reset(new TierAgentState);
+    agent_state.reset(new TierAgentState);//初始化状态
 
     // choose random starting position
     agent_state->position = hobject_t();

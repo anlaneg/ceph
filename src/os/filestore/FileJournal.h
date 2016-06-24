@@ -44,18 +44,18 @@ class FileJournal :
 public:
   /// Protected by finisher_lock
   struct completion_item {
-    uint64_t seq;
-    Context *finish;
-    utime_t start;
-    TrackedOpRef tracked_op;
+    uint64_t seq;//序号
+    Context *finish;//回调
+    utime_t start;//开始时间
+    TrackedOpRef tracked_op;//?
     completion_item(uint64_t o, Context *c, utime_t s,
 		    TrackedOpRef opref)
       : seq(o), finish(c), start(s), tracked_op(opref) {}
     completion_item() : seq(0), finish(0), start(0) {}
   };
   struct write_item {
-    uint64_t seq;
-    bufferlist bl;
+    uint64_t seq;//序号
+    bufferlist bl;//数据
     uint32_t orig_len;
     TrackedOpRef tracked_op;
     write_item(uint64_t s, bufferlist& b, int ol, TrackedOpRef opref) :
@@ -71,33 +71,38 @@ public:
   bool plug_journal_completions;
 
   Mutex writeq_lock;
-  Cond writeq_cond;
-  list<write_item> writeq;
+  Cond writeq_cond;//写者唤醒读者的条件变量
+  list<write_item> writeq;//需要写入的数据
   bool writeq_empty();
   write_item &peek_write();
   void pop_write();
   void batch_pop_write(list<write_item> &items);
   void batch_unpop_write(list<write_item> &items);
 
-  Mutex completions_lock;
-  list<completion_item> completions;
+  Mutex completions_lock;//保护completions队列
+  list<completion_item> completions;//完成之后的回调
+  //检查completions队列是否为空
   bool completions_empty() {
     Mutex::Locker l(completions_lock);
     return completions.empty();
   }
+  //一次性弹出completions中的所有成员,并将结果存入items队列中
   void batch_pop_completions(list<completion_item> &items) {
     Mutex::Locker l(completions_lock);
     completions.swap(items);
   }
+  //一次性将items中的成员,加入到completions中
   void batch_unpop_completions(list<completion_item> &items) {
     Mutex::Locker l(completions_lock);
     completions.splice(completions.begin(), items);
   }
+  //返回队首
   completion_item completion_peek_front() {
     Mutex::Locker l(completions_lock);
     assert(!completions.empty());
     return completions.front();
   }
+  //丢弃队首
   void completion_pop_front() {
     Mutex::Locker l(completions_lock);
     assert(!completions.empty());
@@ -373,7 +378,7 @@ private:
       journal->write_thread_entry();
       return 0;
     }
-  } write_thread;
+  } write_thread;//日志写线程
 
   class WriteFinisher : public Thread {
     FileJournal *journal;

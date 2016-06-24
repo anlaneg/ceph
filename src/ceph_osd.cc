@@ -103,7 +103,7 @@ int main(int argc, const char **argv)
 
   auto cct = global_init(&def_args, args, CEPH_ENTITY_TYPE_OSD,
 			 CODE_ENVIRONMENT_DAEMON,
-			 0, "osd_data");
+			 0, "osd_data");//定义flag为0
   ceph_heap_profiler_init();
 
   // osd specific args
@@ -125,13 +125,17 @@ int main(int argc, const char **argv)
 
   std::string val;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
+	//只处理option,不处理parameter
     if (ceph_argparse_double_dash(args, i)) {
       break;
     } else if (ceph_argparse_flag(args, i, "-h", "--help", (char*)NULL)) {
+      //显示帮助信息并退出
       usage();
     } else if (ceph_argparse_flag(args, i, "--mkfs", (char*)NULL)) {
+      //标记需要mkfs
       mkfs = true;
     } else if (ceph_argparse_flag(args, i, "--mkjournal", (char*)NULL)) {
+      //标记需要mkjournal
       mkjournal = true;
     } else if (ceph_argparse_flag(args, i, "--check-allows-journal", (char*)NULL)) {
       check_allows_journal = true;
@@ -162,6 +166,8 @@ int main(int argc, const char **argv)
       ++i;
     }
   }
+
+  //这里认为所有参数都处理完成
   if (!args.empty()) {
     derr << "unrecognized arg " << args[0] << dendl;
     usage();
@@ -171,6 +177,8 @@ int main(int argc, const char **argv)
     device_path = g_conf->osd_journal;
     get_device_fsid = true;
   }
+
+  //显示device fsid
   if (get_device_fsid) {
     uuid_d uuid;
     int r = ObjectStore::probe_block_device_fsid(g_ceph_context, device_path,
@@ -184,6 +192,7 @@ int main(int argc, const char **argv)
     return 0;
   }
 
+  //dump pg log
   if (!dump_pg_log.empty()) {
     common_init_finish(g_ceph_context);
     bufferlist bl;
@@ -210,6 +219,7 @@ int main(int argc, const char **argv)
   }
 
   // whoami
+  //获得当前的osd的id值
   char *end;
   const char *id = g_conf->name.get_id().c_str();
   int whoami = strtol(id, &end, 10);
@@ -224,6 +234,7 @@ int main(int argc, const char **argv)
   }
 
   // the store
+  //获取store_type,如果%s/type不存在,就用默认值,否则以%s/type为准
   string store_type = g_conf->osd_objectstore;
   {
     char fn[PATH_MAX];
@@ -239,16 +250,19 @@ int main(int argc, const char **argv)
       ::close(fd);
     }
   }
+
+  //创建相应store
   ObjectStore *store = ObjectStore::create(g_ceph_context,
-					   store_type,
-					   g_conf->osd_data,
-					   g_conf->osd_journal,
-                                           g_conf->osd_os_flags);
+					   store_type,//store的类型
+					   g_conf->osd_data,//存储位置,默认为/var/lib/ceph/osd/$cluster-$id
+					   g_conf->osd_journal,//日志位置,默认为/var/lib/ceph/osd/$cluster-$id/journal
+                                           g_conf->osd_os_flags);//flag,默认为0
   if (!store) {
     derr << "unable to create object store" << dendl;
     return -ENODEV;
   }
 
+  //如果需要mkfs
   if (mkfs) {
     common_init_finish(g_ceph_context);
     MonClient mc(g_ceph_context);
@@ -267,6 +281,8 @@ int main(int argc, const char **argv)
     derr << "created object store " << g_conf->osd_data
 	 << " for osd." << whoami << " fsid " << mc.monmap.fsid << dendl;
   }
+
+  //如果需要mkkey
   if (mkkey) {
     common_init_finish(g_ceph_context);
     KeyRing *keyring = KeyRing::create_empty();
@@ -295,8 +311,11 @@ int main(int argc, const char **argv)
 	derr << "created new key in keyring " << g_conf->keyring << dendl;
     }
   }
+  //mkfs ,mkkey退出
   if (mkfs || mkkey)
     exit(0);
+
+  //mkjournal
   if (mkjournal) {
     common_init_finish(g_ceph_context);
     int err = store->mkjournal();
@@ -310,6 +329,8 @@ int main(int argc, const char **argv)
 	 << " for object store " << g_conf->osd_data << dendl;
     exit(0);
   }
+
+  //检查journal
   if (check_wants_journal) {
     if (store->wants_journal()) {
       cout << "yes" << std::endl;
@@ -319,6 +340,8 @@ int main(int argc, const char **argv)
       exit(1);
     }
   }
+
+  //检查allows_journal
   if (check_allows_journal) {
     if (store->allows_journal()) {
       cout << "yes" << std::endl;
@@ -328,6 +351,8 @@ int main(int argc, const char **argv)
       exit(1);
     }
   }
+
+  //检查needs_journal
   if (check_needs_journal) {
     if (store->needs_journal()) {
       cout << "yes" << std::endl;
@@ -337,6 +362,8 @@ int main(int argc, const char **argv)
       exit(1);
     }
   }
+
+  //flush journal
   if (flushjournal) {
     common_init_finish(g_ceph_context);
     int err = store->mount();
@@ -352,6 +379,8 @@ int main(int argc, const char **argv)
 	 << dendl;
     exit(0);
   }
+
+  //dump journal
   if (dump_journal) {
     common_init_finish(g_ceph_context);
     int err = store->dump_journal(cout);
@@ -368,7 +397,7 @@ int main(int argc, const char **argv)
 
   }
 
-
+  //file store 转换
   if (convertfilestore) {
     int err = store->mount();
     if (err < 0) {
@@ -410,15 +439,19 @@ int main(int argc, const char **argv)
     exit(1);
   }
 
+  //显示集群fsid
   if (get_cluster_fsid) {
     cout << cluster_fsid << std::endl;
     exit(0);
   }
+
+  //显示osd fsid
   if (get_osd_fsid) {
     cout << osd_fsid << std::endl;
     exit(0);
   }
 
+  //选择集群ip,公网ip
   pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_PUBLIC
                                 |CEPH_PICK_ADDRESS_CLUSTER);
 
@@ -451,6 +484,7 @@ int main(int argc, const char **argv)
   Messenger *ms_objecter = Messenger::create(g_ceph_context, g_conf->ms_type,
 					     entity_name_t::OSD(whoami), "ms_objecter",
 					     getpid(), 0);
+  //创建messenger
   if (!ms_public || !ms_cluster || !ms_hbclient || !ms_hb_back_server || !ms_hb_front_server || !ms_objecter)
     exit(1);
   ms_cluster->set_cluster_protocol(CEPH_OSD_PROTOCOL);

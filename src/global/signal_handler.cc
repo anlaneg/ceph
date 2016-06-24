@@ -31,6 +31,7 @@
 extern char *sys_siglist[]; 
 #endif 
 
+//安装信号
 void install_sighandler(int signum, signal_handler_t handler, int flags)
 {
   int ret;
@@ -134,6 +135,7 @@ static void handle_fatal_signal(int signum)
   reraise_fatal(signum);
 }
 
+//安装不同信号的处理.(处理函数是一样的)
 void install_standard_sighandlers(void)
 {
   install_sighandler(SIGSEGV, handle_fatal_signal, SA_RESETHAND | SA_NODEFER);

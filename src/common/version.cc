@@ -12,7 +12,7 @@
  *
  */
 
-#include "acconfig.h"
+#include "acconfig.h" //估计为动态生成的文件
 #include "ceph_ver.h"
 #include "common/version.h"
 
@@ -22,16 +22,19 @@
 #define _STR(x) #x
 #define STRINGIFY(x) _STR(x)
 
+//获得ceph版本号
 const char *ceph_version_to_str(void)
 {
   return CEPH_GIT_NICE_VER;
 }
 
+//获得git的版本
 const char *git_version_to_str(void)
 {
   return STRINGIFY(CEPH_GIT_VER);
 }
 
+//显示ceph版本
 std::string const pretty_version_to_str(void)
 {
   std::ostringstream oss;

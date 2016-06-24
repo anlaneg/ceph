@@ -207,6 +207,7 @@ int safe_write_file(const char *base, const char *file,
   return ret;
 }
 
+//在base目录下,读取指定file,读取的值通过val返回
 int safe_read_file(const char *base, const char *file,
 		   char *val, size_t vallen)
 {

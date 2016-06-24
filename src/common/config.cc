@@ -141,6 +141,7 @@ md_config_t::md_config_t()
   init_subsys();
 }
 
+//初始化subsys中的日志及收集level
 void md_config_t::init_subsys()
 {
 #define SUBSYS(name, log, gather) \
@@ -149,7 +150,7 @@ void md_config_t::init_subsys()
   subsys.add(ceph_subsys_, "none", log, gather);
 #define OPTION(a, b, c)
 #define SAFE_OPTION(a, b, c)
-#include "common/config_opts.h"
+#include "common/config_opts.h"//向subsys中加入数据
 #undef OPTION
 #undef SAFE_OPTION
 #undef SUBSYS
@@ -160,6 +161,8 @@ md_config_t::~md_config_t()
 {
 }
 
+//加入配置关注者(配置关注者通过get_tracked_conf_keys会提交一组自已关注的
+//配置项,然后针对每个配置项,会将配置项与配置关注者一起加入到observers集合中.
 void md_config_t::add_observer(md_config_obs_t* observer_)
 {
   Mutex::Locker l(lock);
@@ -170,6 +173,7 @@ void md_config_t::add_observer(md_config_obs_t* observer_)
   }
 }
 
+//移除配置关注者(与加入正好相反,但不需要调用keys,而是直接检查observer_的所有项,全部移除)
 void md_config_t::remove_observer(md_config_obs_t* observer_)
 {
   Mutex::Locker l(lock);
@@ -186,6 +190,7 @@ void md_config_t::remove_observer(md_config_obs_t* observer_)
   assert(found_obs);
 }
 
+//解析配置文件
 int md_config_t::parse_config_files(const char *conf_files,
 				    std::ostream *warnings,
 				    int flags)
@@ -204,18 +209,18 @@ int md_config_t::parse_config_files(const char *conf_files,
   }
 
   if (!conf_files) {
-    const char *c = getenv("CEPH_CONF");
+    const char *c = getenv("CEPH_CONF");//没有配置文件配置,尝试环境变量
     if (c) {
       conf_files = c;
     }
     else {
-      if (flags & CINIT_FLAG_NO_DEFAULT_CONFIG_FILE)
+      if (flags & CINIT_FLAG_NO_DEFAULT_CONFIG_FILE)//检查是否无默认配置文件
 	return 0;
       conf_files = CEPH_CONF_FILE_DEFAULT;
     }
   }
 
-  std::list<std::string> cfl;
+  std::list<std::string> cfl;//配置文件地址
   get_str_list(conf_files, cfl);
 
   auto p = cfl.begin();
@@ -223,12 +228,13 @@ int md_config_t::parse_config_files(const char *conf_files,
     // expand $data_dir?
     string &s = *p;
     if (s.find("$data_dir") != string::npos) {
+      //存在$data_dir
       if (data_dir_option.length()) {
 	list<config_option const *> stack;
-	expand_meta(s, NULL, stack, warnings);
+	expand_meta(s, NULL, stack, warnings);//将s展开
 	p++;
       } else {
-	cfl.erase(p++);  // ignore this item
+	cfl.erase(p++);  // ignore this item(配置文件有误,用不上)
       }
     } else {
       ++p;
@@ -237,6 +243,7 @@ int md_config_t::parse_config_files(const char *conf_files,
   return parse_config_files_impl(cfl, warnings);
 }
 
+//解析配置文件并设置配置项,当前函数有三个段被设置,name,name.type,global三个段
 int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_files,
 					 std::ostream *warnings)
 {
@@ -250,13 +257,14 @@ int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_file
     expand_meta(fn, warnings);
     int ret = cf.parse_file(fn.c_str(), &parse_errors, warnings);
     if (ret == 0)
-      break;
-    else if (ret != -ENOENT)
+      break;//成功,则退出.(相当于加载第一个找到的)
+    else if (ret != -ENOENT)//如果此路径下没有找到,则继续找
       return ret;
   }
   if (c == conf_files.end())
     return -EINVAL;
 
+  //防止cluster未设置
   if (cluster.size() == 0) {
     /*
      * If cluster name is not set yet, use the prefix of the
@@ -276,16 +284,18 @@ int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_file
     }
   }
 
+  //设置name,name.type,global三个段的配置到md_config_t
   std::vector <std::string> my_sections;
-  _get_my_sections(my_sections);
+  _get_my_sections(my_sections);//加载name,name.type,global三个段
   for (auto& opt: *config_options) {
     std::string val;
-    int ret = _get_val_from_conf_file(my_sections, opt.name, val, false);
+    int ret = _get_val_from_conf_file(my_sections, opt.name, val, false);//不展开元数据情况下获取value
     if (ret == 0) {
-      set_val_impl(val.c_str(), &opt);
+      set_val_impl(val.c_str(), &opt);//设置值.
     }
   }
   
+  //设置各subsys的log_level,gather_level配置
   // subsystems?
   for (int o = 0; o < subsys.get_num(); o++) {
     std::string as_option("debug_");
@@ -305,6 +315,7 @@ int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_file
     }	
   }
 
+  //对旧样式的配置样式进行warn
   // Warn about section names that look like old-style section names
   std::deque < std::string > old_style_section_names;
   for (ConfFile::const_section_iter_t s = cf.sections_begin();
@@ -329,6 +340,7 @@ int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_file
   return 0;
 }
 
+//解析并设置keyring配置项(目前)
 void md_config_t::parse_env()
 {
   Mutex::Locker l(lock);
@@ -345,17 +357,19 @@ void md_config_t::show_config(std::ostream& out)
   _show_config(&out, NULL);
 }
 
+//显示配置,采用formatter格式化.
 void md_config_t::show_config(Formatter *f)
 {
   Mutex::Locker l(lock);
   _show_config(NULL, f);
 }
 
+//显示配置
 void md_config_t::_show_config(std::ostream *out, Formatter *f)
 {
   if (out) {
-    *out << "name = " << name << std::endl;
-    *out << "cluster = " << cluster << std::endl;
+    *out << "name = " << name << std::endl; //显示进程类型及id
+    *out << "cluster = " << cluster << std::endl;//显示cluster
   }
   if (f) {
     f->dump_string("name", stringify(name));
@@ -363,6 +377,7 @@ void md_config_t::_show_config(std::ostream *out, Formatter *f)
   }
   for (int o = 0; o < subsys.get_num(); o++) {
     if (out)
+      //显示各子系统log,gather日志level
       *out << "debug_" << subsys.get_name(o)
 	   << " = " << subsys.get_log_level(o)
 	   << "/" << subsys.get_gather_level(o) << std::endl;
@@ -379,13 +394,15 @@ void md_config_t::_show_config(std::ostream *out, Formatter *f)
     char *buf;
     _get_val(opt.name, &buf, -1);
     if (out)
-      *out << opt.name << " = " << buf << std::endl;
+      *out << opt.name << " = " << buf << std::endl;//输出选项名称及取值
     if (f)
       f->dump_string(opt.name, buf);
     free(buf);
   }
 }
 
+//处理一些选项:show_conf,show_config,show_config_value
+//设置一些选项值:foreground,-d,-M,-m
 int md_config_t::parse_argv(std::vector<const char*>& args)
 {
   Mutex::Locker l(lock);
@@ -402,6 +419,7 @@ int md_config_t::parse_argv(std::vector<const char*>& args)
   // observer notifications later.
   std::string val;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
+	//仅分析option,不会析parameter
     if (strcmp(*i, "--") == 0) {
       /* Normally we would use ceph_argparse_double_dash. However, in this
        * function we *don't* want to remove the double dash, because later
@@ -409,6 +427,7 @@ int md_config_t::parse_argv(std::vector<const char*>& args)
       break;
     }
     else if (ceph_argparse_flag(args, i, "--show_conf", (char*)NULL)) {
+      // XXX along 走到这一步时,cf可能还没有初始化好?
       cerr << cf << std::endl;
       _exit(0);
     }
@@ -451,16 +470,19 @@ int md_config_t::parse_argv(std::vector<const char*>& args)
       set_val_or_die("client_mountpoint", val.c_str());
     }
     else {
+      //其它选项
       parse_option(args, i, NULL);
     }
   }
 
+  //显示配置
   if (show_config) {
     expand_all_meta();
     _show_config(&cout, NULL);
     _exit(0);
   }
 
+  //显示某一配置项的取值.
   if (show_config_value) {
     char *buf = 0;
     int r = _get_val(show_config_value_arg.c_str(), &buf, -1);
@@ -490,6 +512,7 @@ int md_config_t::parse_option(std::vector<const char*>& args,
   int o;
   std::string val;
 
+  //处理subsystem中的log_level,gather_level
   // subsystems?
   for (o = 0; o < subsys.get_num(); o++) {
     std::string as_option("--");
@@ -703,6 +726,7 @@ int md_config_t::injectargs(const std::string& s, std::ostream *oss)
   return ret;
 }
 
+//设置key及vlaue
 void md_config_t::set_val_or_die(const char *key, const char *val)
 {
   int ret = set_val(key, val);
@@ -752,6 +776,7 @@ md_config_t::config_option const *md_config_t::find_config_option(const std::str
   return config_options->end() == opt_it ? nullptr : &(*opt_it);
 }
 
+//设置配置项及其参数,meta控制是否展开metadata,safe控制是否为线程安全
 int md_config_t::set_val(const char *key, const char *val, bool meta, bool safe)
 {
   Mutex::Locker l(lock);
@@ -804,6 +829,7 @@ int md_config_t::set_val(const char *key, const char *val, bool meta, bool safe)
 }
 
 
+//获取某一配置项的取值
 int md_config_t::get_val(const char *key, char **buf, int len) const
 {
   Mutex::Locker l(lock);
@@ -825,6 +851,7 @@ public:
   }
 };
 
+//返回某一配置项的取值
 md_config_t::config_value_t md_config_t::_get_val(const char *key) const
 {
   assert(lock.is_locked());
@@ -862,7 +889,7 @@ int md_config_t::_get_val(const char *key, char **buf, int len) const
     }
     string str(oss.str());
     int l = strlen(str.c_str()) + 1;
-    if (len == -1) {
+    if (len == -1) {//len为-1时,表示按实际大小.
       *buf = (char*)malloc(l);
       if (!*buf)
         return -ENOMEM;
@@ -964,6 +991,7 @@ int md_config_t::_get_val_from_conf_file(const std::vector <std::string> &sectio
   return -ENOENT;
 }
 
+//设置opt的取值
 int md_config_t::set_val_impl(const char *val, config_option const *opt)
 {
   assert(lock.is_locked());
@@ -1059,6 +1087,7 @@ public:
   }
 };
 
+//按娄型进行取值.
 int md_config_t::set_val_raw(const char *val, config_option const *opt)
 {
   assert(lock.is_locked());
@@ -1073,6 +1102,7 @@ static const char *CONF_METAVARIABLES[] = {
 static const int NUM_CONF_METAVARIABLES =
       (sizeof(CONF_METAVARIABLES) / sizeof(CONF_METAVARIABLES[0]));
 
+//展开配置项中所有的str中的元数据
 void md_config_t::expand_all_meta()
 {
   // Expand all metavariables
@@ -1088,6 +1118,7 @@ void md_config_t::expand_all_meta()
   cerr << oss.str();
 }
 
+//进行配置项中取值时$(XX)的展开
 bool md_config_t::expand_meta(std::string &origval,
 			      std::ostream *oss) const
 {

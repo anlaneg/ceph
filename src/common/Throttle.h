@@ -45,6 +45,8 @@ public:
 
 private:
   void _reset_max(int64_t m);
+  //如果最大值为0,则返回false,否则,检查当前计数是否小于m,如果小于m,则当前计数+c后如果大于m将返回true
+  //如果c>m时,cur>m时返回true(这句的目的是?)
   bool _should_wait(int64_t c) const {
     int64_t m = max.read();
     int64_t cur = count.read();

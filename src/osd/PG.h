@@ -547,10 +547,11 @@ public:
   pg_shard_t pg_whoami;
   pg_shard_t up_primary;
   vector<int> up, acting, want_acting;
+  //哪些osd上有这个pg
   set<pg_shard_t> actingbackfill, actingset, upset;
   map<pg_shard_t,eversion_t> peer_last_complete_ondisk;
-  eversion_t  min_last_complete_ondisk;  // up: min over last_complete_ondisk, peer_last_complete_ondisk
-  eversion_t  pg_trim_to;
+  eversion_t  min_last_complete_ondisk;  // up: min over last_complete_ondisk, peer_last_complete_ondisk //ondisk完成的最小版本.
+  eversion_t  pg_trim_to;//可以trim到的pglog version
 
   set<int> blocked_by; ///< osds we are blocked by (for pg stats)
 
@@ -914,21 +915,21 @@ public:
   virtual void dump_recovery_info(Formatter *f) const = 0;
 
   bool calc_min_last_complete_ondisk() {
-    eversion_t min = last_complete_ondisk;
+    eversion_t min = last_complete_ondisk;//我们最后一个完成的ondisk版本
     assert(!actingbackfill.empty());
     for (set<pg_shard_t>::iterator i = actingbackfill.begin();
 	 i != actingbackfill.end();
 	 ++i) {
       if (*i == get_primary()) continue;
-      if (peer_last_complete_ondisk.count(*i) == 0)
+      if (peer_last_complete_ondisk.count(*i) == 0)//对方信息我们目前还不知道
 	return false;   // we don't have complete info
       eversion_t a = peer_last_complete_ondisk[*i];
       if (a < min)
-	min = a;
+	min = a;//对方刚完成的比我们还要小
     }
-    if (min == min_last_complete_ondisk)
+    if (min == min_last_complete_ondisk)//相等就不用改了
       return false;
-    min_last_complete_ondisk = min;
+    min_last_complete_ondisk = min;//ok当前最少的在盘版本
     return true;
   }
 
@@ -947,9 +948,11 @@ public:
     PGLogEntryHandler(PG *pg, ObjectStore::Transaction *t) : pg(pg), t(t) {}
 
     // LogEntryHandler
+    //向to_remove中加数据
     void remove(const hobject_t &hoid) {
       pg->get_pgbackend()->remove(hoid, t);
     }
+    //向to_stash中加数据
     void try_stash(const hobject_t &hoid, version_t v) {
       pg->get_pgbackend()->try_stash(hoid, v, t);
     }

@@ -46,8 +46,11 @@ struct EntityName
 
   const std::string& to_str() const;
   const char *to_cstr() const;
+  //通过字符串,同时设置id,type,type_id
   bool from_str(const std::string& s);
+  //设置id,type,type_id
   void set(uint32_t type_, const std::string &id_);
+  //设置id,type,type_id
   int set(const std::string &type_, const std::string &id_);
   void set_type(uint32_t type_);
   int set_type(const char *type);
@@ -56,7 +59,9 @@ struct EntityName
 
   const char* get_type_str() const;
 
+  //返回类型
   uint32_t get_type() const { return type; }
+  //检查进程类型
   bool is_osd() const { return get_type() == CEPH_ENTITY_TYPE_OSD; }
   bool is_mgr() const { return get_type() == CEPH_ENTITY_TYPE_MGR; }
   bool is_mds() const { return get_type() == CEPH_ENTITY_TYPE_MDS; }
@@ -75,9 +80,9 @@ struct EntityName
   friend bool operator!=(const EntityName& a, const EntityName& b);
 
 private:
-  uint32_t type;
-  std::string id;
-  std::string type_id;
+  uint32_t type; //mds,osd等
+  std::string id;//默认是admin
+  std::string type_id; //实际上是type.id
 };
 
 uint32_t str_to_ceph_entity_type(const char * str);

@@ -142,12 +142,12 @@ public:
   }
 
 private:
-  string internal_name;         ///< internal name, used to name the perfcounter instance
-  string basedir, journalpath;
-  osflagbits_t generic_flags;
-  std::string current_fn;
-  std::string current_op_seq_fn;
-  std::string omap_dir;
+  string internal_name;        //内部名称 ///< internal name, used to name the perfcounter instance
+  string basedir, journalpath;//数据存放的位置及日志所在位置
+  osflagbits_t generic_flags;//构造时传入的flag
+  std::string current_fn; //current目录位置(由 $basedir +"/current"获得)
+  std::string current_op_seq_fn;// $basedir + "/current/commit_op_seq" 获得
+  std::string omap_dir;// $basedir + "/current/omap" 获得
   uuid_d fsid;
 
   size_t blk_size;            ///< fs block size
@@ -212,17 +212,17 @@ private:
 
   // -- op workqueue --
   struct Op {
-    utime_t start;
-    uint64_t op;
-    vector<Transaction> tls;
-    Context *onreadable, *onreadable_sync;
-    uint64_t ops, bytes;
+    utime_t start;//操作开始的时间
+    uint64_t op;//操作序号
+    vector<Transaction> tls;//对应的事务
+    Context *onreadable, *onreadable_sync;//回调
+    uint64_t ops, bytes;//事务集对应的操作数,及字节数
     TrackedOpRef osd_op;
   };
   class OpSequencer : public Sequencer_impl {
     Mutex qlock; // to protect q, for benefit of flush (peek/dequeue also protected by lock)
-    list<Op*> q;
-    list<uint64_t> jq;
+    list<Op*> q;//存放op
+    list<uint64_t> jq;//存放op中对应的序号
     list<pair<uint64_t, Context*> > flush_commit_waiters;
     Cond cond;
   public:
@@ -231,6 +231,7 @@ private:
     int id;
 
     /// get_max_uncompleted
+    //返回未完成的最大序号,如果无未完成的,则seq为0,且返回true,否则设置seq并返回false
     bool _get_max_uncompleted(
       uint64_t *seq ///< [out] max uncompleted seq
       ) {
@@ -249,6 +250,7 @@ private:
     } /// @returns true if both queues are empty
 
     /// get_min_uncompleted
+    //返回最小的未完成序号,如果无未完成的,则seq为0,且返回true,否则设置seq并返回false
     bool _get_min_uncompleted(
       uint64_t *seq ///< [out] min uncompleted seq
       ) {
@@ -266,6 +268,7 @@ private:
       return false;
     } /// @returns true if both queues are empty
 
+    //flush_commit_waiters链上已完成的出队至to_queue队列.
     void _wake_flush_waiters(list<Context*> *to_queue) {
       uint64_t seq;
       if (_get_min_uncompleted(&seq))
@@ -279,26 +282,33 @@ private:
       }
     }
 
+    //序号入队.
     void queue_journal(uint64_t s) {
       Mutex::Locker l(qlock);
       jq.push_back(s);
     }
+
+    //jq中入队的是序号,将jq中第一个序号移除,尝试出队可以刷新的waiter
     void dequeue_journal(list<Context*> *to_queue) {
       Mutex::Locker l(qlock);
       jq.pop_front();
       cond.Signal();
       _wake_flush_waiters(to_queue);
     }
+    //向q队列中加入op
     void queue(Op *o) {
       Mutex::Locker l(qlock);
       q.push_back(o);
     }
+
+    //返回q队列中的首个op
     Op *peek_queue() {
       Mutex::Locker l(qlock);
       assert(apply_lock.is_locked());
       return q.front();
     }
 
+    //q队出队.
     Op *dequeue(list<Context*> *to_queue) {
       assert(to_queue);
       assert(apply_lock.is_locked());
@@ -311,6 +321,7 @@ private:
       return o;
     }
 
+    //等待seq提交.
     void flush() {
       Mutex::Locker l(qlock);
 
@@ -319,6 +330,7 @@ private:
 
 
       // get max for journal _or_ op queues
+      //从两个队列中选出个最大的seq
       uint64_t seq = 0;
       if (!q.empty())
 	seq = q.back()->op;
@@ -332,6 +344,8 @@ private:
 	  cond.Wait(qlock);
       }
     }
+
+    //如果有seq,将这个seq及其回调入flush_commit_waiters队
     bool flush_commit(Context *c) {
       Mutex::Locker l(qlock);
       uint64_t seq = 0;
@@ -377,6 +391,7 @@ private:
     OpWQ(FileStore *fs, time_t timeout, time_t suicide_timeout, ThreadPool *tp)
       : ThreadPool::WorkQueue<OpSequencer>("FileStore::OpWQ", timeout, suicide_timeout, tp), store(fs) {}
 
+    //将osr放在store->op_queue队列中
     bool _enqueue(OpSequencer *osr) {
       store->op_queue.push_back(osr);
       return true;
@@ -387,6 +402,7 @@ private:
     bool _empty() {
       return store->op_queue.empty();
     }
+    //自store->op_queue中返回队首
     OpSequencer *_dequeue() {
       if (store->op_queue.empty())
 	return NULL;
@@ -394,9 +410,11 @@ private:
       store->op_queue.pop_front();
       return osr;
     }
+    //通过store->_do_op处理osr
     void _process(OpSequencer *osr, ThreadPool::TPHandle &handle) override {
       store->_do_op(osr, handle);
     }
+    //处理完成后,调用finish
     void _process_finish(OpSequencer *osr) {
       store->_finish_op(osr);
     }
@@ -440,7 +458,7 @@ public:
 public:
   FileStore(const std::string &base, const std::string &jdev,
     osflagbits_t flags = 0,
-    const char *internal_name = "filestore", bool update_to=false);
+    const char *name = "filestore", bool update_to=false);
   ~FileStore();
 
   string get_type() {

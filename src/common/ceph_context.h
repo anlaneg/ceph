@@ -62,12 +62,15 @@ public:
   // ref count!
 private:
   ~CephContext();
+  //上下文的引用计数
   atomic_t nref;
 public:
+  //通过引入计数管理context,get
   CephContext *get() {
     nref.inc();
     return this;
   }
+  //引入计数减.
   void put();
 
   md_config_t *_conf;//配置

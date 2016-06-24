@@ -44,14 +44,14 @@ public:
   bool operator<(const ConfLine &rhs) const;
   friend std::ostream &operator<<(std::ostream& oss, const ConfLine &l);
 
-  std::string key, val, newsection;
+  std::string key, val, newsection;//key,value,section三个值
 };
 
 class ConfSection {
 public:
   typedef std::set <ConfLine>::const_iterator const_line_iter_t;
 
-  std::set <ConfLine> lines;
+  std::set <ConfLine> lines;//定义了配置文件某一段的所有行的集合.
 };
 
 class ConfFile {
@@ -67,6 +67,7 @@ public:
   int read(const std::string &section, const std::string &key,
 	      std::string &val) const;
 
+  //遍历sections用
   const_section_iter_t sections_begin() const;
   const_section_iter_t sections_end() const;
 
@@ -80,7 +81,7 @@ private:
   static ConfLine* process_line(int line_no, const char *line,
 			        std::deque<std::string> *errors);
 
-  std::map <std::string, ConfSection> sections;
+  std::map <std::string, ConfSection> sections;//配置文件中有多个段
 };
 
 #endif

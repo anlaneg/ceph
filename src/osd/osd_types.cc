@@ -476,8 +476,9 @@ bool pg_t::is_split(unsigned old_pg_num, unsigned new_pg_num, set<pg_t> *childre
 
   bool split = false;
   if (true) {
+  //获得old_pg_num向上取2^n的那个数,或old_pg_num=2,则old_bits为2,old_pg_num=4,则old_pg_num=3
     int old_bits = cbits(old_pg_num);
-    int old_mask = (1 << old_bits) - 1;
+    int old_mask = (1 << old_bits) - 1;//掩码
     for (int n = 1; ; n++) {
       int next_bit = (n << (old_bits-1));
       unsigned s = next_bit | m_seed;
@@ -486,6 +487,7 @@ bool pg_t::is_split(unsigned old_pg_num, unsigned new_pg_num, set<pg_t> *childre
 	continue;
       if (s >= new_pg_num)
 	break;
+      //没有搞清楚这一段代码在做什么?
       if ((unsigned)ceph_stable_mod(s, old_pg_num, old_mask) == m_seed) {
 	split = true;
 	if (children)
@@ -3621,7 +3623,7 @@ void pg_log_t::filter_log(spg_t import_pgid, const OSDMap &curmap,
   pg_log_t &out, pg_log_t &reject)
 {
   out = in;
-  out.log.clear();
+  out.log.clear();//清空out的日志
   reject.log.clear();
 
   for (list<pg_log_entry_t>::const_iterator i = in.log.begin();
@@ -3718,6 +3720,7 @@ void pg_log_t::generate_test_instances(list<pg_log_t*>& o)
     o.back()->log.push_back(**p);
 }
 
+//自other中构建自身,要求自身的tail必须大于v
 void pg_log_t::copy_after(const pg_log_t &other, eversion_t v) 
 {
   can_rollback_to = other.can_rollback_to;
@@ -3736,6 +3739,7 @@ void pg_log_t::copy_after(const pg_log_t &other, eversion_t v)
   }
 }
 
+//自other中构建自身,要求自身的head为to,tail > from
 void pg_log_t::copy_range(const pg_log_t &other, eversion_t from, eversion_t to)
 {
   can_rollback_to = other.can_rollback_to;
@@ -3756,6 +3760,7 @@ void pg_log_t::copy_range(const pg_log_t &other, eversion_t from, eversion_t to)
   }
 }
 
+//自other中构建自身,要求tail与head之间的项不超过max
 void pg_log_t::copy_up_to(const pg_log_t &other, int max)
 {
   can_rollback_to = other.can_rollback_to;
@@ -3773,6 +3778,7 @@ void pg_log_t::copy_up_to(const pg_log_t &other, int max)
   }
 }
 
+//显示log
 ostream& pg_log_t::print(ostream& out) const 
 {
   out << *this << std::endl;

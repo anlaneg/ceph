@@ -39,6 +39,7 @@ void Finisher::wait_for_empty()
   finisher_lock.Unlock();
 }
 
+//finisher线程入口
 void *Finisher::finisher_thread_entry()
 {
   finisher_lock.Lock();
@@ -52,7 +53,7 @@ void *Finisher::finisher_thread_entry()
       // This way other threads can submit new contexts to complete while we are working.
       vector<Context*> ls;
       list<pair<Context*,int> > ls_rval;
-      ls.swap(finisher_queue);
+      ls.swap(finisher_queue); //针对finisher_queue队列回调complete函数.
       ls_rval.swap(finisher_queue_rval);
       finisher_running = true;
       finisher_lock.Unlock();

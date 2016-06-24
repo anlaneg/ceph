@@ -78,6 +78,7 @@ Throttle::~Throttle()
   }
 }
 
+//重置max,如果max发生变化,则原有cond中首个将被缓醒.(唤醒后锁处理?)
 void Throttle::_reset_max(int64_t m)
 {
   assert(lock.is_locked());
@@ -90,6 +91,8 @@ void Throttle::_reset_max(int64_t m)
   max.set((size_t)m);
 }
 
+//检查c是否满足_should_wait,如果不满足,返回false
+//否则在本函数内阻塞直到满足_should_wait,并返回true
 bool Throttle::_wait(int64_t c)
 {
   utime_t start;
@@ -122,6 +125,7 @@ bool Throttle::_wait(int64_t c)
   return waited;
 }
 
+//重置m,并强制等.
 bool Throttle::wait(int64_t m)
 {
   if (0 == max.read() && 0 == m) {
@@ -137,6 +141,7 @@ bool Throttle::wait(int64_t m)
   return _wait(0);
 }
 
+//为当前值加c
 int64_t Throttle::take(int64_t c)
 {
   if (0 == max.read()) {
@@ -156,6 +161,7 @@ int64_t Throttle::take(int64_t c)
   return count.read();
 }
 
+//检查c是否可以支出,如果可以支出,则更新当前count值.
 bool Throttle::get(int64_t c, int64_t m)
 {
   if (0 == max.read() && 0 == m) {
@@ -185,6 +191,7 @@ bool Throttle::get(int64_t c, int64_t m)
 /* Returns true if it successfully got the requested amount,
  * or false if it would block.
  */
+//如果c可满足,则返回true,否则不阻塞并返回false
 bool Throttle::get_or_fail(int64_t c)
 {
   if (0 == max.read()) {

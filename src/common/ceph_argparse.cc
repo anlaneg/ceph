@@ -76,6 +76,7 @@ void string_to_vec(std::vector<std::string>& args, std::string argstr)
   }
 }
 
+//拆分args,将--之前的放入到arguments中,将--之后的放入到options中
 bool split_dashdash(const std::vector<const char*>& args,
 		    std::vector<const char*>& options,
 		    std::vector<const char*>& arguments) {
@@ -95,6 +96,8 @@ bool split_dashdash(const std::vector<const char*>& args,
   return dashdash;
 }
 
+//传入时args中包含了option和argemnt(用--划分),这个函数负责将name环境
+//变量中的option,argment进行区分(用--划分),然后再将args与env中的option,argment进行合并.(仍以--划分)
 void env_to_vec(std::vector<const char*>& args, const char *name)
 {
   if (!name)
@@ -118,19 +121,20 @@ void env_to_vec(std::vector<const char*>& args, const char *name)
   for (vector<string>::iterator i = str_vec.begin();
        i != str_vec.end();
        ++i)
-    env.push_back(i->c_str());
-  if (split_dashdash(env, env_options, env_arguments))
+    env.push_back(i->c_str());//向env中加入str_vec集中的字符串指针.
+  if (split_dashdash(env, env_options, env_arguments))//将env进行分类
     dashdash = true;
 
   args.clear();
   args.insert(args.end(), options.begin(), options.end());
-  args.insert(args.end(), env_options.begin(), env_options.end());
+  args.insert(args.end(), env_options.begin(), env_options.end());//将args变更为options(含env的options)
   if (dashdash)
     args.push_back("--");
   args.insert(args.end(), arguments.begin(), arguments.end());
-  args.insert(args.end(), env_arguments.begin(), env_arguments.end());
+  args.insert(args.end(), env_arguments.begin(), env_arguments.end());//将args中合入argments
 }
 
+//将argv加入到args指定的vector中
 void argv_to_vec(int argc, const char **argv,
                  std::vector<const char*>& args)
 {
@@ -221,12 +225,14 @@ CephInitParameters::CephInitParameters(uint32_t module_type_)
   name.set(module_type, "admin");
 }
 
+//前两个input原样copy到output,如果在'='号之前,遇到'-',则转换为'_'.否则不转换,将结果copy到output
 static void dashes_to_underscores(const char *input, char *output)
 {
   char c = 0;
   char *o = output;
   const char *i = input;
   // first two characters are copied as-is
+  // 前两个符号不进行转换.
   *o = *i++;
   if (*o++ == '\0')
     return;
@@ -235,11 +241,11 @@ static void dashes_to_underscores(const char *input, char *output)
     return;
   for (; ((c = *i)); ++i) {
     if (c == '=') {
-      strcpy(o, i);
+      strcpy(o, i);//'='号之后的不进行转换
       return;
     }
     if (c == '-')
-      *o++ = '_';
+      *o++ = '_';//'-'号转换为'_'
     else
       *o++ = c;
   }
@@ -258,6 +264,8 @@ bool ceph_argparse_double_dash(std::vector<const char*> &args,
   return false;
 }
 
+//检查第i个位置的args,如果第i的数据,与...中的任一个相等,返回TRUE,并删除args中第i个元素.
+//如果一直不相等(结束符用NULL表示),则返回False
 bool ceph_argparse_flag(std::vector<const char*> &args,
 	std::vector<const char*>::iterator &i, ...)
 {
@@ -275,9 +283,9 @@ bool ceph_argparse_flag(std::vector<const char*> &args,
       return false;
     }
     char a2[strlen(a)+1];
-    dashes_to_underscores(a, a2);
+    dashes_to_underscores(a, a2);//转换a2
     if (strcmp(a2, first) == 0) {
-      i = args.erase(i);
+      i = args.erase(i);//如果a2与first相等,自args中删除first.
       va_end(ap);
       return true;
     }
@@ -341,6 +349,8 @@ bool ceph_argparse_binary_flag(std::vector<const char*> &args,
   return r;
 }
 
+//同ceph_argparse_flag类似,但要求i位置的参数后面必须有'='号指定的参数
+//这个参数,将由ret进行返回.
 static int va_ceph_argparse_witharg(std::vector<const char*> &args,
 	std::vector<const char*>::iterator &i, std::string *ret,
 	std::ostream &oss, va_list ap)
@@ -443,6 +453,7 @@ bool ceph_argparse_witharg(std::vector<const char*> &args,
   return r != 0;
 }
 
+//对va_ceph_argparse_witharg进行ap整理
 bool ceph_argparse_witharg(std::vector<const char*> &args,
 	std::vector<const char*>::iterator &i, std::string *ret, ...)
 {
@@ -456,6 +467,10 @@ bool ceph_argparse_witharg(std::vector<const char*> &args,
   return r != 0;
 }
 
+//此函数用于识别args中早期的数据,识别后的结果通过返回值,cluster,conf_file_list
+//方式返回.
+//conf_file_list为配置文件列表
+//cluster设置参数中的cluster
 CephInitParameters ceph_argparse_early_args
 	  (std::vector<const char*>& args, uint32_t module_type, int flags,
 	   std::string *cluster, std::string *conf_file_list)
@@ -466,6 +481,7 @@ CephInitParameters ceph_argparse_early_args
   vector<const char *> orig_args = args;
 
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
+	//不处理parameter,仅处理option
     if (strcmp(*i, "--") == 0) {
       /* Normally we would use ceph_argparse_double_dash. However, in this
        * function we *don't* want to remove the double dash, because later
@@ -473,23 +489,29 @@ CephInitParameters ceph_argparse_early_args
       break;
     }
     else if (ceph_argparse_flag(args, i, "--version", "-v", (char*)NULL)) {
+      //如果有显示版本的选项,则显示版本,并退出.
       cout << pretty_version_to_str() << std::endl;
       _exit(0);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--conf", "-c", (char*)NULL)) {
+      //如果指明配置,则设置配置
       *conf_file_list = val;
     }
     else if (ceph_argparse_witharg(args, i, &val, "--cluster", (char*)NULL)) {
+      //如果指明cluster,则设置cluster
       *cluster = val;
     }
     else if ((module_type != CEPH_ENTITY_TYPE_CLIENT) &&
 	     (ceph_argparse_witharg(args, i, &val, "-i", (char*)NULL))) {
+      //设置名称
       iparams.name.set_id(val);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--id", "--user", (char*)NULL)) {
+      //设置id
       iparams.name.set_id(val);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--name", "-n", (char*)NULL)) {
+      //通过字符串设置iparams
       if (!iparams.name.from_str(val)) {
 	cerr << "error parsing '" << val << "': expected string of the form TYPE.ID, "
 	     << "valid types are: " << EntityName::get_valid_types_as_str()
@@ -498,6 +520,7 @@ CephInitParameters ceph_argparse_early_args
       }
     }
     else if (ceph_argparse_flag(args, i, "--show_args", (char*)NULL)) {
+      //显示相应的参数
       cout << "args: ";
       for (std::vector<const char *>::iterator ci = orig_args.begin(); ci != orig_args.end(); ++ci) {
         if (ci != orig_args.begin())
@@ -508,7 +531,7 @@ CephInitParameters ceph_argparse_early_args
     }
     else {
       // ignore
-      ++i;
+      ++i;//暂时忽略掉不认识的.
     }
   }
   return iparams;

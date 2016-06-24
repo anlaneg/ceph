@@ -53,12 +53,12 @@ protected:
     Mutex apply_lock;
     bool blocked;
     Cond blocked_cond;
-    int open_ops;
+    int open_ops;//正在处理的操作数
     uint64_t max_applied_seq;
 
     Mutex com_lock;
     map<version_t, vector<Context*> > commit_waiters;
-    uint64_t committing_seq, committed_seq;
+    uint64_t committing_seq, committed_seq;//正在提交的seq,已经提交的seq
 
   public:
     ApplyManager(Journal *&j, Finisher &f) :
@@ -129,6 +129,7 @@ public:
   }
 
 public:
+  //构造函数,path用于指出数据存放的位置
   explicit JournalingObjectStore(const std::string& path)
     : ObjectStore(path),
       journal(NULL),

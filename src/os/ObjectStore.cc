@@ -60,6 +60,7 @@ void decode_str_set_to_bl(bufferlist::iterator& p,
   start.copy(len, *out);
 }
 
+//按type约定的类型,创建ObjectStore
 ObjectStore *ObjectStore::create(CephContext *cct,
 				 const string& type,
 				 const string& data,
@@ -67,7 +68,7 @@ ObjectStore *ObjectStore::create(CephContext *cct,
 			         osflagbits_t flags)
 {
   if (type == "filestore") {
-    return new FileStore(data, journal, flags);
+    return new FileStore(data, journal, flags);//指定了数据位置,日志位置,flag
   }
   if (type == "memstore") {
     return new MemStore(cct, data);
@@ -125,7 +126,7 @@ int ObjectStore::write_meta(const std::string& key,
     return r;
   return 0;
 }
-
+//读取key指明的文件
 int ObjectStore::read_meta(const std::string& key,
 			   std::string *value)
 {

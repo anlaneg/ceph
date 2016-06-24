@@ -1178,12 +1178,12 @@ OPTION(filestore_journal_parallel, OPT_BOOL, false)
 OPTION(filestore_journal_writeahead, OPT_BOOL, false)
 OPTION(filestore_journal_trailing, OPT_BOOL, false)
 OPTION(filestore_queue_max_ops, OPT_U64, 50)
-OPTION(filestore_queue_max_bytes, OPT_U64, 100 << 20)
+OPTION(filestore_queue_max_bytes, OPT_U64, 100 << 20)//100M
 
 OPTION(filestore_caller_concurrency, OPT_INT, 10)
 
 /// Expected filestore throughput in B/s
-OPTION(filestore_expected_throughput_bytes, OPT_DOUBLE, 200 << 20)
+OPTION(filestore_expected_throughput_bytes, OPT_DOUBLE, 200 << 20)//200M
 /// Expected filestore throughput in ops/s
 OPTION(filestore_expected_throughput_ops, OPT_DOUBLE, 200)
 

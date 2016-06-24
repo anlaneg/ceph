@@ -23,7 +23,11 @@
 #include <stdlib.h>
 #include "include/Spinlock.h"
 
+//此文件对外提供了两个数据类型atomic_t,atomic64_t
+//依据是否存在AO_t提供了不同的快慢实现.
+
 namespace ceph {
+  //定义模板,为atomic,采用spinlock来进行保护
   template <class T>
   class atomic_spinlock_t {
     mutable ceph_spinlock_t lock;
@@ -83,8 +87,8 @@ namespace ceph {
 
   private:
     // forbid copying
-    atomic_spinlock_t(const atomic_spinlock_t<T> &other);
-    atomic_spinlock_t &operator=(const atomic_spinlock_t<T> &rhs);
+    atomic_spinlock_t(const atomic_spinlock_t<T> &other);//定义了,但没有实现,这里为了防止用户写出这样的代码.
+    atomic_spinlock_t &operator=(const atomic_spinlock_t<T> &rhs);//定义了,但没有去实现它,规避掉default实现.
   };
 }
 

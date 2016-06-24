@@ -14,24 +14,26 @@ namespace logging {
 
 struct Subsystem {
   int log_level, gather_level;
-  std::string name;
+  std::string name;//子系统名称
   
   Subsystem() : log_level(0), gather_level(0) {}     
 };
 
 class SubsystemMap {
   std::vector<Subsystem> m_subsys;
-  unsigned m_max_name_len;
+  unsigned m_max_name_len;//子系统名称最大长度
 
   friend class Log;
 
 public:
   SubsystemMap() : m_max_name_len(0) {}
 
+  //获取子系统数目
   int get_num() const {
     return m_subsys.size();
   }
 
+  //获取subsys中子系统名称的最大长度
   int get_max_subsys_len() const {
     return m_max_name_len;
   }
@@ -40,24 +42,28 @@ public:
   void set_log_level(unsigned subsys, int log);
   void set_gather_level(unsigned subsys, int gather);
 
+  //获取某个subsys的log_level
   int get_log_level(unsigned subsys) const {
     if (subsys >= m_subsys.size())
       subsys = 0;
     return m_subsys[subsys].log_level;
   }
 
+  //获取某个subsys的gather_level
   int get_gather_level(unsigned subsys) const {
     if (subsys >= m_subsys.size())
       subsys = 0;
     return m_subsys[subsys].gather_level;
   }
 
+  //获取某个subsys的name
   const std::string& get_name(unsigned subsys) const {
     if (subsys >= m_subsys.size())
       subsys = 0;
     return m_subsys[subsys].name;
   }
 
+  //检查sub是否可收集(level小于gather_level或者log_level)时可收集
   bool should_gather(unsigned sub, int level) {
     assert(sub < m_subsys.size());
     return level <= m_subsys[sub].gather_level ||

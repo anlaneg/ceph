@@ -33,7 +33,6 @@ enum {
 
 //实现了对pthread_mutex_t加解锁的封装,在封闭的基础上提供了简单的
 //调试机制.
-//
 class Mutex {
 private:
   std::string name;

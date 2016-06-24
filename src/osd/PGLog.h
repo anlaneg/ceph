@@ -79,6 +79,7 @@ public:
    * plus some methods to manipulate it all.
    */
   struct IndexedLog : public pg_log_t {
+	//通过不同的key索引pg_log_entry_t,三类索引
     mutable ceph::unordered_map<hobject_t,pg_log_entry_t*> objects;  // ptrs into log.  be careful!
     mutable ceph::unordered_map<osd_reqid_t,pg_log_entry_t*> caller_ops;
     mutable ceph::unordered_multimap<osd_reqid_t,pg_log_entry_t*> extra_caller_ops;
@@ -89,6 +90,7 @@ public:
 
     //
   private:
+    //通过此值,指明哪些索引是有效的.
     mutable __u16 indexed_data = 0;
     /**
      * rollback_info_trimmed_to_riter points to the first log entry <=
@@ -97,6 +99,7 @@ public:
      * It's a reverse_iterator because rend() is a natural representation for
      * tail, and rbegin() works nicely for head.
      */
+    //这个总是指向第一个可trimmed的节点(可以简单理解为队头)
     mempool::osd::list<pg_log_entry_t>::reverse_iterator
       rollback_info_trimmed_to_riter;
 
@@ -236,6 +239,7 @@ public:
       last_requested = 0;
     }
 
+    //此对象是否被记录{如果未实现索引,索引后检查count,否则直接count}
     bool logged_object(const hobject_t& oid) const {
       if (!(indexed_data & PGLOG_INDEXED_OBJECTS)) {
          index_objects();
@@ -367,26 +371,32 @@ public:
       index(PGLOG_INDEXED_OBJECTS);
     }
 
+    //建立caller_ops索引
     void index_caller_ops() const {
       index(PGLOG_INDEXED_CALLER_OPS);
     }
 
+    //建立extra_caller_ops索引
     void index_extra_caller_ops() const {
       index(PGLOG_INDEXED_EXTRA_CALLER_OPS);
     }
 
+    //将e加入索引,相当于增量索引
     void index(pg_log_entry_t& e) {
+      //如果有object索引,检查是否包启此e,如果无则加,如要有,且版本号于此e亦加
       if ((indexed_data & PGLOG_INDEXED_OBJECTS) && e.object_is_indexed()) {
         if (objects.count(e.soid) == 0 ||
             objects[e.soid]->version < e.version)
           objects[e.soid] = &e;
       }
+      //caller_ops加入
       if (indexed_data & PGLOG_INDEXED_CALLER_OPS) {
 	// divergent merge_log indexes new before unindexing old
         if (e.reqid_is_indexed()) {
 	  caller_ops[e.reqid] = &e;
         }
       }
+      //extra_caller_ops加入
       if (indexed_data & PGLOG_INDEXED_EXTRA_CALLER_OPS) {
         for (vector<pair<osd_reqid_t, version_t> >::const_iterator j =
 	       e.extra_reqids.begin();
@@ -396,12 +406,16 @@ public:
         }
       }
     }
+
+    //删除索引
     void unindex() {
       objects.clear();
       caller_ops.clear();
       extra_caller_ops.clear();
       indexed_data = 0;
     }
+
+    //自索引中删除某e
     void unindex(pg_log_entry_t& e) {
       // NOTE: this only works if we remove from the _tail_ of the log!
       if (indexed_data & PGLOG_INDEXED_OBJECTS) {
@@ -440,7 +454,7 @@ public:
       }
 
       // add to log
-      log.push_back(e);
+      log.push_back(e);//e加入
 
       // riter previously pointed to the previous entry
       if (rollback_info_trimmed_to_riter == log.rbegin())
@@ -451,6 +465,7 @@ public:
       head = e.version;
 
       // to our index
+      //索引加入
       if ((indexed_data & PGLOG_INDEXED_OBJECTS) && e.object_is_indexed()) {
         objects[e.soid] = &(log.back());
       }

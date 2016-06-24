@@ -1746,6 +1746,7 @@ private:
   friend class PGQueueable;
   class ShardedOpWQ: public ShardedThreadPool::ShardedWQ < pair <PGRef, PGQueueable> > {
 
+	//共享数据,定义队列
     struct ShardData {
       Mutex sdata_lock;
       Cond sdata_cond;
@@ -1890,6 +1891,7 @@ private:
       osd->service.release_reserved_pushes(f.get_reserved_pushes_to_free());
     }
  
+    //检查某线程负责的队列里否为空
     bool is_shard_empty(uint32_t thread_index) {
       uint32_t shard_index = thread_index % num_shards; 
       ShardData* sdata = shard_list[shard_index];

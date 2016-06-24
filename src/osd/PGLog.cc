@@ -56,17 +56,18 @@ void PGLog::IndexedLog::trim(
   while (!log.empty()) {
     pg_log_entry_t &e = *log.begin();
     if (e.version > s)
-      break;
+      break;//如果队首版本大于s则停止
     generic_dout(20) << "trim " << e << dendl;
     if (trimmed)
-      trimmed->insert(e.version);
+      trimmed->insert(e.version);//加入到trimmed队列
 
-    unindex(e);         // remove from index,
+    unindex(e);         // remove from index,//自索引中移除此entity
 
+    //移除队列中的entity(另外需要查看riter是否需要更新,防止其空指向)
     if (rollback_info_trimmed_to_riter == log.rend() ||
 	e.version == rollback_info_trimmed_to_riter->version) {
       log.pop_front();
-      rollback_info_trimmed_to_riter = log.rend();
+      rollback_info_trimmed_to_riter = log.rend();//更新为下一个需要trime的节点
     } else {
       log.pop_front();
     }
@@ -74,7 +75,7 @@ void PGLog::IndexedLog::trim(
 
   // raise tail?
   if (tail < s)
-    tail = s;
+    tail = s;//更新tail
 }
 
 ostream& PGLog::IndexedLog::print(ostream& out) const
@@ -110,18 +111,20 @@ void PGLog::clear_info_log(
   t->remove(coll, pgid.make_pgmeta_oid());
 }
 
+//更新tail
 void PGLog::trim(
   eversion_t trim_to,
   pg_info_t &info)
 {
   // trim?
+  //如果trim_to比log.tail小,则不必trim
   if (trim_to > log.tail) {
     // We shouldn't be trimming the log past last_complete
     assert(trim_to <= info.last_complete);
 
     dout(10) << "trim " << log << " to " << trim_to << dendl;
     log.trim(trim_to, &trimmed);
-    info.log_tail = log.tail;
+    info.log_tail = log.tail;//更新info.log_tail
   }
 }
 
@@ -507,6 +510,7 @@ void PGLog::_write_log_and_missing_wo_missing(
   set<string> *log_keys_debug
   )
 {
+  //将trimmed中的数据加入to_remove中,一会构造删除数据到transaction
   set<string> to_remove;
   for (set<eversion_t>::const_iterator i = trimmed.begin();
        i != trimmed.end();
@@ -623,6 +627,7 @@ void PGLog::_write_log_and_missing(
     clear_after(log_keys_debug, dirty_from.get_key_name());
   }
 
+  //将log.log中的dirty_to版本以下的,编码进bl
   for (list<pg_log_entry_t>::iterator p = log.log.begin();
        p != log.log.end() && p->version <= dirty_to;
        ++p) {
@@ -676,5 +681,5 @@ void PGLog::_write_log_and_missing(
   }
 
   if (!to_remove.empty())
-    t.omap_rmkeys(coll, log_oid, to_remove);
+    t.omap_rmkeys(coll, log_oid, to_remove);//将rm删除合入事务
 }

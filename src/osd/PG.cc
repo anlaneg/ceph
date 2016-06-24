@@ -1919,19 +1919,21 @@ void PG::take_op_map_waiters()
 void PG::queue_op(OpRequestRef& op)
 {
   Mutex::Locker l(map_lock);
-  if (!waiting_for_map.empty()) {
+  if (!waiting_for_map.empty()) {//检查这个pg,是否在等待dbmap,如果是,则直接等待即可.
     // preserve ordering
     waiting_for_map.push_back(op);
     op->mark_delayed("waiting_for_map not empty");
     return;
   }
+  //必须等待的情况
   if (op_must_wait_for_map(get_osdmap_with_maplock()->get_epoch(), op)) {
     waiting_for_map.push_back(op);
     op->mark_delayed("op must wait for map");
     return;
   }
   op->mark_queued_for_pg();
-  osd->op_wq.queue(make_pair(PGRef(this), op));
+  //client发过来的请求,一路到这里,实际上用不了多少时间
+  osd->op_wq.queue(make_pair(PGRef(this), op));//进入op_wq队列进行处理
   {
     // after queue() to include any locking costs
 #ifdef WITH_LTTNG

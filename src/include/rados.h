@@ -180,6 +180,7 @@ extern const char *ceph_osd_state_name(int s);
 #define __CEPH_OSD_OP(mode, type, nr) \
 	(CEPH_OSD_OP_MODE_##mode | CEPH_OSD_OP_TYPE_##type | (nr))
 
+//定义了ceph中的所有操作
 #define __CEPH_FORALL_OSD_OPS(f)					    \
 	/** data **/							    \
 	/* read */							    \

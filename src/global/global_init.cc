@@ -38,6 +38,8 @@
 
 #define dout_subsys ceph_subsys_
 
+//设置全局的ceph_context
+//设置全局的conf
 static void global_init_set_globals(CephContext *cct)
 {
   g_ceph_context = cct;
@@ -80,18 +82,19 @@ static int chown_path(const std::string &pathname, const uid_t owner, const gid_
   return r;
 }
 
+//解析命令行,配置文件,设置了name,type.name,glboal三个段的信息.以及subsys中的日志信息
 void global_pre_init(std::vector < const char * > *alt_def_args,
 		     std::vector < const char* >& args,
 		     uint32_t module_type, code_environment_t code_env,
 		     int flags,
 		     const char *data_dir_option)
 {
-  std::string conf_file_list;
-  std::string cluster = "";
+  std::string conf_file_list;//配置文件列表
+  std::string cluster = "";//cluster名称
   CephInitParameters iparams = ceph_argparse_early_args(args, module_type, flags,
-							&cluster, &conf_file_list);
-  CephContext *cct = common_preinit(iparams, code_env, flags, data_dir_option);
-  cct->_conf->cluster = cluster;
+							&cluster, &conf_file_list);//模块类型及id
+  CephContext *cct = common_preinit(iparams, code_env, flags, data_dir_option);//构造cephcontext并设置部分conf
+  cct->_conf->cluster = cluster;//设置cluster
   global_init_set_globals(cct);
   md_config_t *conf = cct->_conf;
 
@@ -122,6 +125,7 @@ void global_pre_init(std::vector < const char * > *alt_def_args,
     _exit(1);
   }
 
+  //保证参数优先.
   conf->parse_env(); // environment variables override
 
   conf->parse_argv(args); // argv override
@@ -277,6 +281,7 @@ global_init(std::vector < const char * > *alt_def_args,
   // Expand metavariables. Invoke configuration observers. Open log file.
   g_conf->apply_changes(NULL);
 
+  //创建run目录
   if (g_conf->run_dir.length() &&
       code_env == CODE_ENVIRONMENT_DAEMON &&
       !(flags & CINIT_FLAG_NO_DAEMON_ACTIONS)) {

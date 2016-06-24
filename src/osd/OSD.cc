@@ -159,6 +159,7 @@ static ostream& _prefix(std::ostream* _dout, int whoami, epoch_t epoch) {
   return *_dout << "osd." << whoami << " " << epoch << " ";
 }
 
+//client请求处理
 void PGQueueable::RunVis::operator()(const OpRequestRef &op) {
   return osd->dequeue_op(pg, op, handle);
 }
@@ -943,6 +944,7 @@ void OSDService::forget_peer_epoch(int peer, epoch_t as_of)
   }
 }
 
+//没搞明白,这个函数是做什么的?
 bool OSDService::should_share_map(entity_name_t name, Connection *con,
                                   epoch_t epoch, const OSDMapRef& osdmap,
                                   const epoch_t *sent_epoch_p)
@@ -954,7 +956,7 @@ bool OSDService::should_share_map(entity_name_t name, Connection *con,
 
   // does client have old map?
   if (name.is_client()) {
-    bool message_sendmap = epoch < osdmap->get_epoch();
+    bool message_sendmap = epoch < osdmap->get_epoch();//消息的版本号比osdmap的版本号小
     if (message_sendmap && sent_epoch_p) {
       dout(20) << "client session last_sent_epoch: "
                << *sent_epoch_p
@@ -1592,6 +1594,8 @@ int OSD::write_meta(ObjectStore *store, uuid_d& cluster_fsid, uuid_d& osd_fsid, 
   return 0;
 }
 
+//读取osd自有的magic,whoami,ceph_fsid,fsid文件并将结果返回给
+//magic,whoami,cluster_fsid,osd_fsid
 int OSD::peek_meta(ObjectStore *store, std::string& magic,
 		   uuid_d& cluster_fsid, uuid_d& osd_fsid, int& whoami)
 {
@@ -3077,7 +3081,7 @@ PG *OSD::_open_lock_pg(
 {
   assert(osd_lock.is_locked());
 
-  PG* pg = _make_pg(createmap, pgid);
+  PG* pg = _make_pg(createmap, pgid);//构造pg对象,以后所有操作均基于此pg对象展开
   {
     RWLock::WLocker l(pg_map_lock);
     pg->lock(no_lockdep_check);
@@ -3096,6 +3100,7 @@ PG* OSD::_make_pg(
   PGPool pool = _get_pool(pgid.pool(), createmap);
 
   // create
+  //目前仅支持创建replicated,erasure两种pg
   PG *pg;
   if (createmap->get_pg_type(pgid.pgid) == pg_pool_t::TYPE_REPLICATED ||
       createmap->get_pg_type(pgid.pgid) == pg_pool_t::TYPE_ERASURE)
@@ -3238,16 +3243,17 @@ PGRef OSD::get_pg_or_queue_for_pg(const spg_t& pgid, OpRequestRef& op,
 
   ceph::unordered_map<spg_t, PG*>::iterator i = pg_map.find(pgid);
   if (i == pg_map.end())
-    session->waiting_for_pg[pgid];
+    session->waiting_for_pg[pgid];//如果pgid的key不在,则创建
 
   map<spg_t, list<OpRequestRef> >::iterator wlistiter =
     session->waiting_for_pg.find(pgid);
 
   PG *out = NULL;
+  //如果这个pg在waiting_for_pg中不存在,说明它不需要等,则直接返回i->second
   if (wlistiter == session->waiting_for_pg.end()) {
-    out = i->second;
+    out = i->second;//pg被找到了.
   } else {
-    wlistiter->second.push_back(op);
+    wlistiter->second.push_back(op);//加队列
     register_session_waiting_on_pg(session, pgid);
   }
   return PGRef(out);
@@ -3340,7 +3346,7 @@ void OSD::load_pgs()
 	  assert(0 == "Missing map in load_pgs");
 	}
       }
-      pg = _open_lock_pg(pgosdmap, pgid);
+      pg = _open_lock_pg(pgosdmap, pgid);//构造对应的pg对象
     } else {
       pg = _open_lock_pg(osdmap, pgid);
     }
@@ -5940,13 +5946,14 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
   assert(session->session_dispatch_lock.is_locked());
   assert(session->osdmap == osdmap);
   for (list<OpRequestRef>::iterator i = session->waiting_on_map.begin();
-       i != session->waiting_on_map.end() && dispatch_op_fast(*i, osdmap);
-       session->waiting_on_map.erase(i++));
+       i != session->waiting_on_map.end() && dispatch_op_fast(*i, osdmap);//自此进入
+       session->waiting_on_map.erase(i++));//处理完成,从waiting_on_map中删除
 
   if (session->waiting_on_map.empty()) {
-    clear_session_waiting_on_map(session);
+    clear_session_waiting_on_map(session);//这个session处理完成了,将其自session_waiting_for_map中删除
   } else {
-    register_session_waiting_on_map(session);
+	  //由于当前不能处理,是因为版本问题,需session需要加入
+    register_session_waiting_on_map(session);//session需要加入到session_waiting_for_map中,如果已加入,则忽略
   }
   session->maybe_reset_osdmap();
 }
@@ -5972,10 +5979,11 @@ void OSD::update_waiting_for_pg(Session *session, OSDMapRef newmap)
        i != from.end();
        from.erase(i++)) {
     set<spg_t> children;
-    if (!newmap->have_pg_pool(i->first.pool())) {
+    if (!newmap->have_pg_pool(i->first.pool())) {//新版本中已不存在此pool,等待的op可以移除了
       // drop this wait list on the ground
       i->second.clear();
     } else {
+      //防止pg已被split到不同目录.?
       assert(session->osdmap->have_pg_pool(i->first.pool()));
       if (i->first.is_split(
 	    session->osdmap->get_pg_num(i->first.pool()),
@@ -5989,7 +5997,7 @@ void OSD::update_waiting_for_pg(Session *session, OSDMapRef newmap)
 	  list<OpRequestRef> child_ops;
 	  OSD::split_list(&i->second, &child_ops, child->ps(), split_bits);
 	  if (!child_ops.empty()) {
-	    session->waiting_for_pg[*child].swap(child_ops);
+	    session->waiting_for_pg[*child].swap(child_ops);//重新注册
 	    register_session_waiting_on_pg(session, *child);
 	  }
 	}
@@ -6033,6 +6041,7 @@ void OSD::session_notify_pg_cleared(
 
 void OSD::ms_fast_dispatch(Message *m)
 {
+	//如果osd正在停止,则丢消息
   if (service.is_stopping()) {
     m->put();
     return;
@@ -6047,14 +6056,14 @@ void OSD::ms_fast_dispatch(Message *m)
   }
   OSDMapRef nextmap = service.get_nextmap_reserved();
   Session *session = static_cast<Session*>(m->get_connection()->get_priv());
-  if (session) {
+  if (session) {//在connect时,设置了session,所以正常情况下session!=NULL
     {
       Mutex::Locker l(session->session_dispatch_lock);
-      update_waiting_for_pg(session, nextmap);
-      session->waiting_on_map.push_back(op);
-      dispatch_session_waiting(session, nextmap);
+      update_waiting_for_pg(session, nextmap);//测试是否要等待map
+      session->waiting_on_map.push_back(op);//加入此op,一会遍历
+      dispatch_session_waiting(session, nextmap);//遍历处理waiting_on_map
     }
-    session->put();
+    session->put();//get_priv中有+1操作,这里-1
   }
   service.release_map(nextmap);
 }
@@ -6277,23 +6286,25 @@ void OSD::dispatch_op(OpRequestRef op)
   }
 }
 
+//处理op消息
 bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
 {
+	//如果正在停止,则丢消息
   if (is_stopping()) {
     // we're shutting down, so drop the op
     return true;
   }
 
   epoch_t msg_epoch(op_required_epoch(op));
-  if (msg_epoch > osdmap->get_epoch()) {
+  if (msg_epoch > osdmap->get_epoch()) {//消息中的osdmap版本号大于本地版本号
     Session *s = static_cast<Session*>(op->get_req()->
-				       get_connection()->get_priv());
+				       get_connection()->get_priv());//get_priv时,已对s进行了s->get()调用,故每次均为调s->put()
     if (s) {
       s->received_map_lock.lock();
       epoch_t received_epoch = s->received_map_epoch;
       s->received_map_lock.unlock();
       if (received_epoch < msg_epoch) {
-	osdmap_subscribe(msg_epoch, false);
+	osdmap_subscribe(msg_epoch, false);//向monitor要此版本osdmap
       }
       s->put();
     }
@@ -6303,20 +6314,20 @@ bool OSD::dispatch_op_fast(OpRequestRef& op, OSDMapRef& osdmap)
   switch(op->get_req()->get_type()) {
   // client ops
   case CEPH_MSG_OSD_OP:
-    handle_op(op, osdmap);
+    handle_op(op, osdmap);//处理客户端操作
     break;
     // for replication etc.
   case MSG_OSD_SUBOP:
     handle_replica_op<MOSDSubOp, MSG_OSD_SUBOP>(op, osdmap);
     break;
   case MSG_OSD_REPOP:
-    handle_replica_op<MOSDRepOp, MSG_OSD_REPOP>(op, osdmap);
+    handle_replica_op<MOSDRepOp, MSG_OSD_REPOP>(op, osdmap);//幅本消息
     break;
   case MSG_OSD_SUBOPREPLY:
     handle_replica_op<MOSDSubOpReply, MSG_OSD_SUBOPREPLY>(op, osdmap);
     break;
   case MSG_OSD_REPOPREPLY:
-    handle_replica_op<MOSDRepOpReply, MSG_OSD_REPOPREPLY>(op, osdmap);
+    handle_replica_op<MOSDRepOpReply, MSG_OSD_REPOPREPLY>(op, osdmap);//幅本osd完成操作后,发回的replay处理
     break;
   case MSG_OSD_PG_PUSH:
     handle_replica_op<MOSDPGPush, MSG_OSD_PG_PUSH>(op, osdmap);
@@ -7470,6 +7481,7 @@ bool OSD::require_mon_peer(Message *m)
   return true;
 }
 
+//如果对端不是osd,则返回false,否则返回true
 bool OSD::require_osd_peer(Message *m)
 {
   if (!m->get_connection()->peer_is_osd()) {
@@ -7502,6 +7514,8 @@ bool OSD::require_same_peer_instance(Message *m, OSDMapRef& map,
 {
   int from = m->get_source().num();
 
+  //map中没有这个osd或者map中的osd地址与消息来源的地址不一致,说明收到消息的
+  //osd已经挂掉了.
   if (map->is_down(from) ||
       (map->get_cluster_addr(from) != m->get_source_inst().addr)) {
     dout(5) << "from dead osd." << from << ", marking down, "
@@ -7510,13 +7524,13 @@ bool OSD::require_same_peer_instance(Message *m, OSDMapRef& map,
 				map->get_cluster_addr(from) : entity_addr_t())
 	    << dendl;
     ConnectionRef con = m->get_connection();
-    con->mark_down();
+    con->mark_down();//断连接
     Session *s = static_cast<Session*>(con->get_priv());
     if (s) {
       if (!is_fast_dispatch)
 	s->session_dispatch_lock.Lock();
       clear_session_waiting_on_map(s);
-      con->set_priv(NULL);   // break ref <-> session cycle, if any
+      con->set_priv(NULL);   // break ref <-> session cycle, if any //丢session
       if (!is_fast_dispatch)
 	s->session_dispatch_lock.Unlock();
       s->put();
@@ -8473,6 +8487,7 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
   return true;
 }
 
+//收到恢复消息,处理恢复(只有主才会收到这个消息,谁发来的?什么时候发过来的?)
 void OSD::do_recovery(
   PG *pg, epoch_t queued, uint64_t reserved_pushes,
   ThreadPool::TPHandle &handle)
@@ -8685,11 +8700,12 @@ void OSD::handle_op(OpRequestRef& op, OSDMapRef& osdmap)
   }
 
   // calc actual pgid
+  //消息里来的时候包含有pg,pool的id信息
   pg_t _pgid = m->get_pg();
   int64_t pool = _pgid.pool();
 
   if ((m->get_flags() & CEPH_OSD_FLAG_PGOP) == 0 &&
-      osdmap->have_pg_pool(pool))
+      osdmap->have_pg_pool(pool))//osdmap中存在此pool
     _pgid = osdmap->raw_pg_to_pg(_pgid);
 
   spg_t pgid;
@@ -8698,15 +8714,17 @@ void OSD::handle_op(OpRequestRef& op, OSDMapRef& osdmap)
     return;
   }
 
+  //尝试拿到pg
   PGRef pg = get_pg_or_queue_for_pg(pgid, op, client_session);
   if (pg) {
     op->send_map_update = share_map.should_send;
     op->sent_epoch = m->get_map_epoch();
-    enqueue_op(pg, op);
+    enqueue_op(pg, op);//此操作入队
     share_map.should_send = false;
     return;
   }
 
+  //pg不存在时的处理
   // ok, we didn't have the PG.
   if (!g_conf->osd_debug_misdirected_ops) {
     return;
@@ -8761,10 +8779,11 @@ void OSD::handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap)
   assert(m->get_type() == MSGTYPE);
 
   dout(10) << __func__ << " " << *m << " epoch " << m->map_epoch << dendl;
-  if (!require_self_aliveness(op->get_req(), m->map_epoch))
+  if (!require_self_aliveness(op->get_req(), m->map_epoch))//如果还没有起来,则丢消息
     return;
-  if (!require_osd_peer(op->get_req()))
+  if (!require_osd_peer(op->get_req()))//如果对端不是osd,则丢消息
     return;
+  //如果消息来源处理osd已经挂掉了,则丢消息(osd版本大于msg上的版本时,才存在这种情况)
   if (osdmap->get_epoch() >= m->map_epoch &&
       !require_same_peer_instance(op->get_req(), osdmap, true))
     return;
@@ -8779,7 +8798,7 @@ void OSD::handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap)
   epoch_t last_sent_epoch;
   if (peer_session) {
     peer_session->sent_epoch_lock.lock();
-    last_sent_epoch = peer_session->last_sent_epoch;
+    last_sent_epoch = peer_session->last_sent_epoch;//更新消息收到时间(用版本代替)
     peer_session->sent_epoch_lock.unlock();
   }
   should_share_map = service.should_share_map(
@@ -8794,7 +8813,7 @@ void OSD::handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap)
   if (pg) {
     op->send_map_update = should_share_map;
     op->sent_epoch = m->map_epoch;
-    enqueue_op(pg, op);
+    enqueue_op(pg, op);//入队,准备处理(实际上从client,从其它osd过来的消息都走这个.)
   } else if (should_share_map && m->get_connection()->is_connected()) {
     C_SendMap *send_map = new C_SendMap(this, m->get_source(),
 					m->get_connection(),
@@ -8815,6 +8834,7 @@ bool OSD::op_is_discardable(MOSDOp *op)
   return false;
 }
 
+//对pg的入队进行封装
 void OSD::enqueue_op(PGRef pg, OpRequestRef& op)
 {
   utime_t latency = ceph_clock_now(cct) - op->get_req()->get_recv_stamp();
@@ -8825,6 +8845,7 @@ void OSD::enqueue_op(PGRef pg, OpRequestRef& op)
   pg->queue_op(op);
 }
 
+//thread_index队列执行一个操作,一次只处理一个.
 void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) {
 
   uint32_t shard_index = thread_index % num_shards;
@@ -8832,7 +8853,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
   ShardData* sdata = shard_list[shard_index];
   assert(NULL != sdata);
   sdata->sdata_op_ordering_lock.Lock();
-  if (sdata->pqueue->empty()) {
+  if (sdata->pqueue->empty()) {//检查是否为空,为空,则阻塞等待数据
     sdata->sdata_op_ordering_lock.Unlock();
     osd->cct->get_heartbeat_map()->reset_timeout(hb,
       osd->cct->_conf->threadpool_default_timeout, 0);
@@ -8847,23 +8868,24 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
     }
   }
   pair<PGRef, PGQueueable> item = sdata->pqueue->dequeue();
-  sdata->pg_for_processing[&*(item.first)].push_back(item.second);
+  sdata->pg_for_processing[&*(item.first)].push_back(item.second);//加入pg_for_processing,保证数据处理有序
   sdata->sdata_op_ordering_lock.Unlock();
   ThreadPool::TPHandle tp_handle(osd->cct, hb, timeout_interval,
     suicide_interval);
 
-  (item.first)->lock_suspend_timeout(tp_handle);
+  (item.first)->lock_suspend_timeout(tp_handle);//pg加锁
 
   boost::optional<PGQueueable> op;
   {
     Mutex::Locker l(sdata->sdata_op_ordering_lock);
-    if (!sdata->pg_for_processing.count(&*(item.first))) {
+    if (!sdata->pg_for_processing.count(&*(item.first))) {//由于可能多个线程处理一个队列,所以这里加锁再检查一次
       (item.first)->unlock();
       return;
     }
     assert(sdata->pg_for_processing[&*(item.first)].size());
-    op = sdata->pg_for_processing[&*(item.first)].front();
-    sdata->pg_for_processing[&*(item.first)].pop_front();
+    op = sdata->pg_for_processing[&*(item.first)].front();//拿出队首op
+    sdata->pg_for_processing[&*(item.first)].pop_front();//扔队首op的引用
+    //如果hash表项中无成员,则将key删除掉,这属于算法的无奈之处,可以考虑不采用这种办法
     if (!(sdata->pg_for_processing[&*(item.first)].size()))
       sdata->pg_for_processing.erase(&*(item.first));
   }
@@ -8881,6 +8903,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
         reqid.name._num, reqid.tid, reqid.inc);
   }
 
+  //不知道这一段代码在输出?
   lgeneric_subdout(osd->cct, osd, 30) << "dequeue status: ";
   Formatter *f = Formatter::create("json");
   f->open_object_section("q");
@@ -8890,7 +8913,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
   delete f;
   *_dout << dendl;
 
-  op->run(osd, item.first, tp_handle);
+  op->run(osd, item.first, tp_handle);//执行op的处理
 
   {
 #ifdef WITH_LTTNG
@@ -8903,7 +8926,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
         reqid.name._num, reqid.tid, reqid.inc);
   }
 
-  (item.first)->unlock();
+  (item.first)->unlock();//pg解锁
 }
 
 void OSD::ShardedOpWQ::_enqueue(pair<PGRef, PGQueueable> item) {
@@ -8965,6 +8988,7 @@ void OSD::ShardedOpWQ::_enqueue_front(pair<PGRef, PGQueueable> item) {
 /*
  * NOTE: dequeue called in worker thread, with pg lock
  */
+//osd oprequest处理
 void OSD::dequeue_op(
   PGRef pg, OpRequestRef op,
   ThreadPool::TPHandle &handle)
@@ -8979,6 +9003,7 @@ void OSD::dequeue_op(
 	   << " pg " << *pg << dendl;
 
   // share our map with sender, if they're old
+  //是否需要向对端发送map的更新.如果需要请发送更新
   if (op->send_map_update) {
     Message *m = op->get_req();
     Session *session = static_cast<Session *>(m->get_connection()->get_priv());
@@ -9004,12 +9029,13 @@ void OSD::dequeue_op(
     }
   }
 
+  //如果pg正在删除,则没有执行的必要了.
   if (pg->deleting)
     return;
 
   op->mark_reached_pg();
 
-  pg->do_request(op, handle);
+  pg->do_request(op, handle);//自此函数进行请求处理
 
   // finish
   dout(10) << "dequeue_op " << op << " finish" << dendl;

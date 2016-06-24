@@ -74,6 +74,8 @@ static inline int ceph_spin_unlock(ceph_spinlock_t *l)
 
 #endif
 
+//定义了spinlock,在内部实现时,或者用pthread_splin_lock,或者用pthread_mutex_unlock
+//主要看哪个存在.
 class Spinlock {
   mutable ceph_spinlock_t _lock;
 
@@ -86,8 +88,8 @@ public:
   }
 
   // don't allow copying.
-  void operator=(Spinlock& s);
-  Spinlock(const Spinlock& s);
+  void operator=(Spinlock& s);//没有用到,也没有提供相应实现.
+  Spinlock(const Spinlock& s);//没有用到,也没有提供相应实现.
 
   /// acquire spinlock
   void lock() const {
@@ -98,6 +100,7 @@ public:
     ceph_spin_unlock(&_lock);
   }
 
+  //对spinlock进行简单封装,使得加锁解锁变更构造与解析函数调用.
   class Locker {
     const Spinlock& spinlock;
   public:

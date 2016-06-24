@@ -247,6 +247,8 @@ int GenericFileStoreBackend::create_current()
   return ret;
 }
 
+
+//调用sync
 int GenericFileStoreBackend::syncfs()
 {
   int ret;

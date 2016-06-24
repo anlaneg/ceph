@@ -613,6 +613,8 @@ private:
   ceph::unordered_map<Context*, int> m_context_results;
 };
 
+//共享线程池,提供了一种多线程对多队列模型.
+//ThreadPool提供的是多线程对单队列模型
 class ShardedThreadPool {
 
   CephContext *cct;

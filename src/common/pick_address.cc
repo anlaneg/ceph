@@ -103,6 +103,7 @@ static void fill_in_one_address(CephContext *cct,
   cct->_conf->remove_observer(&obs);
 }
 
+//选择公网ip及集群Ip
 void pick_addresses(CephContext *cct, int needs)
 {
   struct ifaddrs *ifa;

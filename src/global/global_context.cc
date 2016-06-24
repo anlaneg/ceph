@@ -18,5 +18,5 @@
 /*
  * Global variables for use from process context.
  */
-CephContext *g_ceph_context = NULL;
-md_config_t *g_conf = NULL;
+CephContext *g_ceph_context = NULL;//全局conext
+md_config_t *g_conf = NULL;//全局配置

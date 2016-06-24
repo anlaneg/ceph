@@ -136,6 +136,7 @@ GenContextURef<T> make_gen_lambda_context(F &&f) {
 /*
  * finish and destroy a list of Contexts
  */
+//如果是一组,则逐个进行complete.
 template<class A>
 inline void finish_contexts(CephContext *cct, std::list<A*>& finished, 
                             int result = 0)
@@ -207,6 +208,7 @@ struct C_Lock : public Context {
  * ContextType must be an ancestor class of ContextInstanceType, or the same class.
  * ContextInstanceType must be default-constructable.
  */
+//可能会有多个context需要触发,此类即用于解决多个complete调用.通过finish_contexts完成.
 template <class ContextType, class ContextInstanceType>
 class C_ContextsBase : public ContextInstanceType {
 public:

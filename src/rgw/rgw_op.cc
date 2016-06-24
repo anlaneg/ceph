@@ -3254,7 +3254,7 @@ void RGWPostObj::execute()
 
   while (data_pending) {
      bufferlist data;
-     len = get_data(data);
+     len = get_data(data);//读取客户端上传的数据
 
      if (len < 0) {
        op_ret = len;

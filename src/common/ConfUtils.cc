@@ -90,6 +90,7 @@ clear()
  * In general, configuration files should be a few kilobytes at maximum, so
  * loading the whole configuration into memory shouldn't be a problem.
  */
+//加载文件fname到内存,然后一行行的进行解析,解析结果存入ConfFile
 int ConfFile::
 parse_file(const std::string &fname, std::deque<std::string> *errors,
 	   std::ostream *warnings)
@@ -168,6 +169,7 @@ parse_bufferlist(ceph::bufferlist *bl, std::deque<std::string> *errors,
   return 0;
 }
 
+//获取section段中配置项key的配置值,配置值采用val返回,如果操作成功,返回0,否则操作失败,返回非0
 int ConfFile::
 read(const std::string &section, const std::string &key, std::string &val) const
 {
@@ -196,6 +198,7 @@ sections_end() const
   return sections.end();
 }
 
+//跳过前后空白字符用.
 void ConfFile::
 trim_whitespace(std::string &str, bool strip_internal)
 {
@@ -255,12 +258,13 @@ trim_whitespace(std::string &str, bool strip_internal)
  * normal form is so that in common/config.cc, we can use a macro to stringify
  * the field names of md_config_t and get a key in normal form.
  */
+//跳前后空白符,将其它空白符,转化为"_"
 std::string ConfFile::
 normalize_key_name(const std::string &key)
 {
   string k(key);
-  ConfFile::trim_whitespace(k, true);
-  std::replace(k.begin(), k.end(), ' ', '_');
+  ConfFile::trim_whitespace(k, true);//跳前后空白符
+  std::replace(k.begin(), k.end(), ' ', '_');//将空白符,转化为"_"
   return k;
 }
 
@@ -279,6 +283,7 @@ std::ostream &operator<<(std::ostream &oss, const ConfFile &cf)
   return oss;
 }
 
+//负责填充sections
 void ConfFile::
 load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
 		 std::ostream *warnings)
@@ -286,7 +291,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
   errors->clear();
 
   section_iter_t::value_type vt("global", ConfSection());
-  pair < section_iter_t, bool > vr(sections.insert(vt));
+  pair < section_iter_t, bool > vr(sections.insert(vt));//默认是global段
   assert(vr.second);
   section_iter_t cur_section = vr.first;
   std::string acc;
@@ -296,17 +301,17 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
   size_t line_len = -1;
   size_t rem = sz;
   while (1) {
-    b += line_len + 1;
+    b += line_len + 1;//当前分析位置
     if ((line_len + 1) > rem)
       break;
-    rem -= line_len + 1;
+    rem -= line_len + 1;//剩余字节数
     if (rem == 0)
       break;
-    line_no++;
+    line_no++;//行号
 
     // look for the next newline
     const char *end = (const char*)memchr(b, '\n', rem);
-    if (!end) {
+    if (!end) {//这一行说明,配置文件需要以\n结束
       ostringstream oss;
       oss << "read_conf: ignoring line " << line_no << " because it doesn't "
 	  << "end with a newline! Please end the config file with a newline.";
@@ -315,6 +320,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
     }
 
     // find length of line, and search for NULLs
+    //计算这一行字符串的长度
     line_len = 0;
     bool found_null = false;
     for (const char *tmp = b; tmp != end; ++tmp) {
@@ -324,6 +330,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
       }
     }
 
+    //如果在一行中发现了'\0',此行需要被忽略
     if (found_null) {
       ostringstream oss;
       oss << "read_conf: ignoring line " << line_no << " because it has "
@@ -333,6 +340,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
       continue;
     }
 
+    //utf8有效检查
     if (check_utf8(b, line_len)) {
       ostringstream oss;
       oss << "read_conf: ignoring line " << line_no << " because it is not "
@@ -342,6 +350,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
       continue;
     }
 
+    //检查是否有续行符
     if ((line_len >= 1) && (b[line_len-1] == '\\')) {
       // A backslash at the end of a line serves as a line continuation marker.
       // Combine the next line with this one.
@@ -359,6 +368,7 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
       continue;
     const std::string &csection(cline->newsection);
     if (!csection.empty()) {
+      //发现新的段,加入新段,并更新cur_section
       std::map <std::string, ConfSection>::value_type nt(csection, ConfSection());
       pair < section_iter_t, bool > nr(sections.insert(nt));
       cur_section = nr.first;
@@ -394,18 +404,20 @@ load_from_buffer(const char *buf, size_t sz, std::deque<std::string> *errors,
  * This probably could/should be rewritten with something like boost::spirit
  * or yacc if the grammar ever gets more complex.
  */
+//采用状态机样式解析inf文件格式(感觉写的有点复杂了,唯一和inf基于流不同的时,要求[section]之后要有注释)
+//返回的是这一行的信息
 ConfLine* ConfFile::
 process_line(int line_no, const char *line, std::deque<std::string> *errors)
 {
   enum acceptor_state_t {
-    ACCEPT_INIT,
-    ACCEPT_SECTION_NAME,
-    ACCEPT_KEY,
-    ACCEPT_VAL_START,
-    ACCEPT_UNQUOTED_VAL,
-    ACCEPT_QUOTED_VAL,
-    ACCEPT_COMMENT_START,
-    ACCEPT_COMMENT_TEXT,
+    ACCEPT_INIT,//首状态
+    ACCEPT_SECTION_NAME,//尝试解析seciton
+    ACCEPT_KEY,//尝试解析key
+    ACCEPT_VAL_START,//尝试开始解释val
+    ACCEPT_UNQUOTED_VAL,//解析非引号引起来的值
+    ACCEPT_QUOTED_VAL,//解析引号引起来的值
+    ACCEPT_COMMENT_START,//注释开始
+    ACCEPT_COMMENT_TEXT,//注释字符串状态
   };
   const char *l = line;
   acceptor_state_t state = ACCEPT_INIT;
@@ -421,58 +433,59 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	  state = ACCEPT_SECTION_NAME;
 	else if ((c == '#') || (c == ';'))
 	  state = ACCEPT_COMMENT_TEXT;
-	else if (c == ']') {
+	else if (c == ']') {//accept_init时,不应以']'开头
 	  ostringstream oss;
 	  oss << "unexpected right bracket at char " << (l - line)
 	      << ", line " << line_no;
 	  errors->push_back(oss.str());
 	  return NULL;
 	}
-	else if (isspace(c)) {
+	else if (isspace(c)) {//忽略前导到空格
 	  // ignore whitespace here
 	}
 	else {
 	  // try to accept this character as a key
+	  //说明是一个key的起始
 	  state = ACCEPT_KEY;
 	  --l;
 	}
 	break;
       case ACCEPT_SECTION_NAME:
-	if (c == '\0') {
+	if (c == '\0') {//[后面不能直接结束
 	  ostringstream oss;
 	  oss << "error parsing new section name: expected right bracket "
 	      << "at char " << (l - line) << ", line " << line_no;
 	  errors->push_back(oss.str());
 	  return NULL;
 	}
-	else if ((c == ']') && (!escaping)) {
-	  trim_whitespace(newsection, true);
-	  if (newsection.empty()) {
+	else if ((c == ']') && (!escaping)) {//
+	  trim_whitespace(newsection, true);//清楚前导空格
+	  if (newsection.empty()) {//如果空格,认为无效.
 	    ostringstream oss;
 	    oss << "error parsing new section name: no section name found? "
 	        << "at char " << (l - line) << ", line " << line_no;
 	    errors->push_back(oss.str());
 	    return NULL;
 	  }
-	  state = ACCEPT_COMMENT_START;
+	  state = ACCEPT_COMMENT_START;//到达comment状态
 	}
-	else if (((c == '#') || (c == ';')) && (!escaping)) {
+	else if (((c == '#') || (c == ';')) && (!escaping)) {//[ 之后不接受注释
 	  ostringstream oss;
 	  oss << "unexpected comment marker while parsing new section name, at "
 	      << "char " << (l - line) << ", line " << line_no;
 	  errors->push_back(oss.str());
 	  return NULL;
 	}
-	else if ((c == '\\') && (!escaping)) {
+	else if ((c == '\\') && (!escaping)) {//转义处理
 	  escaping = true;
 	}
 	else {
 	  escaping = false;
-	  newsection += c;
+	  newsection += c; //加入到newsection中
 	}
 	break;
-      case ACCEPT_KEY:
-	if ((((c == '#') || (c == ';')) && (!escaping)) || (c == '\0')) {
+      case ACCEPT_KEY://处理key
+	if ((((c == '#') || (c == ';')) && (!escaping)) || (c == '\0')) {//无效处理
 	  ostringstream oss;
 	  if (c == '\0') {
 	    oss << "end of key=val line " << line_no
@@ -484,7 +497,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	  errors->push_back(oss.str());
 	  return NULL;
 	}
-	else if ((c == '=') && (!escaping)) {
+	else if ((c == '=') && (!escaping)) {//发现'='号
 	  key = normalize_key_name(key);
 	  if (key.empty()) {
 	    ostringstream oss;
@@ -493,7 +506,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	    errors->push_back(oss.str());
 	    return NULL;
 	  }
-	  state = ACCEPT_VAL_START;
+	  state = ACCEPT_VAL_START;//走值处理流程
 	}
 	else if ((c == '\\') && (!escaping)) {
 	  escaping = true;
@@ -505,7 +518,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	break;
       case ACCEPT_VAL_START:
 	if (c == '\0')
-	  return new ConfLine(key, val, newsection, comment, line_no);
+	  return new ConfLine(key, val, newsection, comment, line_no);//没有给值情况
 	else if ((c == '#') || (c == ';'))
 	  state = ACCEPT_COMMENT_TEXT;
 	else if (c == '"')
@@ -529,7 +542,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	    return NULL;
 	  }
 	  trim_whitespace(val, false);
-	  return new ConfLine(key, val, newsection, comment, line_no);
+	  return new ConfLine(key, val, newsection, comment, line_no);//仅key_value情况(非"号值)
 	}
 	else if (((c == '#') || (c == ';')) && (!escaping)) {
 	  trim_whitespace(val, false);
@@ -565,7 +578,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	break;
       case ACCEPT_COMMENT_START:
 	if (c == '\0') {
-	  return new ConfLine(key, val, newsection, comment, line_no);
+	  return new ConfLine(key, val, newsection, comment, line_no);//section情况,key-value=""情况,
 	}
 	else if ((c == '#') || (c == ';')) {
 	  state = ACCEPT_COMMENT_TEXT;
@@ -583,7 +596,7 @@ process_line(int line_no, const char *line, std::deque<std::string> *errors)
 	break;
       case ACCEPT_COMMENT_TEXT:
 	if (c == '\0')
-	  return new ConfLine(key, val, newsection, comment, line_no);
+	  return new ConfLine(key, val, newsection, comment, line_no);//仅注释情况
 	else
 	  comment += c;
 	break;

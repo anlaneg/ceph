@@ -243,7 +243,7 @@ bool ReplicatedBackend::handle_message(
   }
 
   case MSG_OSD_REPOP: {
-    sub_op_modify(op);
+    sub_op_modify(op);//幅本将在这里处理完成
     return true;
   }
 
@@ -262,7 +262,7 @@ bool ReplicatedBackend::handle_message(
   }
 
   case MSG_OSD_REPOPREPLY: {
-    sub_op_modify_reply(op);
+    sub_op_modify_reply(op);//幅本发送过来的响应消息
     return true;
   }
 
@@ -556,6 +556,9 @@ void ReplicatedBackend::submit_transaction(
   assert(removed.size() <= 1);
 
   assert(!in_progress_ops.count(tid));
+  assert(!in_progress_ops.count(tid));//tid一定没有在处理中
+
+  //向in_progress_ops中加入当前操作,用于接受其它幅本的reply
   InProgressOp &op = in_progress_ops.insert(
     make_pair(
       tid,
@@ -565,6 +568,8 @@ void ReplicatedBackend::submit_transaction(
       )
     ).first->second;
 
+  //我们需要等待这些个幅本的commit,applied的ack消息,故这里把它们信息先注册到相应的列表.
+  //含primary节点
   op.waiting_for_applied.insert(
     parent->get_actingbackfill_shards().begin(),
     parent->get_actingbackfill_shards().end());
@@ -589,6 +594,7 @@ void ReplicatedBackend::submit_transaction(
   add_temp_objs(added);
   clear_temp_objs(removed);
 
+  //primary osd记录日志
   parent->log_operation(
     log_entries,
     hset_history,
@@ -605,12 +611,14 @@ void ReplicatedBackend::submit_transaction(
     parent->bless_context(
       new C_OSD_OnOpCommit(this, &op)));
 
+  //这里将op_t构造成vector,然后传入queue_transactions
   vector<ObjectStore::Transaction> tls;
   tls.push_back(std::move(op_t));
 
-  parent->queue_transactions(tls, op.op);
+  parent->queue_transactions(tls, op.op);//最终op_t的三个回调会被调起.
 }
 
+//on_applied回调处理
 void ReplicatedBackend::op_applied(
   InProgressOp *op)
 {
@@ -619,7 +627,7 @@ void ReplicatedBackend::op_applied(
     op->op->mark_event("op_applied");
 
   op->waiting_for_applied.erase(get_parent()->whoami_shard());
-  parent->op_applied(op->v);
+  parent->op_applied(op->v);//清洗相关?
 
   if (op->waiting_for_applied.empty()) {
     op->on_applied->complete(0);
@@ -631,6 +639,7 @@ void ReplicatedBackend::op_applied(
   }
 }
 
+//on_commit事件处理
 void ReplicatedBackend::op_commit(
   InProgressOp *op)
 {
@@ -641,15 +650,17 @@ void ReplicatedBackend::op_commit(
   op->waiting_for_commit.erase(get_parent()->whoami_shard());
 
   if (op->waiting_for_commit.empty()) {
-    op->on_commit->complete(0);
+    op->on_commit->complete(0);//如果所有人均回应,则触发回调
     op->on_commit = 0;
   }
+  //如果所有人均已处理,回收in_progress_ops中的资源
   if (op->done()) {
     assert(!op->on_commit && !op->on_applied);
     in_progress_ops.erase(op->tid);
   }
 }
 
+//osd_repopreply消息处理
 void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
 {
   MOSDRepOpReply *r = static_cast<MOSDRepOpReply *>(op->get_req());
@@ -662,6 +673,7 @@ void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
   ceph_tid_t rep_tid = r->get_tid();
   pg_shard_t from = r->from;
 
+  //如果响应消息自in_progress_ops中找不到,则忽略
   if (in_progress_ops.count(rep_tid)) {
     map<ceph_tid_t, InProgressOp>::iterator iter =
       in_progress_ops.find(rep_tid);
@@ -683,15 +695,15 @@ void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
 
     // oh, good.
 
-    if (r->ack_type & CEPH_OSD_FLAG_ONDISK) {
+    if (r->ack_type & CEPH_OSD_FLAG_ONDISK) {//commit阶段的响应(ONDISK标记)
       assert(ip_op.waiting_for_commit.count(from));
-      ip_op.waiting_for_commit.erase(from);
+      ip_op.waiting_for_commit.erase(from);//移除对此osd的等待,因为已经回来了.
       if (ip_op.op) {
         ostringstream ss;
         ss << "sub_op_commit_rec from " << from;
 	ip_op.op->mark_event(ss.str());
       }
-    } else {
+    } else {//applied阶段的响应
       assert(ip_op.waiting_for_applied.count(from));
       if (ip_op.op) {
         ostringstream ss;
@@ -699,25 +711,31 @@ void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
 	ip_op.op->mark_event(ss.str());
       }
     }
+    //这个位置是不是放的不对?不应在else内部吗?
+    //猜测:只要有一个commit回来,说明已提交到日志,接下来即便applied不回来,
+    //也需要重试使数据保证写入完成.原因commit时,需要向用户返回write完成.
+    //将waiting_for_applied移至此处,可相应的减少读的廷迟,由于读仍是从主
+    //进行读取的,如果主发生切换?会被加入等待恢复.
     ip_op.waiting_for_applied.erase(from);
 
     parent->update_peer_last_complete_ondisk(
       from,
-      r->get_last_complete_ondisk());
+      r->get_last_complete_ondisk());//记录回应信息
 
+    //以下两个回调的顺序是不是反了?(这样会不会有问题?)
     if (ip_op.waiting_for_applied.empty() &&
         ip_op.on_applied) {
-      ip_op.on_applied->complete(0);
-      ip_op.on_applied = 0;
+      ip_op.on_applied->complete(0);//执行on_applied回调
+      ip_op.on_applied = 0;//表示调用过了
     }
     if (ip_op.waiting_for_commit.empty() &&
         ip_op.on_commit) {
-      ip_op.on_commit->complete(0);
+      ip_op.on_commit->complete(0);//如果是最后一个commit,则执行commit
       ip_op.on_commit= 0;
     }
     if (ip_op.done()) {
       assert(!ip_op.on_commit && !ip_op.on_applied);
-      in_progress_ops.erase(iter);
+      in_progress_ops.erase(iter);//移除
     }
   }
 }
@@ -1047,10 +1065,12 @@ void ReplicatedBackend::issue_op(
     if (op->op)
       op->op->mark_sub_op_sent(ss.str());
   }
+  //遍历当前pg的其它幅本
   for (set<pg_shard_t>::const_iterator i =
 	 parent->get_actingbackfill_shards().begin();
        i != parent->get_actingbackfill_shards().end();
        ++i) {
+	  //一不小心就遇到了自已,呵呵,忽略
     if (*i == parent->whoami_shard()) continue;
     pg_shard_t peer = *i;
     const pg_info_t &pinfo = parent->get_shard_info().find(peer)->second;
@@ -1071,12 +1091,14 @@ void ReplicatedBackend::issue_op(
       peer,
       pinfo);
 
+    //前面构造了消息,现在把消息发给它(peer.osd)
     get_parent()->send_message_osd_cluster(
       peer.osd, wr, get_osdmap()->get_epoch());
   }
 }
 
 // sub op modify
+//幅本操作入口
 void ReplicatedBackend::sub_op_modify(OpRequestRef op)
 {
   MOSDRepOp *m = static_cast<MOSDRepOp *>(op->get_req());
@@ -1143,6 +1165,7 @@ void ReplicatedBackend::sub_op_modify(OpRequestRef op)
     update_snaps = true;
   }
   parent->update_stats(m->pg_stats);
+  //replacate osd记录日志
   parent->log_operation(
     log,
     m->updated_hit_set_history,
@@ -1161,7 +1184,7 @@ void ReplicatedBackend::sub_op_modify(OpRequestRef op)
   tls.reserve(2);
   tls.push_back(std::move(rm->localt));
   tls.push_back(std::move(rm->opt));
-  parent->queue_transactions(tls, op);
+  parent->queue_transactions(tls, op);//事务入队(准备写日志了)
   // op is cleaned up by oncommit/onapply when both are executed
 }
 
@@ -1186,6 +1209,7 @@ void ReplicatedBackend::sub_op_modify_applied(RepModifyRef rm)
 	req, parent->whoami_shard(),
 	0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
   } else if (m->get_type() == MSG_OSD_REPOP) {
+	  //幅本操作
     MOSDRepOp *req = static_cast<MOSDRepOp*>(m);
     version = req->version;
     if (!rm->committed)
@@ -1230,6 +1254,7 @@ void ReplicatedBackend::sub_op_modify_commit(RepModifyRef rm)
     reply->set_last_complete_ondisk(rm->last_complete);
     commit = reply;
   } else if (m->get_type() == MSG_OSD_REPOP) {
+	  //如果是幅本操作消息,则向那个谁回应opReply
     MOSDRepOpReply *reply = new MOSDRepOpReply(
       static_cast<MOSDRepOp*>(m),
       get_parent()->whoami_shard(),
@@ -1880,16 +1905,19 @@ void ReplicatedBackend::handle_push(
       t);
 }
 
+//逐个构造消息并发送pushes中的数据
 void ReplicatedBackend::send_pushes(int prio, map<pg_shard_t, vector<PushOp> > &pushes)
 {
   for (map<pg_shard_t, vector<PushOp> >::iterator i = pushes.begin();
        i != pushes.end();
        ++i) {
+	//1.拿到连接
     ConnectionRef con = get_parent()->get_con_osd_cluster(
       i->first.osd,
       get_osdmap()->get_epoch());
     if (!con)
       continue;
+    //2.构造消息并发送
     vector<PushOp>::iterator j = i->second.begin();
     while (j != i->second.end()) {
       uint64_t cost = 0;

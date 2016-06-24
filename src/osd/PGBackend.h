@@ -257,7 +257,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual ~Listener() {}
    };
-   Listener *parent;
+   Listener *parent;//is ReplicatedPG
    Listener *get_parent() const { return parent; }
    PGBackend(Listener *l, ObjectStore *store, coll_t coll,
 	     ObjectStore::CollectionHandle &ch) :

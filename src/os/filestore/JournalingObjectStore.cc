@@ -115,9 +115,11 @@ int JournalingObjectStore::journal_replay(uint64_t fs_op_seq)
 
 // ------------------------------------
 
+//标记当前有操作在执行,如果被commit阻塞,则等待.
 uint64_t JournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
 {
   Mutex::Locker l(apply_lock);
+  //如果被置为阻塞,则等待阻塞解除信号
   while (blocked) {
     // note: this only happens during journal replay
     dout(10) << "op_apply_start blocked, waiting" << dendl;
@@ -130,6 +132,7 @@ uint64_t JournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
   return op;
 }
 
+//标记向kenerl写盘操作完成.
 void JournalingObjectStore::ApplyManager::op_apply_finish(uint64_t op)
 {
   Mutex::Locker l(apply_lock);
@@ -137,10 +140,12 @@ void JournalingObjectStore::ApplyManager::op_apply_finish(uint64_t op)
 	   << " -> " << (open_ops-1)
 	   << ", max_applied_seq " << max_applied_seq << " -> " << MAX(op, max_applied_seq)
 	   << dendl;
-  --open_ops;
+  --open_ops;//标记正在执行的操作减少
   assert(open_ops >= 0);
 
   // signal a blocked commit_start (only needed during journal replay)
+  //如果标记为blocked此时,按照实现约定,commit_start会阻塞(因为open_ops不为0)
+  //走到此时,检测下,如果commit_start存在,则唤醒它.
   if (blocked) {
     blocked_cond.Signal();
   }
@@ -149,9 +154,11 @@ void JournalingObjectStore::ApplyManager::op_apply_finish(uint64_t op)
   // note.  note that we can't _read_ this value and learn anything
   // meaningful unless/until we've quiesced all in-flight applies.
   if (op > max_applied_seq)
-    max_applied_seq = op;
+    max_applied_seq = op;//如果我发现我的这个seq比当前记录的seq要打,则更新
 }
 
+//增加op_seq,并返回op_seq,实现seq分配.(注,op_submit_start与op_submit_finish是一对,一个负责
+//加锁,一个负责解锁)
 uint64_t JournalingObjectStore::SubmitManager::op_submit_start()
 {
   lock.Lock();
@@ -160,6 +167,7 @@ uint64_t JournalingObjectStore::SubmitManager::op_submit_start()
   return op;
 }
 
+//增加op_sumbitted,要求传入的op必须按序进行submitted,有序号按序提交的检查.
 void JournalingObjectStore::SubmitManager::op_submit_finish(uint64_t op)
 {
   dout(10) << "op_submit_finish " << op << dendl;
@@ -175,6 +183,7 @@ void JournalingObjectStore::SubmitManager::op_submit_finish(uint64_t op)
 
 // ------------------------------------------
 
+//向commit_waiters中添加等待.
 void JournalingObjectStore::ApplyManager::add_waiter(uint64_t op, Context *c)
 {
   Mutex::Locker l(com_lock);
@@ -182,6 +191,7 @@ void JournalingObjectStore::ApplyManager::add_waiter(uint64_t op, Context *c)
   commit_waiters[op].push_back(c);
 }
 
+//更新committing_seq,开始准备提交,在此过程中,应用层的落盘操作,需要停止.
 bool JournalingObjectStore::ApplyManager::commit_start()
 {
   bool ret = false;
@@ -195,7 +205,7 @@ bool JournalingObjectStore::ApplyManager::commit_start()
     blocked = true;
     while (open_ops > 0) {
       dout(10) << "commit_start waiting for " << open_ops << " open ops to drain" << dendl;
-      blocked_cond.Wait(apply_lock);
+      blocked_cond.Wait(apply_lock);//有op_apply_finish未调用完成.等待
     }
     assert(open_ops == 0);
     dout(10) << "commit_start blocked, all open_ops have completed" << dendl;
@@ -208,7 +218,7 @@ bool JournalingObjectStore::ApplyManager::commit_start()
 	goto out;
       }
 
-      _committing_seq = committing_seq = max_applied_seq;
+      _committing_seq = committing_seq = max_applied_seq;//更新已applied_seq为当前正在committing的seq
 
       dout(10) << "commit_start committing " << committing_seq
 	       << ", still blocked" << dendl;
@@ -222,6 +232,7 @@ bool JournalingObjectStore::ApplyManager::commit_start()
   return ret;
 }
 
+//放通阻塞,使其它操作可以继续进行
 void JournalingObjectStore::ApplyManager::commit_started()
 {
   Mutex::Locker l(apply_lock);
@@ -231,6 +242,8 @@ void JournalingObjectStore::ApplyManager::commit_started()
   blocked_cond.Signal();
 }
 
+//更新已committed_seq为committing_seq
+//commit时可以添加waiters,这里将其出队.
 void JournalingObjectStore::ApplyManager::commit_finish()
 {
   Mutex::Locker l(com_lock);
@@ -244,11 +257,13 @@ void JournalingObjectStore::ApplyManager::commit_finish()
   map<version_t, vector<Context*> >::iterator p = commit_waiters.begin();
   while (p != commit_waiters.end() &&
     p->first <= committing_seq) {
-    finisher.queue(p->second);
+    finisher.queue(p->second);//处理commit_waiters上等待的.
     commit_waiters.erase(p++);
   }
 }
 
+//如果有journal,且journal可写,则journal->submit_entry
+//否则如果onjournal不为null,则apply_manager.add_waiter
 void JournalingObjectStore::_op_journal_transactions(
   bufferlist& tbl, uint32_t orig_len, uint64_t op,
   Context *onjournal, TrackedOpRef osd_op)
@@ -260,8 +275,8 @@ void JournalingObjectStore::_op_journal_transactions(
     dout(10) << "op_journal_transactions " << op  << dendl;
 
   if (journal && journal->is_writeable()) {
-    journal->submit_entry(op, tbl, orig_len, onjournal, osd_op);
+    journal->submit_entry(op, tbl, orig_len, onjournal, osd_op);//提交事务
   } else if (onjournal) {
-    apply_manager.add_waiter(op, onjournal);
+    apply_manager.add_waiter(op, onjournal);//等待提交事务. ???
   }
 }

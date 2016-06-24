@@ -28,6 +28,7 @@ struct str_to_entity_type_t {
   const char *str;
 };
 
+//各进程角色名称数组
 static const str_to_entity_type_t STR_TO_ENTITY_TYPE[] = {
   { CEPH_ENTITY_TYPE_AUTH, "auth" },
   { CEPH_ENTITY_TYPE_MON, "mon" },
@@ -55,6 +56,7 @@ to_cstr() const
   return type_id.c_str();
 }
 
+//通过字符串,同时设置id,type,type_id
 bool EntityName::
 from_str(const string& s)
 {
@@ -70,6 +72,7 @@ from_str(const string& s)
   return true;
 }
 
+//设置type,id,type_id
 void EntityName::
 set(uint32_t type_, const std::string &id_)
 {
@@ -81,6 +84,7 @@ set(uint32_t type_, const std::string &id_)
   type_id = oss.str();
 }
 
+//获取类型及id 及type_id
 int EntityName::
 set(const std::string &type_, const std::string &id_)
 {
@@ -116,12 +120,14 @@ void EntityName::set_name(entity_name_t n)
   set(n.type(), s);
 }
 
+//返回类型字符串
 const char* EntityName::
 get_type_str() const
 {
   return ceph_entity_type_name(type);
 }
 
+//返回类型字符串
 const char *EntityName::
 get_type_name() const
 {
@@ -159,11 +165,13 @@ bool operator<(const EntityName& a, const EntityName& b)
   return (a.type < b.type) || (a.type == b.type && a.id < b.id);
 }
 
+//输出type_id
 std::ostream& operator<<(std::ostream& out, const EntityName& n)
 {
   return out << n.to_str();
 }
 
+//通过类型名获取类型.
 uint32_t str_to_ceph_entity_type(const char * str)
 {
   size_t i;

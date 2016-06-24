@@ -389,6 +389,7 @@ void PGBackend::trim_rollback_object(
     coll, ghobject_t(hoid, old_version, get_parent()->whoami_shard().shard));
 }
 
+//构造pg后端.通过pool的类型创建不同的backend
 PGBackend *PGBackend::build_pg_backend(
   const pg_pool_t &pool,
   const OSDMapRef curmap,

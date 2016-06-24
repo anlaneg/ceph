@@ -712,11 +712,13 @@ uint32_t CephContext::get_module_type() const
   return _module_type;
 }
 
+//设置init的标记
 void CephContext::set_init_flags(int flags)
 {
   _init_flags = flags;
 }
 
+//获取init的标记
 int CephContext::get_init_flags() const
 {
   return _init_flags;

@@ -364,6 +364,7 @@ public:
    *
    * @param d The Dispatcher to insert into the list.
    */
+  //将dispatcher添加至头部
   void add_dispatcher_head(Dispatcher *d) { 
     bool first = dispatchers.empty();
     dispatchers.push_front(d);
@@ -379,6 +380,7 @@ public:
    *
    * @param d The Dispatcher to insert into the list.
    */
+  //将dispatcher添加至尾部
   void add_dispatcher_tail(Dispatcher *d) { 
     bool first = dispatchers.empty();
     dispatchers.push_back(d);
@@ -619,6 +621,7 @@ public:
    *
    * @param con Pointer to the new Connection.
    */
+  //当一台新的连接建立时,通过此函数进行初始化或者重连
   void ms_deliver_handle_fast_connect(Connection *con) {
     for (list<Dispatcher*>::iterator p = fast_dispatchers.begin();
          p != fast_dispatchers.end();

@@ -43,14 +43,15 @@ CephContext *common_preinit(const CephInitParameters &iparams,
   g_code_env = code_env;
 
   // Create a configuration object
-  CephContext *cct = new CephContext(iparams.module_type, flags);
+  CephContext *cct = new CephContext(iparams.module_type, flags);//构造cephcontext
 
   md_config_t *conf = cct->_conf;
   // add config observers here
 
   // Set up our entity name.
-  conf->name = iparams.name;
+  conf->name = iparams.name;//设置名称
 
+  //设置部分conf选项.
   if (data_dir_option)
     conf->data_dir_option = data_dir_option;
 
@@ -97,6 +98,7 @@ CephContext *common_preinit(const CephInitParameters &iparams,
   return cct;
 }
 
+//显示解析过程中的错误信息
 void complain_about_parse_errors(CephContext *cct,
 				 std::deque<std::string> *parse_errors)
 {

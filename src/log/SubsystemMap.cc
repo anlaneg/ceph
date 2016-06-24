@@ -4,6 +4,7 @@
 namespace ceph {
 namespace logging {
 
+//向m_subsys集合中加入数据
 void SubsystemMap::add(unsigned subsys, std::string name, int log, int gather)
 {
   if (subsys >= m_subsys.size())
@@ -15,12 +16,14 @@ void SubsystemMap::add(unsigned subsys, std::string name, int log, int gather)
     m_max_name_len = name.length();
 }
 
+//设置某个subsys的log_level
 void SubsystemMap::set_log_level(unsigned subsys, int log)
 {
   assert(subsys < m_subsys.size());
   m_subsys[subsys].log_level = log;
 }
 
+//设置某个subsys的gather_level
 void SubsystemMap::set_gather_level(unsigned subsys, int gather)
 {
   assert(subsys < m_subsys.size());

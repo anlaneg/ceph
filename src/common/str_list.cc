@@ -19,6 +19,7 @@ using std::vector;
 using std::set;
 using std::list;
 
+//跳过前导的delims符,自第一个非delims处查找delims,将找到的结果返回字符串.
 static bool get_next_token(const string &s, size_t& pos, const char *delims, string& token)
 {
   int start = s.find_first_not_of(delims, pos);
@@ -40,6 +41,7 @@ static bool get_next_token(const string &s, size_t& pos, const char *delims, str
   return true;
 }
 
+//将str依delims进行划分,划分结果存入str_list
 void get_str_list(const string& str, const char *delims, list<string>& str_list)
 {
   size_t pos = 0;
@@ -56,12 +58,14 @@ void get_str_list(const string& str, const char *delims, list<string>& str_list)
   }
 }
 
+//按";,= \t"划分str,并将结果存入str_list
 void get_str_list(const string& str, list<string>& str_list)
 {
   const char *delims = ";,= \t";
   return get_str_list(str, delims, str_list);
 }
 
+//用delims划分str,并将划分结果存入到str_vec中.(同get_str_list一样,但集合类型不同)
 void get_str_vec(const string& str, const char *delims, vector<string>& str_vec)
 {
   size_t pos = 0;
@@ -77,12 +81,14 @@ void get_str_vec(const string& str, const char *delims, vector<string>& str_vec)
   }
 }
 
+//用";,= \t"进行划分
 void get_str_vec(const string& str, vector<string>& str_vec)
 {
   const char *delims = ";,= \t";
   return get_str_vec(str, delims, str_vec);
 }
 
+//另一种类型
 void get_str_set(const string& str, const char *delims, set<string>& str_set)
 {
   size_t pos = 0;
@@ -99,6 +105,7 @@ void get_str_set(const string& str, const char *delims, set<string>& str_set)
   }
 }
 
+//set类型的划分.
 void get_str_set(const string& str, set<string>& str_set)
 {
   const char *delims = ";,= \t";

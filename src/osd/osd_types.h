@@ -2592,6 +2592,8 @@ inline ostream& operator<<(ostream& out, const pg_query_t& q) {
 }
 
 class PGBackend;
+//对对象的修改操作,这里主要是将其封装在一个缓冲区内,然后在缓冲区的基础上
+//提供一组访问函数,本身并没有多功能.
 class ObjectModDesc {
   bool can_local_rollback;
   bool rollback_info_completed;
@@ -2816,7 +2818,7 @@ struct pg_log_entry_t {
   utime_t     mtime;  // this is the _user_ mtime, mind you
   int32_t return_code; // only stored for ERRORs for dup detection
 
-  __s32      op;
+  __s32      op;//操作类型(见类枚举)
   bool invalid_hash; // only when decoding sobject_t based entries
   bool invalid_pool; // only when decoding pool-less hobject based entries
 
@@ -2905,16 +2907,16 @@ struct pg_log_t {
    *          complete negative information.  
    * i.e. we can infer pg contents for any store whose last_update >= tail.
    */
-  eversion_t head;    // newest entry
-  eversion_t tail;    // version prior to oldest
+  eversion_t head;    // newest entry //最新的版本
+  eversion_t tail;    // version prior to oldest//最旧的版本
 
 protected:
   // We can rollback rollback-able entries > can_rollback_to
-  eversion_t can_rollback_to;
+  eversion_t can_rollback_to;//可以rollback的最小版本
 
   // always <= can_rollback_to, indicates how far stashed rollback
   // data can be found
-  eversion_t rollback_info_trimmed_to;
+  eversion_t rollback_info_trimmed_to;//可以移除的版本(可以理解为已固化)
 
 public:
   mempool::osd::list<pg_log_entry_t> log;  // the actual log.
@@ -2940,6 +2942,7 @@ public:
     }
   }
 
+  //清空log
   void clear() {
     eversion_t z;
     rollback_info_trimmed_to = can_rollback_to = head = tail = z;
@@ -3017,6 +3020,7 @@ public:
     return divergent;
   }
 
+  //log是否为空
   bool empty() const {
     return log.empty();
   }

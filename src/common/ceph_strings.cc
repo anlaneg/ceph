@@ -3,6 +3,7 @@
  */
 #include "include/types.h"
 
+//通过类型找名称
 const char *ceph_entity_type_name(int type)
 {
 	switch (type) {
@@ -16,6 +17,7 @@ const char *ceph_entity_type_name(int type)
 	}
 }
 
+//给一个操作,返回对应的操作名称
 const char *ceph_osd_op_name(int op)
 {
 	switch (op) {

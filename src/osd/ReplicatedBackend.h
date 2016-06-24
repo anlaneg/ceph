@@ -333,6 +333,7 @@ private:
       OpRequestRef op, eversion_t v)
       : tid(tid), on_commit(on_commit), on_applied(on_applied),
 	op(op), v(v) {}
+    //如果这两个列表空了,说明负责当前pg的所有osd均进行了响应.所以认为op处理完成.
     bool done() const {
       return waiting_for_commit.empty() &&
 	waiting_for_applied.empty();

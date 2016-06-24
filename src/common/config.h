@@ -115,8 +115,8 @@ public:
 
   class config_option {
   public:
-    const char *name;
-    opt_type_t type;
+    const char *name;//名称
+    opt_type_t type;//参数类型
     md_config_t::member_ptr_t md_member_ptr;
     bool safe; // promise to access it only via md_config_t::get_val
   private:
@@ -280,16 +280,16 @@ private:
   void expand_all_meta();
 
   // The configuration file we read, or NULL if we haven't read one.
-  ConfFile cf;
+  ConfFile cf;//配置文件中配置信息
 public:
-  std::deque<std::string> parse_errors;
+  std::deque<std::string> parse_errors;//parser时的错误信息保存
 private:
 
-  obs_map_t observers;
+  obs_map_t observers;//配置关注者
   changed_set_t changed;
 
 public:
-  ceph::logging::SubsystemMap subsys;
+  ceph::logging::SubsystemMap subsys;//定义子系统的日志level及日志收集level
 
   EntityName name;
   string data_dir_option;  ///< data_dir config option, if any
@@ -316,7 +316,7 @@ public:
   public:
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
-#include "common/config_opts.h"
+#include "common/config_opts.h"//定义配置项
 #undef OPTION_OPT_INT
 #undef OPTION_OPT_LONGLONG
 #undef OPTION_OPT_STR

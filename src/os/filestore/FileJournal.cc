@@ -807,6 +807,7 @@ int FileJournal::check_for_full(uint64_t seq, off64_t pos, off64_t size)
   return -ENOSPC;
 }
 
+//将writeq队列统一封闭成bl中,通过orig_ops,orig_bytes返回封装的操作数据字节数.
 int FileJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_t& orig_bytes)
 {
   // gather queued writes
@@ -820,10 +821,10 @@ int FileJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_
 
   while (!writeq_empty()) {
     list<write_item> items;
-    batch_pop_write(items);
+    batch_pop_write(items);//出队至items中
     list<write_item>::iterator it = items.begin();
     while (it != items.end()) {
-      uint64_t bytes = it->bl.length();
+      uint64_t bytes = it->bl.length();//数据长度
       int r = prepare_single_write(*it, bl, queue_pos, orig_ops, orig_bytes);
       if (r == 0) { // prepare ok, delete it
 	items.erase(it++);
@@ -905,6 +906,8 @@ void FileJournal::queue_write_fin(uint64_t seq, Context *fin)
 }
 */
 
+//将seq对应的completion_item入队至finisher中(采用finisher->queue)
+//注:seq指比seq小的write_item均已写入到日志里了.
 void FileJournal::queue_completions_thru(uint64_t seq)
 {
   assert(finisher_lock.is_locked());
@@ -915,7 +918,7 @@ void FileJournal::queue_completions_thru(uint64_t seq)
   while (it != items.end()) {
     completion_item& next = *it;
     if (next.seq > seq)
-      break;
+      break;//处理直到遇到大于seq的item,说明这个还没有写入,不需要加入finish
     utime_t lat = now;
     lat -= next.start;
     dout(10) << "queue_completions_thru seq " << seq
@@ -926,21 +929,23 @@ void FileJournal::queue_completions_thru(uint64_t seq)
       logger->tinc(l_filestore_journal_latency, lat);
     }
     if (next.finish)
-      finisher->queue(next.finish);
+      finisher->queue(next.finish);// ---- 将seq对应在的finish加入到finisher对应的对列中.
     if (next.tracked_op)
       next.tracked_op->mark_event("journaled_completion_queued");
     items.erase(it++);
   }
-  batch_unpop_completions(items);
-  finisher_cond.Signal();
+  batch_unpop_completions(items);//将不相关的放回来.
+  finisher_cond.Signal();//防止有读者因为batch_pop_completions而阻塞
 }
 
-
+//将一个write_item封闭在 entry_header_t + ebl + entry_header_t 内部
+//封闭后结果通过bl返回,queue_pos为写的位置,变更后返回
+//orig_ops 及orig_bytes统计后返回
 int FileJournal::prepare_single_write(write_item &next_write, bufferlist& bl, off64_t& queue_pos, uint64_t& orig_ops, uint64_t& orig_bytes)
 {
-  uint64_t seq = next_write.seq;
-  bufferlist &ebl = next_write.bl;
-  off64_t size = ebl.length();
+  uint64_t seq = next_write.seq;//序号
+  bufferlist &ebl = next_write.bl;//数据
+  off64_t size = ebl.length();//数据大小
 
   int r = check_for_full(seq, queue_pos, size);
   if (r < 0)
@@ -979,7 +984,7 @@ int FileJournal::prepare_single_write(write_item &next_write, bufferlist& bl, of
   journalq.push_back(pair<uint64_t,off64_t>(seq, queue_pos));
   writing_seq = seq;
 
-  queue_pos += size;
+  queue_pos += size;//变更queue_pos
   if (queue_pos >= header.max_size)
     queue_pos = queue_pos + get_top() - header.max_size;
 
@@ -1016,7 +1021,7 @@ int FileJournal::write_bl(off64_t& pos, bufferlist& bl)
     pos = get_top();
   return 0;
 }
-
+//将bl中的数据写入到journal对应的fd中.
 void FileJournal::do_write(bufferlist& bl)
 {
   // nothing to do?
@@ -1184,10 +1189,12 @@ void FileJournal::flush()
   dout(10) << "flush done" << dendl;
 }
 
-
+//日志写线程入口
 void FileJournal::write_thread_entry()
 {
   dout(10) << "write_thread_entry start" << dendl;
+
+  //阻塞等待writeq队列不为空或者日志写线程需要停止.
   while (1) {
     {
       Mutex::Locker locker(writeq_lock);
@@ -1238,7 +1245,7 @@ void FileJournal::write_thread_entry()
     uint64_t orig_bytes = 0;
 
     bufferlist bl;
-    int r = prepare_multi_write(bl, orig_ops, orig_bytes);
+    int r = prepare_multi_write(bl, orig_ops, orig_bytes);//处理多个writeitem
     // Don't care about journal full if stoppping, so drop queue and
     // possibly let header get written and loop above to notice stop
     if (r == -ENOSPC) {
@@ -1583,6 +1590,7 @@ int FileJournal::prepare_entry(vector<ObjectStore::Transaction>& tls, bufferlist
   return h.len;
 }
 
+//将要写的日志入队(writeq)
 void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
 			       Context *oncommit, TrackedOpRef osd_op)
 {
@@ -1621,19 +1629,21 @@ void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
 
     completions.push_back(
       completion_item(
-	seq, oncommit, ceph_clock_now(g_ceph_context), osd_op));
+	seq, oncommit, ceph_clock_now(g_ceph_context), osd_op));//构造完成回调加入completions
     if (writeq.empty())
-      writeq_cond.Signal();
-    writeq.push_back(write_item(seq, e, orig_len, osd_op));
+      writeq_cond.Signal();//如果writeq中之间没有,需要考虑读者是否已等待唤醒
+    writeq.push_back(write_item(seq, e, orig_len, osd_op));//将入将要写的的数据.
   }
 }
 
+//检查writeq是否为空
 bool FileJournal::writeq_empty()
 {
   Mutex::Locker locker(writeq_lock);
   return writeq.empty();
 }
 
+//返回writeq的队首
 FileJournal::write_item &FileJournal::peek_write()
 {
   assert(write_lock.is_locked());
@@ -1641,6 +1651,7 @@ FileJournal::write_item &FileJournal::peek_write()
   return writeq.front();
 }
 
+//丢掉writeq的队首
 void FileJournal::pop_write()
 {
   assert(write_lock.is_locked());
@@ -1652,6 +1663,7 @@ void FileJournal::pop_write()
   writeq.pop_front();
 }
 
+//一次性将writeq队列中的所有成员加入到items中
 void FileJournal::batch_pop_write(list<write_item> &items)
 {
   assert(write_lock.is_locked());
@@ -1667,6 +1679,7 @@ void FileJournal::batch_pop_write(list<write_item> &items)
   }
 }
 
+//一次性将items中的所有成员加入到writeq队列中
 void FileJournal::batch_unpop_write(list<write_item> &items)
 {
   assert(write_lock.is_locked());

@@ -642,23 +642,24 @@ public:
     hobject_t hoid;
     OpRequestRef op;
     xlist<RepGather*>::item queue_item;
-    int nref;
+    int nref;//引入计数
 
     eversion_t v;
 
-    ceph_tid_t rep_tid;
+    ceph_tid_t rep_tid;//事务id
 
     bool rep_aborted, rep_done;
 
     bool all_applied;
     bool all_committed;
     
-    utime_t   start;
+    utime_t   start;//起始时间
     
     eversion_t          pg_local_last_complete;
 
     ObcLockManager lock_manager;
 
+    //各类回调
     list<std::function<void()>> on_applied;
     list<std::function<void()>> on_committed;
     list<std::function<void()>> on_success;

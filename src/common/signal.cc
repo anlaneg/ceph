@@ -46,6 +46,7 @@ std::string signal_mask_to_str()
 }
 
 /* Block the signals in 'siglist'. If siglist == NULL, block all signals. */
+//使当前线程阻塞相应信号集
 void block_signals(const int *siglist, sigset_t *old_sigset)
 {
   sigset_t sigset;

@@ -71,6 +71,7 @@ ThreadPool::~ThreadPool()
   delete[] _conf_keys;
 }
 
+//支持动态变更线程池大小.
 void ThreadPool::handle_conf_change(const struct md_config_t *conf,
 				    const std::set <std::string> &changed)
 {

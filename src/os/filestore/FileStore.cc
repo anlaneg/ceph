@@ -515,6 +515,7 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
   return 0;
 }
 
+//构造FileStore,参数base指出数据存放的位置,jdev指出日志存放的位置,flags用于记录标记,name 用于定义名称.do_update暂时未知.
 FileStore::FileStore(const std::string &base, const std::string &jdev, osflagbits_t flags, const char *name, bool do_update) :
   JournalingObjectStore(base),
   internal_name(name),
@@ -1302,6 +1303,7 @@ int FileStore::upgrade()
   return 0;
 }
 
+//自commit_op_seq文件中读取落盘的seq
 int FileStore::read_op_seq(uint64_t *seq)
 {
   int op_fd = ::open(current_op_seq_fn.c_str(), O_CREAT|O_RDWR, 0644);
@@ -1323,6 +1325,7 @@ int FileStore::read_op_seq(uint64_t *seq)
   return op_fd;
 }
 
+//写入seq
 int FileStore::write_op_seq(int fd, uint64_t seq)
 {
   char s[30];
@@ -1729,7 +1732,7 @@ int FileStore::mount()
       dout(0) << "mount INFO: O_DSYNC write is enabled" << dendl;
     }
   }
-  sync_thread.create("filestore_sync");
+  sync_thread.create("filestore_sync");//同步线程创建
 
   if (!(generic_flags & SKIP_JOURNAL_REPLAY)) {
     ret = journal_replay(initial_op_seq);
@@ -1913,6 +1916,7 @@ int FileStore::umount()
 
 /// -----------------------------
 
+//构造FileStore::Op
 FileStore::Op *FileStore::build_op(vector<Transaction>& tls,
 				   Context *onreadable,
 				   Context *onreadable_sync,
@@ -1975,18 +1979,20 @@ void FileStore::op_queue_release_throttle(Op *o)
   logger->set(l_filestore_op_queue_bytes, throttle_bytes.get_current());
 }
 
+//完成本组op的落盘处理
 void FileStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
 {
   if (!m_disable_wbthrottle) {
     wbthrottle.throttle();
   }
   // inject a stall?
+  //做操作之前,是否要故意延迟一下.
   if (g_conf->filestore_inject_stall) {
     int orig = g_conf->filestore_inject_stall;
     dout(5) << "_do_op filestore_inject_stall " << orig << ", sleeping" << dendl;
     for (int n = 0; n < g_conf->filestore_inject_stall; n++)
       sleep(1);
-    g_conf->set_val("filestore_inject_stall", "0");
+    g_conf->set_val("filestore_inject_stall", "0");//这里清空了(为什么?)
     dout(5) << "_do_op done stalling" << dendl;
   }
 
@@ -1994,7 +2000,7 @@ void FileStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   Op *o = osr->peek_queue();
   apply_manager.op_apply_start(o->op);
   dout(5) << "_do_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << " start" << dendl;
-  int r = _do_transactions(o->tls, o->op, &handle);
+  int r = _do_transactions(o->tls, o->op, &handle);//落盘
   apply_manager.op_apply_finish(o->op);
   dout(10) << "_do_op " << o << " seq " << o->op << " r = " << r
 	   << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
@@ -2040,6 +2046,7 @@ struct C_JournaledAhead : public Context {
 
   C_JournaledAhead(FileStore *f, FileStore::OpSequencer *os, FileStore::Op *o, Context *ondisk):
     fs(f), osr(os), o(o), ondisk(ondisk) { }
+  //日志完成后,此函数将被调用.
   void finish(int r) {
     fs->_journaled_ahead(osr, o, ondisk);
   }
@@ -2100,7 +2107,7 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
     if (handle)
       handle->reset_tp_timeout();
 
-    uint64_t op_num = submit_manager.op_submit_start();
+    uint64_t op_num = submit_manager.op_submit_start();//分配op对应的序号
     o->op = op_num;
 
     if (m_filestore_do_dump)
@@ -2116,10 +2123,10 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
     } else if (m_filestore_journal_writeahead) {
       dout(5) << "queue_transactions (writeahead) " << o->op << " " << o->tls << dendl;
 
-      osr->queue_journal(o->op);
+      osr->queue_journal(o->op);//将seq入jq队列
 
       _op_journal_transactions(tbl, orig_len, o->op,
-			       new C_JournaledAhead(this, osr, o, ondisk),
+			       new C_JournaledAhead(this, osr, o, ondisk),//操作执行完成后,C_JournaledAhead将被执行
 			       osd_op);
     } else {
       ceph_abort();
@@ -2175,7 +2182,7 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
   int r = do_transactions(tls, op);
 
   if (r >= 0) {
-    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);
+    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);//op为操作序号(一会确认),osd_op是什么?
   } else {
     delete ondisk;
   }
@@ -2200,22 +2207,23 @@ void FileStore::_journaled_ahead(OpSequencer *osr, Op *o, Context *ondisk)
   dout(5) << "_journaled_ahead " << o << " seq " << o->op << " " << *osr << " " << o->tls << dendl;
 
   // this should queue in order because the journal does it's completions in order.
-  queue_op(osr, o);
+  queue_op(osr, o);//将o入q队列.
 
   list<Context*> to_queue;
-  osr->dequeue_journal(&to_queue);
+  osr->dequeue_journal(&to_queue);//通过osr->flush_commit加入的waiter,这个感觉在此分支返回的是empty
 
   // do ondisk completions async, to prevent any onreadable_sync completions
   // getting blocked behind an ondisk completion.
   if (ondisk) {
     dout(10) << " queueing ondisk " << ondisk << dendl;
-    ondisk_finishers[osr->id % m_ondisk_finisher_num]->queue(ondisk);
+    ondisk_finishers[osr->id % m_ondisk_finisher_num]->queue(ondisk);//ondisk被加入到finisher处理框架中,ondisk的finish函数将被调用.
   }
   if (!to_queue.empty()) {
     ondisk_finishers[osr->id % m_ondisk_finisher_num]->queue(to_queue);
   }
 }
 
+//通过_do_transaction逐个处理transaction
 int FileStore::_do_transactions(
   vector<Transaction> &tls,
   uint64_t op_seq,
@@ -2503,6 +2511,8 @@ int FileStore::_check_replay_guard(int fd, const SequencerPosition& spos)
   }
 }
 
+//t是事务,op_seq是这个事务对应的操作序号,trans_num指这个操作序号中的第几个事务,handle指哪个threadpool负责处理此事.
+//在这里有落盘处理
 void FileStore::_do_transaction(
   Transaction& t, uint64_t op_seq, int trans_num,
   ThreadPool::TPHandle *handle)
@@ -3347,6 +3357,7 @@ int FileStore::_touch(const coll_t& cid, const ghobject_t& oid)
   return r;
 }
 
+//写操作,落盘.
 int FileStore::_write(const coll_t& cid, const ghobject_t& oid,
                      uint64_t offset, size_t len,
                      const bufferlist& bl, uint32_t fadvise_flags)
@@ -3779,6 +3790,7 @@ int FileStore::_clone_range(const coll_t& oldcid, const ghobject_t& oldoid, cons
   return r;
 }
 
+//同步落盘时,如果超时,会触发此回调
 class SyncEntryTimeout : public Context {
 public:
   explicit SyncEntryTimeout(int commit_timeo)
@@ -3811,19 +3823,20 @@ void FileStore::sync_entry()
     utime_t startwait = ceph_clock_now(g_ceph_context);
     if (!force_sync) {
       dout(20) << "sync_entry waiting for max_interval " << max_interval << dendl;
-      sync_cond.WaitInterval(g_ceph_context, lock, max_interval);
+      sync_cond.WaitInterval(g_ceph_context, lock, max_interval);//如果不是强制同步,则等待至少max_interval秒钟
     } else {
       dout(20) << "sync_entry not waiting, force_sync set" << dendl;
     }
 
     if (force_sync) {
       dout(20) << "sync_entry force_sync set" << dendl;
-      force_sync = false;
+      force_sync = false;//还原强制设置标记
     } else if (stop) {
       dout(20) << __func__ << " stop set" << dendl;
       break;
     } else {
       // wait for at least the min interval
+      //如果是强制同步,则必须等待至少min_interval时间才能执行.
       utime_t woke = ceph_clock_now(g_ceph_context);
       woke -= startwait;
       dout(20) << "sync_entry woke after " << woke << dendl;
@@ -3838,10 +3851,10 @@ void FileStore::sync_entry()
 
     list<Context*> fin;
   again:
-    fin.swap(sync_waiters);
+    fin.swap(sync_waiters);//将sync_waiters中的内容交换到fin中
     lock.Unlock();
 
-    op_tp.pause();
+    op_tp.pause();//op_tp线程池暂停(这个线程池负责向filestore中的data处写数据)
     if (apply_manager.commit_start()) {
       utime_t start = ceph_clock_now(g_ceph_context);
       uint64_t cp = apply_manager.get_committing_seq();
@@ -3893,27 +3906,28 @@ void FileStore::sync_entry()
 	}
       } else
       {
+    //已经拿到cp,可以解锁,容许其它进程写了.
 	apply_manager.commit_started();
 	op_tp.unpause();
 
-	int err = object_map->sync();
+	int err = object_map->sync();//这个走db(需要再确认下,没有看进去)
 	if (err < 0) {
 	  derr << "object_map sync got " << cpp_strerror(err) << dendl;
 	  assert(0 == "object_map sync returned error");
 	}
 
-	err = backend->syncfs();
+	err = backend->syncfs();//强制文件系统落盘
 	if (err < 0) {
 	  derr << "syncfs got " << cpp_strerror(err) << dendl;
 	  assert(0 == "syncfs returned error");
 	}
 
-	err = write_op_seq(op_fd, cp);
+	err = write_op_seq(op_fd, cp);//向op_fd中写入已落盘的seq(此文件为current/commit_op_seq)
 	if (err < 0) {
 	  derr << "Error during write_op_seq: " << cpp_strerror(err) << dendl;
 	  assert(0 == "error during write_op_seq");
 	}
-	err = ::fsync(op_fd);
+	err = ::fsync(op_fd);//op_fd落盘
 	if (err < 0) {
 	  derr << "Error during fsync of op_seq: " << cpp_strerror(err) << dendl;
 	  assert(0 == "error during fsync of op_seq");
