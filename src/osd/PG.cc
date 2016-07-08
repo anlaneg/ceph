@@ -7262,17 +7262,17 @@ void PG::RecoveryState::GetInfo::get_infos()
        it != prior_set->probe.end();
        ++it) {
     pg_shard_t peer = *it;
-    if (peer == pg->pg_whoami) {
+    if (peer == pg->pg_whoami) {//如果是自已
       continue;
     }
-    if (pg->peer_info.count(peer)) {
+    if (pg->peer_info.count(peer)) {//如果已经peer
       dout(10) << " have osd." << peer << " info " << pg->peer_info[peer] << dendl;
       continue;
     }
-    if (peer_info_requested.count(peer)) {
+    if (peer_info_requested.count(peer)) {//已经在请求peer
       dout(10) << " already requested info from osd." << peer << dendl;
       pg->blocked_by.insert(peer.osd);
-    } else if (!pg->get_osdmap()->is_up(peer.osd)) {
+    } else if (!pg->get_osdmap()->is_up(peer.osd)) {//对端没有up
       dout(10) << " not querying info from down osd." << peer << dendl;
     } else {
       dout(10) << " querying info from osd." << peer << dendl;
@@ -7281,8 +7281,8 @@ void PG::RecoveryState::GetInfo::get_infos()
 			 it->shard, pg->pg_whoami.shard,
 			 pg->info.history,
 			 pg->get_osdmap()->get_epoch()));
-      peer_info_requested.insert(peer);
-      pg->blocked_by.insert(peer.osd);
+      peer_info_requested.insert(peer);//这里加入此集合表示已开始请求
+      pg->blocked_by.insert(peer.osd);//当前阻塞在哪个请求上。
     }
   }
 

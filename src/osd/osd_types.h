@@ -2542,7 +2542,7 @@ struct pg_query_t {
     }
   }
 
-  __s32 type;
+  __s32 type;//类型
   eversion_t since;
   pg_history_t history;
   epoch_t epoch_sent;
