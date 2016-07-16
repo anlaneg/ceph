@@ -501,9 +501,9 @@ public:
    * (if they have one) */
   xlist<PG*>::item stat_queue_item;
   bool scrub_queued;
-  bool recovery_queued;
+  bool recovery_queued;//指明此pg是否已加入恢复队列
 
-  int recovery_ops_active;
+  int recovery_ops_active;//等处理的恢复操作数
   set<pg_shard_t> waiting_on_backfill;
 #ifdef DEBUG_RECOVERY_OIDS
   set<hobject_t, hobject_t::BitwiseComparator> recovering_oids;

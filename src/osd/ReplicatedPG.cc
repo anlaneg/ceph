@@ -10457,7 +10457,7 @@ bool ReplicatedPG::start_recovery_ops(
   const pg_missing_t &missing = pg_log.get_missing();
 
   int num_missing = missing.num_missing();
-  int num_unfound = get_num_unfound();
+  int num_unfound = get_num_unfoTund();
 
   if (num_missing == 0) {
     info.last_complete = info.last_update;

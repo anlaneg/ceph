@@ -116,6 +116,7 @@ ReplicatedBackend::ReplicatedBackend(
   PGBackend(pg, store, coll, c),
   cct(cct) {}
 
+//按h中的参数或发pushes,或发pulls
 void ReplicatedBackend::run_recovery_op(
   PGBackend::RecoveryHandle *_h,
   int priority)
@@ -1915,6 +1916,7 @@ void ReplicatedBackend::send_pushes(int prio, map<pg_shard_t, vector<PushOp> > &
   }
 }
 
+//逐个发送pull
 void ReplicatedBackend::send_pulls(int prio, map<pg_shard_t, vector<PullOp> > &pulls)
 {
   for (map<pg_shard_t, vector<PullOp> >::iterator i = pulls.begin();

@@ -2045,6 +2045,7 @@ bool PG::requeue_scrub()
   }
 }
 
+//pg入恢复队列
 void PG::queue_recovery(bool front)
 {
   if (!is_primary() || !is_peered()) {
@@ -2189,7 +2190,7 @@ void PG::_finish_recovery(Context *c)
   }
   unlock();
 }
-
+//开始处理恢复操作
 void PG::start_recovery_op(const hobject_t& soid)
 {
   dout(10) << "start_recovery_op " << soid
@@ -2198,12 +2199,12 @@ void PG::start_recovery_op(const hobject_t& soid)
 #endif
 	   << dendl;
   assert(recovery_ops_active >= 0);
-  recovery_ops_active++;
+  recovery_ops_active++;//pg操作数加
 #ifdef DEBUG_RECOVERY_OIDS
   assert(recovering_oids.count(soid) == 0);
   recovering_oids.insert(soid);
 #endif
-  osd->start_recovery_op(this, soid);
+  osd->start_recovery_op(this, soid);//osd操作数加
 }
 
 void PG::finish_recovery_op(const hobject_t& soid, bool dequeue)
@@ -2214,12 +2215,12 @@ void PG::finish_recovery_op(const hobject_t& soid, bool dequeue)
 #endif
 	   << dendl;
   assert(recovery_ops_active > 0);
-  recovery_ops_active--;
+  recovery_ops_active--;//pg操作数减
 #ifdef DEBUG_RECOVERY_OIDS
   assert(recovering_oids.count(soid));
   recovering_oids.erase(soid);
 #endif
-  osd->finish_recovery_op(this, soid, dequeue);
+  osd->finish_recovery_op(this, soid, dequeue);//osd操作数减，有空闲，尝试调度队列
 
   if (!dequeue) {
     queue_recovery();
@@ -6735,7 +6736,7 @@ PG::RecoveryState::Active::Active(my_context ctx)
   pg->start_flush(
     context< RecoveryMachine >().get_cur_transaction(),
     context< RecoveryMachine >().get_on_applied_context_list(),
-    context< RecoveryMachine >().get_on_safe_context_list());
+    context< RecoveryMachine >().get_on_safe_context_list());//注册回调
   pg->activate(*context< RecoveryMachine >().get_cur_transaction(),
 	       pg->get_osdmap()->get_epoch(),
 	       *context< RecoveryMachine >().get_on_safe_context_list(),
@@ -7770,14 +7771,15 @@ boost::statechart::result PG::RecoveryState::GetMissing::react(const MLogRec& lo
   pg->proc_replica_log(*context<RecoveryMachine>().get_cur_transaction(),
 		       logevt.msg->info, logevt.msg->log, logevt.msg->missing, logevt.from);
   
-  if (peer_missing_requested.empty()) {
+  if (peer_missing_requested.empty()) {//所有人已回复
     if (pg->need_up_thru) {
       dout(10) << " still need up_thru update before going active" << dendl;
-      post_event(NeedUpThru());
+      post_event(NeedUpThru());//此事件被投递后，将触发WaitUpThru状态
     } else {
       dout(10) << "Got last missing, don't need missing "
 	       << "posting Activate" << dendl;
-      post_event(Activate(pg->get_osdmap()->get_epoch()));
+      //将到达active状态
+      post_event(Activate(pg->get_osdmap()->get_epoch()));//此事件被投递后，GetMissing将不处理此事件，而由其上层状态处理peering
     }
   }
   return discard_event();

@@ -4468,8 +4468,8 @@ void OSD::tick_without_osd_lock()
   }
 
   check_ops_in_flight();
-  service.kick_recovery_queue();
-  tick_timer_without_osd_lock.add_event_after(OSD_TICK_INTERVAL, new C_Tick_WithoutOSDLock(this));
+  service.kick_recovery_queue();//尝试处理恢复队列
+  tick_timer_without_osd_lock.add_event_after(OSD_TICK_INTERVAL, new C_Tick_WithoutOSDLock(this));//周期性定时器
 }
 
 void OSD::check_ops_in_flight()
@@ -8428,6 +8428,7 @@ void OSD::check_replay_queue()
   }
 }
 
+//处理队列awaiting_throttle中的恢复
 void OSDService::_maybe_queue_recovery() {
   assert(recovery_lock.is_locked_by_me());
   uint64_t available_pushes;
@@ -8435,17 +8436,18 @@ void OSDService::_maybe_queue_recovery() {
 	 _recover_now(&available_pushes)) {
     uint64_t to_start = MIN(
       available_pushes,
-      cct->_conf->osd_recovery_max_single_start);
-    _queue_for_recovery(awaiting_throttle.front(), to_start);
+      cct->_conf->osd_recovery_max_single_start);//本次恢复数受single_start约束
+    _queue_for_recovery(awaiting_throttle.front(), to_start);//最多恢复to_start个
     awaiting_throttle.pop_front();
     recovery_ops_reserved += to_start;
   }
 }
 
+//获取本次需要恢复多少个
 bool OSDService::_recover_now(uint64_t *available_pushes)
 {
   uint64_t max = cct->_conf->osd_recovery_max_active;
-  if (max <= recovery_ops_active + recovery_ops_reserved) {
+  if (max <= recovery_ops_active + recovery_ops_reserved) {//如果当前正在恢复的和需要恢复的大于max,则本次不恢复
     dout(15) << "_recover_now active " << recovery_ops_active
 	     << " + reserved " << recovery_ops_reserved
 	     << " >= max " << max << dendl;
@@ -8455,14 +8457,14 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
   }
 
   if (available_pushes)
-    *available_pushes = max - recovery_ops_active - recovery_ops_reserved;
+    *available_pushes = max - recovery_ops_active - recovery_ops_reserved;//计划恢复这么多
 
-  if (ceph_clock_now(cct) < defer_recovery_until) {
+  if (ceph_clock_now(cct) < defer_recovery_until) {//如果需要推迟恢复
     dout(15) << "_recover_now defer until " << defer_recovery_until << dendl;
     return false;
   }
 
-  if (recovery_paused) {
+  if (recovery_paused) {//如果恢复暂停
     dout(15) << "_recover_now paused" << dendl;
     return false;
   }

@@ -709,6 +709,7 @@ public:
 			pg_missing_t& omissing, pg_shard_t from) const;
 
 protected:
+  //将pglog按关联的对象进行分类，每个对象一项
   static void split_by_object(
     mempool::osd::list<pg_log_entry_t> &entries,
     map<hobject_t, mempool::osd::list<pg_log_entry_t>, hobject_t::BitwiseComparator> *out_entries) {

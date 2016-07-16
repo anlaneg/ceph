@@ -349,8 +349,8 @@ struct PGSnapTrim {
 };
 
 struct PGRecovery {
-  epoch_t epoch_queued;
-  uint64_t reserved_pushes;
+  epoch_t epoch_queued;//版本号
+  uint64_t reserved_pushes;//推的最大数目
   PGRecovery(epoch_t e, uint64_t reserved_pushes)
     : epoch_queued(e), reserved_pushes(reserved_pushes) {}
   ostream &operator<<(ostream &rhs) {
@@ -907,18 +907,19 @@ public:
 
 private:
   // -- pg recovery and associated throttling --
-  Mutex recovery_lock;
-  list<pair<epoch_t, PGRef> > awaiting_throttle;
+  Mutex recovery_lock;//锁，保护恢复链表，保护计数
+  list<pair<epoch_t, PGRef> > awaiting_throttle;//恢复链表
 
-  utime_t defer_recovery_until;
-  uint64_t recovery_ops_active;
-  uint64_t recovery_ops_reserved;
-  bool recovery_paused;
+  utime_t defer_recovery_until;//延迟到此时间进行下一次恢复
+  uint64_t recovery_ops_active;//还未处理数
+  uint64_t recovery_ops_reserved;//正在处理数
+  bool recovery_paused;//指明恢复是否需要暂停
 #ifdef DEBUG_RECOVERY_OIDS
   map<spg_t, set<hobject_t, hobject_t::BitwiseComparator> > recovery_oids;
 #endif
   bool _recover_now(uint64_t *available_pushes);
   void _maybe_queue_recovery();
+  //构造PGRecovery并将其加入op_wq队列（recovery入口）
   void _queue_for_recovery(
     pair<epoch_t, PGRef> p, uint64_t reserved_pushes) {
     assert(recovery_lock.is_locked_by_me());
@@ -977,6 +978,7 @@ public:
     }
   }
   // replay / delayed pg activation
+  //将pg入队恢复
   void queue_for_recovery(PG *pg, bool front = false) {
     Mutex::Locker l(recovery_lock);
     if (front) {

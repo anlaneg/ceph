@@ -38,7 +38,7 @@ public:
 
   /// @see PGBackend::open_recovery_op
   RPGHandle *_open_recovery_op() {
-    return new RPGHandle();
+    return new RPGHandle();//构造对象
   }
   PGBackend::RecoveryHandle *open_recovery_op() {
     return _open_recovery_op();

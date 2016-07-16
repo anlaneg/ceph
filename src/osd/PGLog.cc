@@ -133,12 +133,12 @@ void PGLog::proc_replica_log(
   dout(10) << "proc_replica_log for osd." << from << ": "
 	   << oinfo << " " << olog << " " << omissing << dendl;
 
-  if (olog.head < log.tail) {
+  if (olog.head < log.tail) {//如果权威曰志的head没有本地的tail大，则不相交，则不可能有分岐
     dout(10) << __func__ << ": osd." << from << " does not overlap, not looking "
 	     << "for divergent objects" << dendl;
     return;
   }
-  if (olog.head == log.head) {
+  if (olog.head == log.head) {//如果head相等，则不可能有分歧
     dout(10) << __func__ << ": osd." << from << " same log head, not looking "
 	     << "for divergent objects" << dendl;
     return;
@@ -167,7 +167,7 @@ void PGLog::proc_replica_log(
   while (1) {
     if (first_non_divergent == log.log.rend())
       break;
-    if (first_non_divergent->version <= olog.head) {
+    if (first_non_divergent->version <= olog.head) {//从这个位置向tail方向是没有分歧的
       dout(20) << "merge_log point (usually last shared) is "
 	       << *first_non_divergent << dendl;
       break;
@@ -186,7 +186,8 @@ void PGLog::proc_replica_log(
     (first_non_divergent == log.log.rend() ||
      first_non_divergent->version < log.tail) ?
     log.tail :
-    first_non_divergent->version;
+    first_non_divergent->version;//从lu向head方向有分歧
+
 
   IndexedLog folog(olog);
   auto divergent = folog.rewind_from_head(lu);

@@ -2810,6 +2810,7 @@ struct pg_log_entry_t {
   hobject_t  soid;
   osd_reqid_t reqid;  // caller+tid to uniquely identify request
   vector<pair<osd_reqid_t, version_t> > extra_reqids;
+  //当前版本，此对象的前一个版本，？
   eversion_t version, prior_version, reverting_to;
   version_t user_version; // the user version for this entry
   utime_t     mtime;  // this is the _user_ mtime, mind you
