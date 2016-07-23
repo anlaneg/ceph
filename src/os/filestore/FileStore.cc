@@ -1616,7 +1616,7 @@ int FileStore::mount()
   }
 
   dout(0) << "start omap initiation" << dendl;
-  if (!(generic_flags & SKIP_MOUNT_OMAP)) {
+  if (!(generic_flags & SKIP_MOUNT_OMAP)) {//默认情况下generic_flags来自于配置文件,默认为0
     KeyValueDB * omap_store = KeyValueDB::create(g_ceph_context,
 						 superblock.omap_backend,
 						 omap_dir);
@@ -1734,8 +1734,8 @@ int FileStore::mount()
   }
   sync_thread.create("filestore_sync");//同步线程创建
 
-  if (!(generic_flags & SKIP_JOURNAL_REPLAY)) {
-    ret = journal_replay(initial_op_seq);
+  if (!(generic_flags & SKIP_JOURNAL_REPLAY)) {//如果没有指明,需要跳过journal_replay,则读取journal,并replay
+    ret = journal_replay(initial_op_seq);//initial_op_seq来源于文件
     if (ret < 0) {
       derr << "mount failed to open journal " << journalpath << ": " << cpp_strerror(ret) << dendl;
       if (ret == -ENOTTY) {

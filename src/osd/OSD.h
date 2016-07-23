@@ -992,9 +992,9 @@ public:
 
   // osd map cache (past osd maps)
   Mutex map_cache_lock;
-  SharedLRU<epoch_t, const OSDMap> map_cache;
-  SimpleLRU<epoch_t, bufferlist> map_bl_cache;
-  SimpleLRU<epoch_t, bufferlist> map_bl_inc_cache;
+  SharedLRU<epoch_t, const OSDMap> map_cache;//缓存各版本osdmap
+  SimpleLRU<epoch_t, bufferlist> map_bl_cache;//缓存各版本osdmap,bufferlist形式
+  SimpleLRU<epoch_t, bufferlist> map_bl_inc_cache;//缓存各版本osdmap增量的bufferlist形式
 
   OSDMapRef try_get_map(epoch_t e);
   OSDMapRef get_map(epoch_t e) {
@@ -2029,6 +2029,7 @@ private:
 protected:
   // -- placement groups --
   RWLock pg_map_lock; // this lock orders *above* individual PG _locks
+  //记录pg
   ceph::unordered_map<spg_t, PG*> pg_map; // protected by pg_map lock
 
   map<spg_t, list<PG::CephPeeringEvtRef> > peering_wait_for_split;

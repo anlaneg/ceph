@@ -136,11 +136,11 @@ void ReplicatedBackend::recover_object(
   )
 {
   dout(10) << __func__ << ": " << hoid << dendl;
-  RPGHandle *h = static_cast<RPGHandle *>(_h);
-  if (get_parent()->get_local_missing().is_missing(hoid)) {
+  RPGHandle *h = static_cast<RPGHandle *>(_h);//两个函数均将数据封闭在_h中
+  if (get_parent()->get_local_missing().is_missing(hoid)) {//如果自已没有
     assert(!obc);
     // pull
-    prepare_pull(
+    prepare_pull(//准备拉过来
       v,
       hoid,
       head,
@@ -148,7 +148,7 @@ void ReplicatedBackend::recover_object(
     return;
   } else {
     assert(obc);
-    int started = start_pushes(
+    int started = start_pushes(//自已有,推过去
       hoid,
       obc,
       h);
@@ -521,10 +521,10 @@ void generate_transaction(
 }
 
 void ReplicatedBackend::submit_transaction(
-  const hobject_t &soid,
+  const hobject_t &soid,//操作哪个对象
   const object_stat_sum_t &delta_stats,
   const eversion_t &at_version,
-  PGTransactionUPtr &&_t,
+  PGTransactionUPtr &&_t,//事务
   const eversion_t &trim_to,
   const eversion_t &roll_forward_to,
   const vector<pg_log_entry_t> &_log_entries,

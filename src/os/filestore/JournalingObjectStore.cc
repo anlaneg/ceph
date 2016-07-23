@@ -39,7 +39,7 @@ int JournalingObjectStore::journal_replay(uint64_t fs_op_seq)
 {
   dout(10) << "journal_replay fs op_seq " << fs_op_seq << dendl;
 
-  if (g_conf->journal_replay_from) {
+  if (g_conf->journal_replay_from) {//默认肯定是0
     dout(0) << "journal_replay forcing replay from " << g_conf->journal_replay_from
 	    << " instead of " << fs_op_seq << dendl;
     // the previous op is the last one committed
@@ -66,7 +66,7 @@ int JournalingObjectStore::journal_replay(uint64_t fs_op_seq)
   replaying = true;
 
   int count = 0;
-  while (1) {
+  while (1) {//哈哈,读取每个journal的实例,把其中的内容调用do_transactions完成实例化.
     bufferlist bl;
     uint64_t seq = op_seq + 1;
     if (!journal->read_entry(bl, seq)) {
@@ -88,7 +88,7 @@ int JournalingObjectStore::journal_replay(uint64_t fs_op_seq)
     }
 
     apply_manager.op_apply_start(seq);
-    int r = do_transactions(tls, seq);
+    int r = do_transactions(tls, seq);//直接落盘(不执行sync)
     apply_manager.op_apply_finish(seq);
 
     op_seq = seq;

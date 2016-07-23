@@ -1259,11 +1259,12 @@ void OSDMap::clean_temps(CephContext *cct,
   }
 }
 
+//把增量中内容打入到osdmap中
 int OSDMap::apply_incremental(const Incremental &inc)
 {
   new_blacklist_entries = false;
   if (inc.epoch == 1)
-    fsid = inc.fsid;
+    fsid = inc.fsid;//首次设置.
   else if (inc.fsid != fsid)
     return -EINVAL;
   
@@ -1289,12 +1290,15 @@ int OSDMap::apply_incremental(const Incremental &inc)
   if (inc.new_pool_max != -1)
     pool_max = inc.new_pool_max;
 
+  //设置新创建的pool
   for (map<int64_t,pg_pool_t>::const_iterator p = inc.new_pools.begin();
        p != inc.new_pools.end();
        ++p) {
     pools[p->first] = p->second;
-    pools[p->first].last_change = epoch;
+    pools[p->first].last_change = epoch;//创建时间
   }
+
+  //设置pool_name,name_pool,实际上是pool到name,name到pool两个索引表
   for (map<int64_t,string>::const_iterator p = inc.new_pool_names.begin();
        p != inc.new_pool_names.end();
        ++p) {
@@ -1307,6 +1311,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
     name_pool[p->second] = p->first;
   }
+  //要删除的pool
   for (set<int64_t>::const_iterator p = inc.old_pools.begin();
        p != inc.old_pools.end();
        ++p) {
@@ -1315,6 +1320,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
     pool_name.erase(*p);
   }
 
+  //设置权重
   for (map<int32_t,uint32_t>::const_iterator i = inc.new_weight.begin();
        i != inc.new_weight.end();
        ++i) {
@@ -1328,6 +1334,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
   }
 
+  //osd主的亲合性
   for (map<int32_t,uint32_t>::const_iterator i = inc.new_primary_affinity.begin();
        i != inc.new_primary_affinity.end();
        ++i) {
@@ -1543,7 +1550,7 @@ int OSDMap::_pg_to_raw_osds(
 
   // what crush rule?
   //先找出对应的规则集
-  int ruleno = crush->find_rule(pool.get_crush_ruleset(), pool.get_type(), size);
+  int ruleno = crush->find_rule(pool.get_crush_ruleset(), pool.get_type(), size);//找规则
   if (ruleno >= 0)
     crush->do_rule(ruleno, pps, *osds, size, osd_weight);//执行此规则
 
@@ -1552,7 +1559,7 @@ int OSDMap::_pg_to_raw_osds(
   *primary = -1;
   for (unsigned i = 0; i < osds->size(); ++i) {
     if ((*osds)[i] != CRUSH_ITEM_NONE) {
-      *primary = (*osds)[i];
+      *primary = (*osds)[i];//找到主.
       break;
     }
   }
@@ -1566,24 +1573,24 @@ int OSDMap::_pg_to_raw_osds(
 void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
                              vector<int> *up, int *primary) const
 {
-  if (pool.can_shift_osds()) {
+  if (pool.can_shift_osds()) {//幅本的可移动
     // shift left
     up->clear();
     for (unsigned i=0; i<raw.size(); i++) {
       if (!exists(raw[i]) || is_down(raw[i]))
 	continue;
-      up->push_back(raw[i]);
+      up->push_back(raw[i]);//添加up的
     }
-    *primary = (up->empty() ? -1 : up->front());
+    *primary = (up->empty() ? -1 : up->front());//如果没有返回-1,如果有,返回首个.
   } else {
     // set down/dne devices to NONE
     *primary = -1;
     up->resize(raw.size());
     for (int i = raw.size() - 1; i >= 0; --i) {
       if (!exists(raw[i]) || is_down(raw[i])) {
-	(*up)[i] = CRUSH_ITEM_NONE;
+	(*up)[i] = CRUSH_ITEM_NONE;//如果没有,即置为
       } else {
-	*primary = (*up)[i] = raw[i];
+	*primary = (*up)[i] = raw[i];//保证up的位置于raw位置相同,保证primary是raw中首个有效的.
       }
     }
   }
@@ -1704,12 +1711,14 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   _raw_to_up_osds(*pool, raw, up, primary);
   _apply_primary_affinity(pps, *pool, up, primary);
 }
-  
+
+//返回当前哪些osd负责此pg
+//up集合,指有效osd,up_priamry指primary_osd,acting,acting_primary一般与up相同.
 void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_primary,
                                    vector<int> *acting, int *acting_primary) const
 {
   const pg_pool_t *pool = get_pg_pool(pg.pool());
-  if (!pool) {
+  if (!pool) {//pool为空的处理.
     if (up)
       up->clear();
     if (up_primary)
@@ -1720,26 +1729,26 @@ void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_prim
       *acting_primary = -1;
     return;
   }
-  vector<int> raw;
-  vector<int> _up;
+  vector<int> raw;//哪些osd负责此pg
+  vector<int> _up;//当前哪些osd负责此pg(要求必须存在及有效)
   vector<int> _acting;
-  int _up_primary;
+  int _up_primary;//主
   int _acting_primary;
   ps_t pps;
   _pg_to_raw_osds(*pool, pg, &raw, &_up_primary, &pps);
-  _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
+  _raw_to_up_osds(*pool, raw, &_up, &_up_primary);//重置_up_primary
   _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
-  if (_acting.empty()) {
+  if (_acting.empty()) {//acting如果为空,acting与up相同
     _acting = _up;
     if (_acting_primary == -1) {
       _acting_primary = _up_primary;
     }
   }
   if (up)
-    up->swap(_up);
+    up->swap(_up);//如果上层需要,就给人返回
   if (up_primary)
-    *up_primary = _up_primary;
+    *up_primary = _up_primary;//如果上层需要,就给返回,呵呵.
   if (acting)
     acting->swap(_acting);
   if (acting_primary)
@@ -1749,7 +1758,7 @@ void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_prim
 int OSDMap::calc_pg_rank(int osd, const vector<int>& acting, int nrep)
 {
   if (!nrep)
-    nrep = acting.size();
+    nrep = acting.size();//幅本数
   for (int i=0; i<nrep; i++) 
     if (acting[i] == osd)
       return i;

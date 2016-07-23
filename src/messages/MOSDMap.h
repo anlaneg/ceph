@@ -26,10 +26,11 @@ class MOSDMap : public Message {
 
  public:
   uuid_d fsid;
-  map<epoch_t, bufferlist> maps;//存储全量
+  map<epoch_t, bufferlist> maps;//map是按epoch_t排序的
   map<epoch_t, bufferlist> incremental_maps;//存储增量
   epoch_t oldest_map, newest_map;
 
+  //找最小的epoch
   epoch_t get_first() const {
     epoch_t e = 0;
     map<epoch_t, bufferlist>::const_iterator i = maps.begin();
@@ -39,6 +40,7 @@ class MOSDMap : public Message {
         (e == 0 || i->first < e)) e = i->first;
     return e;
   }
+  //找最大的epoch
   epoch_t get_last() const {
     epoch_t e = 0;
     map<epoch_t, bufferlist>::const_reverse_iterator i = maps.rbegin();

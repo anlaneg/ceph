@@ -1459,6 +1459,7 @@ private:
   struct Reset : boost::statechart::event< Reset > {
     Reset() : boost::statechart::event< Reset >() {}
   };
+  //snapTrimmer状态机
   struct SnapTrimmer : public boost::statechart::state_machine< SnapTrimmer, NotTrimming > {
     ReplicatedPG *pg;
     set<hobject_t, hobject_t::BitwiseComparator> in_flight;

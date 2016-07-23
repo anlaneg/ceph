@@ -112,8 +112,12 @@ void PGLog::clear_info_log(
 }
 
 //更新tail
+//PGlog修剪,修到trim_to版本之前.
+//将要修剪的log放在trimmed集合里
+//log减小了,所以log.tail要移动
+//其它一些指针可能会发生问题,所以也要移动.
 void PGLog::trim(
-  eversion_t trim_to,
+  eversion_t trim_to,//可以trim到这个版本
   pg_info_t &info)
 {
   // trim?
@@ -158,6 +162,7 @@ void PGLog::proc_replica_log(
     we will send the peer enough log to arrive at the same state.
   */
 
+  //显示下,副本提交上来的missing集
   for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i = omissing.get_items().begin();
        i != omissing.get_items().end();
        ++i) {
@@ -165,6 +170,11 @@ void PGLog::proc_replica_log(
 	     << " have " << i->second.have << dendl;
   }
 
+  //由于本函数是处理副本的log合并,而这里olog实际上是副本发送过来的log
+  //由于我们在getLog阶段已经将权威log合并到自身的log成员里了,
+  //所以这里log.head一定是大于olog.head的
+
+  //从log中找出大于olog.head的点(此循环结束时,first_non_divergent-1指向的节点大于olog.head
   list<pg_log_entry_t>::const_reverse_iterator first_non_divergent =
     log.log.rbegin();
   while (1) {
@@ -186,8 +196,8 @@ void PGLog::proc_replica_log(
    * the last_update must actually be log.tail.
    */
   eversion_t lu =
-    (first_non_divergent == log.log.rend() ||
-     first_non_divergent->version < log.tail) ?
+    (first_non_divergent == log.log.rend() ||//如果我们没有比olog多
+     first_non_divergent->version < log.tail) ?//我们比olog多的太多,这超过了我们的log.tail
     log.tail :
     first_non_divergent->version;//从lu向head方向有分歧
 
@@ -329,12 +339,21 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   info.hit_set = oinfo.hit_set;
 
   // do we have divergent entries to throw out?
-  if (olog.head < log.head) {
+  if (olog.head < log.head) {//权威日志的head 小于我们的head?(权威日志比我们要少)
+	//权威日志的last_update一定比我们大,为什么我们的log.head会大于olog.head呢?(没有搞懂)
+	//按原理,应该不能走到这个分支.-----需要确认
     rewind_divergent_log(t, olog.head, info, rollbacker, dirty_info, dirty_big_info);
     changed = true;
   }
 
   // extend on head?
+  //如果权威日志的版本号head比我们的大,这说明我们缺少了东西,
+  //由于我们与olog之间是有重叠的,所以我们首先要进行"首部合并"
+
+  //"首部合并"就是将olog.head到log.head之间的给我们先加进来
+  //我们的做法是在olog.head到olog.tail之间找出一个位置,这个位置采用from指向,它用来说明
+  //从from开始到olog.head之间,都比我们的log.head大.
+  //lower_bound是我们在olog中能找到的一个比log.head首个小的版本号.
   if (olog.head > log.head) {
     dout(10) << "merge_log extending head to " << olog.head << dendl;
       

@@ -3093,6 +3093,7 @@ bool pg_interval_t::check_new_interval(
   //  NOTE: a change in the up set primary triggers an interval
   //  change, even though the interval members in the pg_interval_t
   //  do not change.
+  //检查是否有变化
   if (is_new_interval(
 	old_acting_primary,
 	new_acting_primary,
@@ -3105,6 +3106,7 @@ bool pg_interval_t::check_new_interval(
 	osdmap,
 	lastmap,
 	pgid)) {
+	//设置past_intervals
     pg_interval_t& i = (*past_intervals)[same_interval_since];
     i.first = same_interval_since;
     i.last = osdmap->get_epoch() - 1;

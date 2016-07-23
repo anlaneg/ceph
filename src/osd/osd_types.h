@@ -93,7 +93,7 @@ string ceph_osd_op_flag_string(unsigned flags);
 string ceph_osd_alloc_hint_flag_string(unsigned flags);
 
 struct pg_shard_t {
-  int32_t osd;
+  int32_t osd;//在哪个osd上
   shard_id_t shard;
   pg_shard_t() : osd(-1), shard(shard_id_t::NO_SHARD) {}
   explicit pg_shard_t(int osd) : osd(osd), shard(shard_id_t::NO_SHARD) {}
@@ -2041,8 +2041,11 @@ WRITE_CLASS_ENCODER(pg_hit_set_history_t)
  * history they need to worry about.
  */
 struct pg_history_t {
+	//pg的创建时间
   epoch_t epoch_created;       // epoch in which PG was created
+  //最后一次变动
   epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
+  //上次到达clear状态的时间
   epoch_t last_epoch_clean;    // lower bound on last epoch the PG was completely clean.
   epoch_t last_epoch_split;    // as parent
   epoch_t last_epoch_marked_full;  // pool or cluster
@@ -2094,7 +2097,7 @@ struct pg_history_t {
       epoch_created = other.epoch_created;
       modified = true;
     }
-    if (last_epoch_started < other.last_epoch_started) {
+    if (last_epoch_started < other.last_epoch_started) {//采用更大的
       last_epoch_started = other.last_epoch_started;
       modified = true;
     }
@@ -2159,15 +2162,15 @@ inline ostream& operator<<(ostream& out, const pg_history_t& h) {
  */
 struct pg_info_t {
   spg_t pgid;
-  eversion_t last_update;      ///< last object version applied to store.
+  eversion_t last_update;      ///< last object version applied to store.(写日志时更新)
   eversion_t last_complete;    ///< last version pg was complete through.
-  epoch_t last_epoch_started;  ///< last epoch at which this pg started on this osd
+  epoch_t last_epoch_started;  ///< last epoch at which this pg started on this osd(每到达一次active,就将此值设置为active状态时的osdmap版本号)
   
-  version_t last_user_version; ///< last user object version applied to store
+  version_t last_user_version; ///< last user object version applied to store(写日志时更新成user_version)
 
-  eversion_t log_tail;         ///< oldest log entry.
+  eversion_t log_tail;         ///< oldest log entry.(最旧的log_tail)
 
-  hobject_t last_backfill;     ///< objects >= this and < last_complete may be missing
+  hobject_t last_backfill;     ///< objects >= this and < last_complete may be missing //
   bool last_backfill_bitwise;  ///< true if last_backfill reflects a bitwise (vs nibblewise) sort
 
   interval_set<snapid_t> purged_snaps;
@@ -3789,7 +3792,8 @@ public:
   uuid_d cluster_fsid, osd_fsid;
   int32_t whoami;    // my role in this fs.
   epoch_t current_epoch;             // most recent epoch
-  epoch_t oldest_map, newest_map;    // oldest/newest maps we have.
+  //这样一定有一个trim操作要对oldest_map进行处理
+  epoch_t oldest_map, newest_map;    // oldest/newest maps we have. //我们目前计录的最新map的版本和最旧map的版本.
   double weight;
 
   CompatSet compat_features;

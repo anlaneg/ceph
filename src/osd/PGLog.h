@@ -506,6 +506,9 @@ protected:
   eversion_t dirty_to;         ///< must clear/writeout all keys <= dirty_to
   eversion_t dirty_from;       ///< must clear/writeout all keys >= dirty_from
   eversion_t writeout_from;    ///< must writout keys >= writeout_from
+  //这个记录的是trim时要删除的pglog.在要trim时,把trim下来的记录放在trimmed集合中了
+  //为何如此大费周张,实际上是为了保证一致性,将其在log write时,将其放在一个
+  //事务中一并写入.这样可以恢复.
   set<eversion_t> trimmed;     ///< must clear keys in trimmed
   CephContext *cct;
   bool pg_log_debug;

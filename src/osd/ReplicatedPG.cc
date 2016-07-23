@@ -542,7 +542,7 @@ void ReplicatedPG::maybe_kick_recovery(
     } else {
       prep_object_replica_pushes(soid, v, h);
     }
-    pgbackend->run_recovery_op(h, cct->_conf->osd_client_op_priority);
+    pgbackend->run_recovery_op(h, cct->_conf->osd_client_op_priority);//发送前面构造好的push,pull消息
   }
 }
 
@@ -1526,10 +1526,11 @@ int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
 }
 
 //计算可trim的version,更新pg_trim_to成员
+//计算一下,我们可以trim到哪个版本
 void ReplicatedPG::calc_trim_to()
 {
   size_t target = cct->_conf->osd_min_pg_log_entries;
-  //如果处理这些状态,则变更为max_pg_log_entity
+  //如果处理这些状态,则变更为max_pg_log_entity(恢复状态下,默认10000条)
   if (is_degraded() ||
       state_test(PG_STATE_RECOVERING |
 		 PG_STATE_RECOVERY_WAIT |
@@ -8647,8 +8648,8 @@ void ReplicatedPG::issue_repop(RepGather *repop, OpContext *ctx)
     ctx->at_version,
     std::move(ctx->op_t),
     pg_trim_to,//指定pglog trim到哪个版本
-    min_last_complete_ondisk,
-    ctx->log,
+    min_last_complete_ondisk,//整个集群已完成的最小落盘id(即这个版本之前的都已可读)
+    ctx->log,//指出要添加进去的pglog
     ctx->updated_hset_history,
     onapplied_sync,
     on_all_applied,
@@ -9556,7 +9557,7 @@ int ReplicatedPG::recover_missing(
   // is this a snapped object?  if so, consult the snapset.. we may not need the entire object!
   ObjectContextRef obc;
   ObjectContextRef head_obc;
-  if (soid.snap && soid.snap < CEPH_NOSNAP) {
+  if (soid.snap && soid.snap < CEPH_NOSNAP) {//快照相关,先不考虑
     // do we have the head and/or snapdir?
     hobject_t head = soid.get_head();
     if (pg_log.get_missing().is_missing(head)) {
@@ -9601,8 +9602,8 @@ int ReplicatedPG::recover_missing(
   }
   start_recovery_op(soid);
   assert(!recovering.count(soid));
-  recovering.insert(make_pair(soid, obc));
-  pgbackend->recover_object(
+  recovering.insert(make_pair(soid, obc));//指明正在恢复
+  pgbackend->recover_object(//构造h中的恢复方式pull或者push?
     soid,
     v,
     head_obc,
@@ -10146,7 +10147,7 @@ void ReplicatedPG::on_activate()
 	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
-	  DoRecovery())));
+	  DoRecovery())));//解发DoRecovery事件
   } else if (needs_backfill()) {
     dout(10) << "activate queueing backfill" << dendl;
     queue_peering_event(
@@ -10154,7 +10155,7 @@ void ReplicatedPG::on_activate()
 	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
-	  RequestBackfill())));
+	  RequestBackfill())));//触发RequestBackfill事件
   } else {
     dout(10) << "activate all replicas clean, no recovery" << dendl;
     queue_peering_event(
@@ -10162,7 +10163,7 @@ void ReplicatedPG::on_activate()
 	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
-	  AllReplicasRecovered())));
+	  AllReplicasRecovered())));//触发AllReplicasRecovered事件
   }
 
   publish_stats_to_osd();
@@ -10456,17 +10457,18 @@ void PG::MissingLoc::check_recovery_sources(const OSDMapRef& osdmap)
   }
 }
   
-
+//进行恢复,最多本次恢复max个,ops_started是实际恢复数
 bool ReplicatedPG::start_recovery_ops(
   uint64_t max,
   ThreadPool::TPHandle &handle,
   uint64_t *ops_started)
 {
-  uint64_t& started = *ops_started;
+  uint64_t& started = *ops_started;//started记录了有多少个正在做,一次做的数,不超过max
   started = 0;
   bool work_in_progress = false;
-  assert(is_primary());
+  assert(is_primary());//执行本处理的一定为主
 
+  //已处于恢复状态,不处理.
   if (!state_test(PG_STATE_RECOVERING) &&
       !state_test(PG_STATE_BACKFILL)) {
     /* TODO: I think this case is broken and will make do_recovery()
@@ -10491,11 +10493,11 @@ bool ReplicatedPG::start_recovery_ops(
   }
   if (!started) {
     // We still have missing objects that we should grab from replicas.
-    started += recover_primary(max, handle);
+    started += recover_primary(max, handle);//恢复主
   }
   if (!started && num_unfound != get_num_unfound()) {
     // second chance to recovery replicas
-    started = recover_replicas(max, handle);
+    started = recover_replicas(max, handle);//恢复从
   }
 
   if (started)
@@ -10585,7 +10587,7 @@ bool ReplicatedPG::start_recovery_ops(
           std::make_shared<CephPeeringEvt>(
             get_osdmap()->get_epoch(),
             get_osdmap()->get_epoch(),
-            AllReplicasRecovered())));
+            AllReplicasRecovered())));//触发AllReplicasRecovered事件,恢复完成
     }
   } else { // backfilling
     state_clear(PG_STATE_BACKFILL);
@@ -10606,7 +10608,7 @@ bool ReplicatedPG::start_recovery_ops(
  * return true if done, false if nothing left to do.
  */
 uint64_t ReplicatedPG::recover_primary(uint64_t max, ThreadPool::TPHandle &handle)
-{
+{//遍历missing集,准备逐个请求.
   assert(is_primary());
 
   const pg_missing_t &missing = pg_log.get_missing();
@@ -10770,7 +10772,7 @@ int ReplicatedPG::prep_object_replica_pushes(
   ObjectContextRef obc = get_object_context(soid, false);
   if (!obc) {
     pg_log.missing_add(soid, v, eversion_t());
-    missing_loc.remove_location(soid, pg_whoami);
+    missing_loc.remove_location(soid, pg_whoami);//自已不缺
     bool uhoh = true;
     assert(!actingbackfill.empty());
     for (set<pg_shard_t>::iterator i = actingbackfill.begin();
@@ -10778,8 +10780,8 @@ int ReplicatedPG::prep_object_replica_pushes(
 	 ++i) {
       if (*i == get_primary()) continue;
       pg_shard_t peer = *i;
-      if (!peer_missing[peer].is_missing(soid, v)) {
-	missing_loc.add_location(soid, peer);
+      if (!peer_missing[peer].is_missing(soid, v)) {//如果peer_msiing中不缺少这个对象,那么它就有这个对象
+	missing_loc.add_location(soid, peer);//peer不缺,添加相应位置
 	dout(10) << info.pgid << " unexpectedly missing " << soid << " v" << v
 		 << ", there should be a copy on shard " << peer << dendl;
 	uhoh = false;
@@ -10805,7 +10807,7 @@ int ReplicatedPG::prep_object_replica_pushes(
 
   start_recovery_op(soid);
   assert(!recovering.count(soid));
-  recovering.insert(make_pair(soid, obc));
+  recovering.insert(make_pair(soid, obc));//加入recovering队列
 
   /* We need this in case there is an in progress write on the object.  In fact,
    * the only possible write is an update to the xattr due to a lost_revert --
@@ -10813,7 +10815,7 @@ int ReplicatedPG::prep_object_replica_pushes(
    * In almost all cases, therefore, this lock should be uncontended.
    */
   obc->ondisk_read_lock();
-  pgbackend->recover_object(
+  pgbackend->recover_object(//数据被封装在h中
     soid,
     v,
     ObjectContextRef(),
@@ -10854,7 +10856,8 @@ uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
       handle.reset_tp_timeout();
       const hobject_t soid(p->second);
 
-      if (cmp(soid, pi->second.last_backfill, get_sort_bitwise()) > 0) {
+      //?
+      if (cmp(soid, pi->second.last_backfill, get_sort_bitwise()) > 0) {//如果其不在recovering集合中就有问题了.
 	if (!recovering.count(soid)) {
 	  derr << __func__ << ": object added to missing set for backfill, but "
 	       << "is not in recovering, error!" << dendl;
@@ -10863,28 +10866,33 @@ uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
 	continue;
       }
 
+      //recovering中为计划恢复的.
       if (recovering.count(soid)) {
 	dout(10) << __func__ << ": already recovering " << soid << dendl;
 	continue;
       }
 
+      //对象没有找到.
       if (missing_loc.is_unfound(soid)) {
 	dout(10) << __func__ << ": " << soid << " still unfound" << dendl;
 	continue;
       }
 
+      //主上也没有head
       if (soid.is_snap() && pg_log.get_missing().is_missing(soid.get_head())) {
 	dout(10) << __func__ << ": " << soid.get_head()
 		 << " still missing on primary" << dendl;
 	continue;
       }
 
+      //主上没有snap
       if (soid.is_snap() && pg_log.get_missing().is_missing(soid.get_snapdir())) {
 	dout(10) << __func__ << ": " << soid.get_snapdir()
 		 << " still missing on primary" << dendl;
 	continue;
       }
 
+      //主上没有obj无法帮助恢复
       if (pg_log.get_missing().is_missing(soid)) {
 	dout(10) << __func__ << ": " << soid << " still missing on primary" << dendl;
 	continue;

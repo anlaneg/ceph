@@ -172,6 +172,7 @@ void PGQueueable::RunVis::operator()(const PGScrub &op) {
   return pg->scrub(op.epoch_queued, handle);
 }
 
+//恢复入口
 void PGQueueable::RunVis::operator()(const PGRecovery &op) {
   return osd->do_recovery(pg.get(), op.epoch_queued, op.reserved_pushes, handle);
 }
@@ -1256,6 +1257,7 @@ void OSDService::send_incremental_map(epoch_t since, Connection *con,
   send_map(m, con);
 }
 
+//自底层读取指定版本的osdmap
 bool OSDService::_get_map_bl(epoch_t e, bufferlist& bl)
 {
   bool found = map_bl_cache.lookup(e, &bl);
@@ -1268,6 +1270,7 @@ bool OSDService::_get_map_bl(epoch_t e, bufferlist& bl)
   return found;
 }
 
+//自底层读取指定版本的增量osdmap
 bool OSDService::get_inc_map_bl(epoch_t e, bufferlist& bl)
 {
   Mutex::Locker l(map_cache_lock);
@@ -1284,7 +1287,7 @@ bool OSDService::get_inc_map_bl(epoch_t e, bufferlist& bl)
 void OSDService::_add_map_bl(epoch_t e, bufferlist& bl)
 {
   dout(10) << "add_map_bl " << e << " " << bl.length() << " bytes" << dendl;
-  map_bl_cache.add(e, bl);
+  map_bl_cache.add(e, bl);//osd的bl形式cache
 }
 
 void OSDService::_add_map_inc_bl(epoch_t e, bufferlist& bl)
@@ -1312,6 +1315,7 @@ void OSDService::clear_map_bl_cache_pins(epoch_t e)
   map_bl_cache.clear_pinned(e);
 }
 
+//加入到map_cache中
 OSDMapRef OSDService::_add_map(OSDMap *o)
 {
   epoch_t e = o->get_epoch();
@@ -1331,6 +1335,7 @@ OSDMapRef OSDService::_add_map(OSDMap *o)
   return l;
 }
 
+//尝试着获取osdmap的指定版本,如果没有找到,则创建
 OSDMapRef OSDService::try_get_map(epoch_t epoch)
 {
   Mutex::Locker l(map_cache_lock);
@@ -1356,7 +1361,7 @@ OSDMapRef OSDService::try_get_map(epoch_t epoch)
   if (epoch > 0) {
     dout(20) << "get_map " << epoch << " - loading and decoding " << map << dendl;
     bufferlist bl;
-    if (!_get_map_bl(epoch, bl) || bl.length() == 0) {
+    if (!_get_map_bl(epoch, bl) || bl.length() == 0) {//拉取指定版本
       derr << "failed to load OSD map for epoch " << epoch << ", got " << bl.length() << " bytes" << dendl;
       delete map;
       return OSDMapRef();
@@ -1365,7 +1370,7 @@ OSDMapRef OSDService::try_get_map(epoch_t epoch)
   } else {
     dout(20) << "get_map " << epoch << " - return initial " << map << dendl;
   }
-  return _add_map(map);
+  return _add_map(map);//加入cache
 }
 
 // ops
@@ -1453,7 +1458,7 @@ void OSDService::dequeue_pg(PG *pg, list<OpRequestRef> *dequeued)
 
 void OSDService::queue_for_peering(PG *pg)
 {
-  peering_wq.queue(pg);
+  peering_wq.queue(pg);//入队至peering_wq
 }
 
 void OSDService::queue_for_snap_trim(PG *pg) {
@@ -2042,7 +2047,7 @@ int OSD::init()
 
   store->set_cache_shards(g_conf->osd_op_num_shards);
 
-  int r = store->mount();
+  int r = store->mount();//store执行挂载,恢复日志中未落盘的数据
   if (r < 0) {
     derr << "OSD:init: unable to mount object store" << dendl;
     return r;
@@ -2164,7 +2169,7 @@ int OSD::init()
     r = -EINVAL;
     goto out;
   }
-  osdmap = get_map(superblock.current_epoch);
+  osdmap = get_map(superblock.current_epoch);//自硬盘上读取osdmap
   check_osdmap_features(store);
 
   create_recoverystate_perf();
@@ -2944,6 +2949,7 @@ void OSD::write_superblock(ObjectStore::Transaction& t)
   t.write(coll_t::meta(), OSD_SUPERBLOCK_GOBJECT, 0, bl.length(), bl);
 }
 
+//ceph的superblock存储在meta目录里
 int OSD::read_superblock()
 {
   bufferlist bl;
@@ -3092,12 +3098,13 @@ PG *OSD::_open_lock_pg(
   return pg;
 }
 
+//构造PG对象
 PG* OSD::_make_pg(
   OSDMapRef createmap,
   spg_t pgid)
 {
   dout(10) << "_open_lock_pg " << pgid << dendl;
-  PGPool pool = _get_pool(pgid.pool(), createmap);
+  PGPool pool = _get_pool(pgid.pool(), createmap);//获取对应的pool
 
   // create
   //目前仅支持创建replicated,erasure两种pg
@@ -3138,6 +3145,7 @@ void OSD::add_newly_split_pg(PG *pg, PG::RecoveryCtx *rctx)
     _remove_pg(pg);
 }
 
+//防止要删除,如果没有被删除,则返回RES_NONE
 OSD::res_result OSD::_try_resurrect_pg(
   OSDMapRef curmap, spg_t pgid, spg_t *resurrected, PGRef *old_pg_state)
 {
@@ -3147,7 +3155,7 @@ OSD::res_result OSD::_try_resurrect_pg(
   DeletingStateRef df;
   spg_t cur(pgid);
   while (true) {
-    df = service.deleting_pgs.lookup(cur);
+    df = service.deleting_pgs.lookup(cur);//查看这个对象是否在deleting_pgs列表中存在.
     if (df)
       break;
     if (!cur.ps())
@@ -3289,7 +3297,7 @@ void OSD::load_pgs()
   }
 
   vector<coll_t> ls;
-  int r = store->list_collections(ls);
+  int r = store->list_collections(ls);//取出所有的pg
   if (r < 0) {
     derr << "failed to list pgs: " << cpp_strerror(-r) << dendl;
   }
@@ -3355,9 +3363,9 @@ void OSD::load_pgs()
     pg->ch = store->open_collection(pg->coll);
 
     // read pg state, log
-    pg->read_state(store, bl);
+    pg->read_state(store, bl);//读取此pg对应的状态及log,missing集合中放的是自已实际与日志之间的差别(一般这里missing集为空)
 
-    if (pg->must_upgrade()) {
+    if (pg->must_upgrade()) {//对pg升级的考虑
       if (!pg->can_upgrade()) {
 	derr << "PG needs upgrade, but on-disk data is too old; upgrade to"
 	     << " an older version first." << dendl;
@@ -3372,28 +3380,28 @@ void OSD::load_pgs()
       pg->upgrade(store);
     }
 
-    service.init_splits_between(pg->info.pgid, pg->get_osdmap(), osdmap);
+    service.init_splits_between(pg->info.pgid, pg->get_osdmap(), osdmap);//没有搞清楚,是在搞分裂
 
     // generate state for PG's current mapping
     int primary, up_primary;
-    vector<int> acting, up;
+    vector<int> acting, up;//找出当前哪些osd负责此pg,哪个是primary
     pg->get_osdmap()->pg_to_up_acting_osds(
       pgid.pgid, &up, &up_primary, &acting, &primary);
     pg->init_primary_up_acting(
       up,
       acting,
       up_primary,
-      primary);
+      primary);//设置pg对应的up,acting,up_primary,primary值
     int role = OSDMap::calc_pg_role(whoami, pg->acting);
     if (pg->pool.info.is_replicated() || role == pg->pg_whoami.shard)
-      pg->set_role(role);
+      pg->set_role(role);//primary,role为pg->acting集合中whoami的下标
     else
-      pg->set_role(-1);
+      pg->set_role(-1);//如果角色是-1表示非primary
 
     pg->reg_next_scrub();
 
     PG::RecoveryCtx rctx(0, 0, 0, 0, 0, 0);
-    pg->handle_loaded(&rctx);
+    pg->handle_loaded(&rctx);//触发pg状态机的load事件(状态机将进入reset状态,原来是initial状态)
 
     dout(10) << "load_pgs loaded " << *pg << " " << pg->pg_log.get_log() << dendl;
     if (pg->pg_log.is_dirty()) {
@@ -3409,7 +3417,7 @@ void OSD::load_pgs()
   }
 
   // clean up old infos object?
-  if (has_upgraded && store->exists(coll_t::meta(), OSD::make_infos_oid())) {
+  if (has_upgraded && store->exists(coll_t::meta(), OSD::make_infos_oid())) {//升级才能走入
     dout(1) << __func__ << " removing legacy infos object" << dendl;
     ObjectStore::Transaction t;
     t.remove(coll_t::meta(), OSD::make_infos_oid());
@@ -3421,7 +3429,7 @@ void OSD::load_pgs()
     }
   }
 
-  build_past_intervals_parallel();
+  build_past_intervals_parallel();//计算已知过程osdmap引发的up,acting等变化的间隔,每个间隔一项
 }
 
 
@@ -3434,6 +3442,7 @@ void OSD::load_pgs()
  * follow the same logic, but do all pgs at the same time so that we
  * can make a single pass across the osdmap history.
  */
+//计算每一个Pg在过去的osdmap中的变化间隔
 void OSD::build_past_intervals_parallel()
 {
   struct pistate {
@@ -3446,6 +3455,7 @@ void OSD::build_past_intervals_parallel()
   map<PG*,pistate> pis;
 
   // calculate junction of map range
+  //osdmap在每个osd上会有一定范围的缓存,oldest_map是我们能记起来的最旧的osdmap
   epoch_t end_epoch = superblock.oldest_map;
   epoch_t cur_epoch = superblock.newest_map;
   {
@@ -3453,21 +3463,22 @@ void OSD::build_past_intervals_parallel()
     for (ceph::unordered_map<spg_t, PG*>::iterator i = pg_map.begin();
         i != pg_map.end();
         ++i) {
-      PG *pg = i->second;
+      PG *pg = i->second;//拿出当前osd负责的每一个pg
 
       epoch_t start, end;
-      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map)) {
+      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map)) {//一般start=superblock.oldest_map,end=superblock.newest_map
         if (pg->info.history.same_interval_since == 0)
           pg->info.history.same_interval_since = end;
         continue;
       }
 
       dout(10) << pg->info.pgid << " needs " << start << "-" << end << dendl;
-      pistate& p = pis[pg];
+      pistate& p = pis[pg];//为每一个pg计算它的start_interval,last_interval
       p.start = start;
       p.end = end;
-      p.same_interval_since = 0;
+      p.same_interval_since = 0;//加入pis
 
+      //有多个pg,相互之间有start,end不一样,取极值cur_epoch最小,end_epoch最大
       if (start < cur_epoch)
         cur_epoch = start;
       if (end > end_epoch)
@@ -3483,28 +3494,28 @@ void OSD::build_past_intervals_parallel()
   assert(cur_epoch <= end_epoch);
 
   OSDMapRef cur_map, last_map;
-  for ( ; cur_epoch <= end_epoch; cur_epoch++) {
+  for ( ; cur_epoch <= end_epoch; cur_epoch++) {//自cur_epoch到end_epoch一路检测
     dout(10) << __func__ << " epoch " << cur_epoch << dendl;
-    last_map = cur_map;
-    cur_map = get_map(cur_epoch);
+    last_map = cur_map;//旧的表
+    cur_map = get_map(cur_epoch);//获取当前版本(自硬盘上读取)
 
     for (map<PG*,pistate>::iterator i = pis.begin(); i != pis.end(); ++i) {
       PG *pg = i->first;
       pistate& p = i->second;
 
-      if (cur_epoch < p.start || cur_epoch > p.end)
+      if (cur_epoch < p.start || cur_epoch > p.end)//当前的cur_map不适合这个pg处理.
 	continue;
 
       vector<int> acting, up;
       int up_primary;
       int primary;
       pg_t pgid = pg->info.pgid.pgid;
-      if (p.same_interval_since && last_map->get_pools().count(pgid.pool()))
-	pgid = pgid.get_ancestor(last_map->get_pg_num(pgid.pool()));
+      if (p.same_interval_since && last_map->get_pools().count(pgid.pool()))//已设置,pool存在
+    	  pgid = pgid.get_ancestor(last_map->get_pg_num(pgid.pool()));
       cur_map->pg_to_up_acting_osds(
-	pgid, &up, &up_primary, &acting, &primary);
+	pgid, &up, &up_primary, &acting, &primary);//up,acting集合(计算acting,up集合)
 
-      if (p.same_interval_since == 0) {
+      if (p.same_interval_since == 0) {//没有设置,设置下
 	dout(10) << __func__ << " epoch " << cur_epoch << " pg " << pg->info.pgid
 		 << " first map, acting " << acting
 		 << " up " << up << ", same_interval_since = " << cur_epoch << dendl;
@@ -3512,7 +3523,7 @@ void OSD::build_past_intervals_parallel()
 	p.old_up = up;
 	p.old_acting = acting;
 	p.primary = primary;
-	p.up_primary = up_primary;
+	p.up_primary = up_primary;//首次填充up,primary,epoch
 	continue;
       }
       assert(last_map);
@@ -3520,13 +3531,13 @@ void OSD::build_past_intervals_parallel()
       boost::scoped_ptr<IsPGRecoverablePredicate> recoverable(
         pg->get_is_recoverable_predicate());
       std::stringstream debug;
-      bool new_interval = pg_interval_t::check_new_interval(
-	p.primary,
-	primary,
-	p.old_acting, acting,
-	p.up_primary,
-	up_primary,
-	p.old_up, up,
+      bool new_interval = pg_interval_t::check_new_interval(//如果产生了新的primary等,返回true,并填充旧的
+	p.primary,//旧的
+	primary,//新的primary
+	p.old_acting, acting,//旧acting
+	p.up_primary,//旧primary
+	up_primary,//新primary
+	p.old_up, up,//旧up,新up
 	p.same_interval_since,
 	pg->info.history.last_epoch_clean,
 	cur_map, last_map,
@@ -3534,7 +3545,7 @@ void OSD::build_past_intervals_parallel()
         recoverable.get(),
 	&pg->past_intervals,
 	&debug);
-      if (new_interval) {
+      if (new_interval) {//更新临时的p
 	dout(10) << __func__ << " epoch " << cur_epoch << " pg " << pg->info.pgid
 		 << " " << debug.str() << dendl;
 	p.old_up = up;
@@ -3566,7 +3577,7 @@ void OSD::build_past_intervals_parallel()
   // but we don't check for holes.  we could avoid it by discarding
   // the previous past_intervals and rebuilding from scratch, or we
   // can just do this and commit all our work at the end.
-  ObjectStore::Transaction t;
+  ObjectStore::Transaction t;//进行实例化
   int num = 0;
   for (map<PG*,pistate>::iterator i = pis.begin(); i != pis.end(); ++i) {
     PG *pg = i->first;
@@ -3578,7 +3589,7 @@ void OSD::build_past_intervals_parallel()
 
     // don't let the transaction get too big
     if (++num >= cct->_conf->osd_target_transaction_size) {
-      store->apply_transaction(service.meta_osr.get(), std::move(t));
+      store->apply_transaction(service.meta_osr.get(), std::move(t));//应用这个事务到os
       t = ObjectStore::Transaction();
       num = 0;
     }
@@ -3631,7 +3642,7 @@ void OSD::handle_pg_peering_evt(
     // do we need to resurrect a deleting pg?
     spg_t resurrected;
     PGRef old_pg_state;
-    res_result result = _try_resurrect_pg(
+    res_result result = _try_resurrect_pg(//常返回RES_NONE
       service.get_osdmap(),
       pgid,
       &resurrected,
@@ -3656,7 +3667,7 @@ void OSD::handle_pg_peering_evt(
 	acting, acting_primary,
 	history, pi,
 	*rctx.transaction);
-      pg->handle_create(&rctx);
+      pg->handle_create(&rctx);//走创建流程
       pg->write_if_dirty(*rctx.transaction);
       dispatch_context(rctx, pg, osdmap);
 
@@ -3753,7 +3764,7 @@ void OSD::handle_pg_peering_evt(
       pg->unlock();
       return;
     }
-    pg->queue_peering_event(evt);
+    pg->queue_peering_event(evt);//入队进行处理
     pg->unlock();
     return;
   }
@@ -4718,6 +4729,7 @@ bool remove_dir(
   return cont;
 }
 
+//删除队列工作函数
 void OSD::RemoveWQ::_process(
   pair<PGRef, DeletingStateRef> item,
   ThreadPool::TPHandle &handle)
@@ -5915,7 +5927,7 @@ bool OSD::heartbeat_dispatch(Message *m)
   return true;
 }
 
-bool OSD::ms_dispatch(Message *m)
+bool OSD::ms_dispatch(Message *m)//慢消息处理入口
 {
   dout(20) << "OSD::ms_dispatch: " << *m << dendl;
   if (m->get_type() == MSG_OSD_MARK_ME_DOWN) {
@@ -6251,13 +6263,13 @@ void OSD::dispatch_op(OpRequestRef op)
 {
   switch (op->get_req()->get_type()) {
 
-  case MSG_OSD_PG_CREATE:
+  case MSG_OSD_PG_CREATE://monitor让osd创建pg
     handle_pg_create(op);
     break;
-  case MSG_OSD_PG_NOTIFY:
+  case MSG_OSD_PG_NOTIFY://查询类消息自此处响应本端
     handle_pg_notify(op);
     break;
-  case MSG_OSD_PG_QUERY:
+  case MSG_OSD_PG_QUERY://主向从发送的查询消息
     handle_pg_query(op);
     break;
   case MSG_OSD_PG_LOG:
@@ -6280,7 +6292,7 @@ void OSD::dispatch_op(OpRequestRef op)
   case MSG_OSD_BACKFILL_RESERVE:
     handle_pg_backfill_reserve(op);
     break;
-  case MSG_OSD_RECOVERY_RESERVE:
+  case MSG_OSD_RECOVERY_RESERVE://pg在恢复时,会发送此请求(由主)
     handle_pg_recovery_reserve(op);
     break;
   }
@@ -6720,8 +6732,8 @@ void OSD::trim_maps(epoch_t oldest, int nreceived, bool skip_maps)
   ObjectStore::Transaction t;
   for (epoch_t e = superblock.oldest_map; e < min; ++e) {
     dout(20) << " removing old osdmap epoch " << e << dendl;
-    t.remove(coll_t::meta(), get_osdmap_pobject_name(e));
-    t.remove(coll_t::meta(), get_inc_osdmap_pobject_name(e));
+    t.remove(coll_t::meta(), get_osdmap_pobject_name(e));//移除osdmap
+    t.remove(coll_t::meta(), get_inc_osdmap_pobject_name(e));//remove
     superblock.oldest_map = e + 1;
     num++;
     if (num >= cct->_conf->osd_target_transaction_size && num >= nreceived) {
@@ -6764,7 +6776,7 @@ void OSD::handle_osd_map(MOSDMap *m)
     m->put();
     return;
   }
-  if (is_initializing()) {
+  if (is_initializing()) {//init不处理
     dout(0) << "ignoring osdmap until we have initialized" << dendl;
     m->put();
     return;
@@ -6772,7 +6784,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   Session *session = static_cast<Session *>(m->get_connection()->get_priv());
   if (session && !(session->entity_name.is_mon() ||
-		   session->entity_name.is_osd())) {
+		   session->entity_name.is_osd())) {//这个消息只能来自mon或者osd
     //not enough perms!
     dout(10) << "got osd map from Session " << session
              << " which we can't take maps from (not a mon or osd)" << dendl;
@@ -6786,8 +6798,8 @@ void OSD::handle_osd_map(MOSDMap *m)
   // share with the objecter
   service.objecter->handle_osd_map(m);
 
-  epoch_t first = m->get_first();
-  epoch_t last = m->get_last();
+  epoch_t first = m->get_first();//获取m的首版本
+  epoch_t last = m->get_last();//获取m的末版本
   dout(3) << "handle_osd_map epochs [" << first << "," << last << "], i have "
 	  << superblock.newest_map
 	  << ", src has [" << m->oldest_map << "," << m->newest_map << "]"
@@ -6804,7 +6816,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // make sure there is something new, here, before we bother flushing
   // the queues and such
-  if (last <= superblock.newest_map) {
+  if (last <= superblock.newest_map) {//不如superblock中的新,superblock.newest_map
     dout(10) << " no new maps here, dropping" << dendl;
     m->put();
     return;
@@ -6812,10 +6824,10 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // missing some?
   bool skip_maps = false;
-  if (first > superblock.newest_map + 1) {
+  if (first > superblock.newest_map + 1) {//本次发过来的起始版本与我们记录的版本中间有断点,我们忽略此消息,并要求superblock.newest_map+1版本
     dout(10) << "handle_osd_map message skips epochs "
 	     << superblock.newest_map + 1 << ".." << (first-1) << dendl;
-    if (m->oldest_map <= superblock.newest_map + 1) {
+    if (m->oldest_map <= superblock.newest_map + 1) {//发过来的消息与我们之间有断点,但指明存在oldest_map,我们请求superblock.newest_map+1
       osdmap_subscribe(superblock.newest_map + 1, false);
       m->put();
       return;
@@ -6911,7 +6923,7 @@ void OSD::handle_osd_map(MOSDMap *m)
       got_full_map(e);
 
       ghobject_t fulloid = get_osdmap_pobject_name(e);
-      t.write(coll_t::meta(), fulloid, 0, fbl.length(), fbl);
+      t.write(coll_t::meta(), fulloid, 0, fbl.length(), fbl);//写入硬盘
       pin_map_bl(e, fbl);
       pinned_maps.push_back(add_map(o));
       continue;
@@ -6942,7 +6954,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   if (!superblock.oldest_map || skip_maps)
     superblock.oldest_map = first;
-  superblock.newest_map = last;
+  superblock.newest_map = last;//更新newest_map
   superblock.current_epoch = last;
 
   // note in the superblock that we were clean thru the prior epoch
@@ -6953,7 +6965,7 @@ void OSD::handle_osd_map(MOSDMap *m)
   }
 
   // superblock and commit
-  write_superblock(t);
+  write_superblock(t);//superblock写入磁盘
   store->queue_transaction(
     service.meta_osr.get(),
     std::move(t),
@@ -7338,7 +7350,7 @@ bool OSD::advance_pg(
     handle.reset_tp_timeout();
   }
   service.pg_update_epoch(pg->info.pgid, lastmap->get_epoch());
-  pg->handle_activate_map(rctx);
+  pg->handle_activate_map(rctx);//pg map激活
   if (next_epoch <= osd_epoch) {
     dout(10) << __func__ << " advanced to max " << max
 	     << " past min epoch " << min_epoch
@@ -7638,7 +7650,7 @@ void OSD::split_pgs(
 /*
  * holding osd_lock
  */
-void OSD::handle_pg_create(OpRequestRef op)
+void OSD::handle_pg_create(OpRequestRef op)//pg创建处理
 {
   MOSDPGCreate *m = (MOSDPGCreate*)op->get_req();
   assert(m->get_type() == MSG_OSD_PG_CREATE);
@@ -7709,7 +7721,7 @@ void OSD::handle_pg_create(OpRequestRef op)
 
     pg_interval_map_t pi;
     pg_history_t history;
-    history.epoch_created = created;
+    history.epoch_created = created;//设置create
     history.last_scrub_stamp = ci->second;
     history.last_deep_scrub_stamp = ci->second;
     history.last_clean_scrub_stamp = ci->second;
@@ -7857,23 +7869,23 @@ void OSD::do_notifies(
 	 notify_list.begin();
        it != notify_list.end();
        ++it) {
-    if (!curmap->is_up(it->first)) {
+    if (!curmap->is_up(it->first)) {//如果此osd没有up,则不向其发送
       dout(20) << __func__ << " skipping down osd." << it->first << dendl;
       continue;
     }
     ConnectionRef con = service.get_con_osd_cluster(
       it->first, curmap->get_epoch());
-    if (!con) {
+    if (!con) {//如果没有连接,则不发送
       dout(20) << __func__ << " skipping osd." << it->first
 	       << " (NULL con)" << dendl;
       continue;
     }
-    service.share_map_peer(it->first, con.get(), curmap);
+    service.share_map_peer(it->first, con.get(), curmap);//发送osdmap到对端
     dout(7) << __func__ << " osd " << it->first
 	    << " on " << it->second.size() << " PGs" << dendl;
     MOSDPGNotify *m = new MOSDPGNotify(curmap->get_epoch(),
 				       it->second);
-    con->send_message(m);
+    con->send_message(m);//发送通知
   }
 }
 
@@ -7881,13 +7893,14 @@ void OSD::do_notifies(
 /** do_queries
  * send out pending queries for info | summaries
  */
+//处理pg的查询消息,pginfo获取即通过此方式.
 void OSD::do_queries(map<int, map<spg_t,pg_query_t> >& query_map,
 		     OSDMapRef curmap)
 {
   for (map<int, map<spg_t,pg_query_t> >::iterator pit = query_map.begin();
        pit != query_map.end();
        ++pit) {
-    if (!curmap->is_up(pit->first)) {
+    if (!curmap->is_up(pit->first)) {//osd没起来的
       dout(20) << __func__ << " skipping down osd." << pit->first << dendl;
       continue;
     }
@@ -7902,7 +7915,7 @@ void OSD::do_queries(map<int, map<spg_t,pg_query_t> >& query_map,
     dout(7) << __func__ << " querying osd." << who
 	    << " on " << pit->second.size() << " PGs" << dendl;
     MOSDPGQuery *m = new MOSDPGQuery(curmap->get_epoch(), pit->second);
-    con->send_message(m);
+    con->send_message(m);//给对端发送pgquery消息
   }
 }
 
@@ -7947,7 +7960,7 @@ void OSD::do_infos(map<int,
  * includes pg_info_t.
  * NOTE: called with opqueue active.
  */
-void OSD::handle_pg_notify(OpRequestRef op)
+void OSD::handle_pg_notify(OpRequestRef op)//pg信息返回处理(info,log)
 {
   MOSDPGNotify *m = (MOSDPGNotify*)op->get_req();
   assert(m->get_type() == MSG_OSD_PG_NOTIFY);
@@ -7972,7 +7985,7 @@ void OSD::handle_pg_notify(OpRequestRef op)
       continue;
     }
 
-    handle_pg_peering_evt(
+    handle_pg_peering_evt(//统一的pg peering事件处理
       spg_t(it->first.info.pgid.pgid, it->first.to),
       it->first.info.history, it->second,
       it->first.query_epoch,
@@ -7985,7 +7998,7 @@ void OSD::handle_pg_notify(OpRequestRef op)
   }
 }
 
-void OSD::handle_pg_log(OpRequestRef op)
+void OSD::handle_pg_log(OpRequestRef op)//pglog请求处理
 {
   MOSDPGLog *m = (MOSDPGLog*) op->get_req();
   assert(m->get_type() == MSG_OSD_PG_LOG);
@@ -8014,7 +8027,7 @@ void OSD::handle_pg_log(OpRequestRef op)
     );
 }
 
-void OSD::handle_pg_info(OpRequestRef op)
+void OSD::handle_pg_info(OpRequestRef op)//pginfo处理
 {
   MOSDPGInfo *m = static_cast<MOSDPGInfo *>(op->get_req());
   assert(m->get_type() == MSG_OSD_PG_INFO);
@@ -8212,13 +8225,13 @@ void OSD::handle_pg_query(OpRequestRef op)
   MOSDPGQuery *m = (MOSDPGQuery*)op->get_req();
   assert(m->get_type() == MSG_OSD_PG_QUERY);
 
-  if (!require_osd_peer(op->get_req()))
+  if (!require_osd_peer(op->get_req()))//仅处理对端是osd的情况(如果是osd说明peer)
     return;
 
   dout(7) << "handle_pg_query from " << m->get_source() << " epoch " << m->get_epoch() << dendl;
   int from = m->get_source().num();
 
-  if (!require_same_or_newer_map(op, m->get_epoch(), false))
+  if (!require_same_or_newer_map(op, m->get_epoch(), false))//消息版本对比,如果别人比我大,我要请求osd
     return;
 
   op->mark_started();
@@ -8235,7 +8248,7 @@ void OSD::handle_pg_query(OpRequestRef op)
       continue;
     }
 
-    if (service.splitting(pgid)) {
+    if (service.splitting(pgid)) {//分裂处理(正在分裂)
       peering_wait_for_split[pgid].push_back(
 	PG::CephPeeringEvtRef(
 	  new PG::CephPeeringEvt(
@@ -8252,13 +8265,17 @@ void OSD::handle_pg_query(OpRequestRef op)
         pg = _lookup_lock_pg_with_map_lock_held(pgid);
         pg->queue_query(
             it->second.epoch_sent, it->second.epoch_sent,
-            pg_shard_t(from, it->second.from), it->second);
+            pg_shard_t(from, it->second.from), it->second);//入队做查询(常见流程),返回pginfo,pglog
         pg->unlock();
         continue;
       }
     }
 
-    if (!osdmap->have_pg_pool(pgid.pool()))
+    //
+    //从此位置开始,我们本地当前还没有创建这个pg,但pg的查询消息发过来了,我们需要处理
+    //
+
+    if (!osdmap->have_pg_pool(pgid.pool()))//不存在此pool,不理
       continue;
 
     // get active crush mapping
@@ -8391,7 +8408,7 @@ void OSD::_remove_pg(PG *pg)
     pg->info.pgid,
     make_pair(
       pg->info.pgid,
-      PGRef(pg))
+      PGRef(pg))//pg删除时,我们将这样一个对象入队到remove_wq中
     );
   remove_wq.queue(make_pair(PGRef(pg), deleting));
 
@@ -8487,12 +8504,13 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
   return true;
 }
 
-//收到恢复消息,处理恢复(只有主才会收到这个消息,谁发来的?什么时候发过来的?)
+//收到恢复消息,处理恢复(只有主才会收到这个消息;在到过pg状态后,会被入队)
 void OSD::do_recovery(
   PG *pg, epoch_t queued, uint64_t reserved_pushes,
   ThreadPool::TPHandle &handle)
 {
   uint64_t started = 0;
+  //如果配置为slepp,则等一定时间
   if (g_conf->osd_recovery_sleep > 0) {
     handle.suspend_tp_timeout();
     pg->unlock();
@@ -8505,7 +8523,7 @@ void OSD::do_recovery(
   }
 
   {
-    if (pg->pg_has_reset_since(queued)) {
+    if (pg->pg_has_reset_since(queued)) {//已被删除或者queued过期
       goto out;
     }
 
@@ -8520,7 +8538,7 @@ void OSD::do_recovery(
     dout(20) << "  active was " << service.recovery_oids[pg->info.pgid] << dendl;
 #endif
 
-    bool more = pg->start_recovery_ops(reserved_pushes, handle, &started);
+    bool more = pg->start_recovery_ops(reserved_pushes, handle, &started);//开始恢复操作
     dout(10) << "do_recovery started " << started << "/" << reserved_pushes 
 	     << " on " << *pg << dendl;
 
@@ -8538,19 +8556,19 @@ void OSD::do_recovery(
      * It may be that our initial locations were bad and we errored
      * out while trying to pull.
      */
-    if (!more && pg->have_unfound()) {
+    if (!more && pg->have_unfound()) {//存在对象有未发现位置的,请求全log进行恢复
       pg->discover_all_missing(*rctx.query_map);
-      if (rctx.query_map->empty()) {
+      if (rctx.query_map->empty()) {//现在没办法恢复,因为osd都down了
 	dout(10) << "do_recovery  no luck, giving up on this pg for now" << dendl;
       } else {
 	dout(10) << "do_recovery  no luck, giving up on this pg for now" << dendl;
-	pg->queue_recovery();
+	pg->queue_recovery();//已经准备发送了,先加入队列,一会处理
       }
     }
 
     pg->write_if_dirty(*rctx.transaction);
     OSDMapRef curmap = pg->get_osdmap();
-    dispatch_context(rctx, pg, curmap);
+    dispatch_context(rctx, pg, curmap);//这里尝试着发送准备好的请求啊什么的
   }
 
  out:
@@ -8772,6 +8790,7 @@ void OSD::handle_op(OpRequestRef& op, OSDMapRef& osdmap)
   }
 }
 
+//恢复从这个函数进来
 template<typename T, int MSGTYPE>
 void OSD::handle_replica_op(OpRequestRef& op, OSDMapRef& osdmap)
 {
@@ -9104,7 +9123,7 @@ void OSD::process_peering_events(
       assert(!pg->peering_queue.empty());
       PG::CephPeeringEvtRef evt = pg->peering_queue.front();
       pg->peering_queue.pop_front();
-      pg->handle_peering_event(evt, &rctx);
+      pg->handle_peering_event(evt, &rctx);//处理事件
     }
     need_up_thru = pg->need_up_thru || need_up_thru;
     same_interval_since = MAX(pg->info.history.same_interval_since,

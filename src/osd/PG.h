@@ -216,21 +216,22 @@ public:
   }
 protected:
   // Ops waiting for map, should be queued at back
-  Mutex map_lock;
-  list<OpRequestRef> waiting_for_map;
-  OSDMapRef osdmap_ref;
-  OSDMapRef last_persisted_osdmap_ref;
-  PGPool pool;
+  Mutex map_lock;//map队列的锁
+  list<OpRequestRef> waiting_for_map;//等待map的队列,如果某个pg需要等待新的map则加入此队列
+  OSDMapRef osdmap_ref; //当前osdmap指针
+  OSDMapRef last_persisted_osdmap_ref;//
+  PGPool pool;//pg属于哪个pool
 
-  void queue_op(OpRequestRef& op);
-  void take_op_map_waiters();
+  void queue_op(OpRequestRef& op);//请求入队
+  void take_op_map_waiters();//检查是否有不需要等的pg,如果不需要等,则加入工作队列.
 
-  void update_osdmap_ref(OSDMapRef newmap) {
+  void update_osdmap_ref(OSDMapRef newmap) {//更新osdmap引用
     assert(_lock.is_locked_by_me());
     Mutex::Locker l(map_lock);
     osdmap_ref = newmap;
   }
 
+  //本地osdmap引用(map_lock锁)
   OSDMapRef get_osdmap_with_maplock() const {
     assert(map_lock.is_locked());
     assert(osdmap_ref);
@@ -238,6 +239,7 @@ protected:
   }
 
 public:
+  //本地osdmap引用(_lock锁)
   OSDMapRef get_osdmap() const {
     assert(is_locked());
     assert(osdmap_ref);
@@ -252,8 +254,8 @@ protected:
    * put() should be called on destruction of some previously copied pointer.
    * put_unlock() when done with the current pointer (_most common_).
    */  
-  mutable Mutex _lock;
-  std::atomic_uint ref{0};
+  mutable Mutex _lock;//保护osdmap
+  std::atomic_uint ref{0};//对当前pg进行引用计数
 
 #ifdef PG_DEBUG_REFS
   Mutex _ref_id_lock;
@@ -263,19 +265,19 @@ protected:
 #endif
 
 public:
-  bool deleting;  // true while in removing or OSD is shutting down
+  bool deleting;  // true while in removing or OSD is shutting down //表明pg正在被删除
 
 
-  void lock_suspend_timeout(ThreadPool::TPHandle &handle);
-  void lock(bool no_lockdep = false) const;
-  void unlock() const {
+  void lock_suspend_timeout(ThreadPool::TPHandle &handle);//加锁(停止headbeat并加锁)
+  void lock(bool no_lockdep = false) const;//加锁
+  void unlock() const {//解锁
     //generic_dout(0) << this << " " << info.pgid << " unlock" << dendl;
     assert(!dirty_info);
     assert(!dirty_big_info);
     _lock.Unlock();
   }
 
-  bool is_locked() const {
+  bool is_locked() const {//检查是否锁定中
     return _lock.is_locked();
   }
 
@@ -284,17 +286,17 @@ public:
   void put_with_id(uint64_t);
   void dump_live_ids();
 #endif
-  void get(const char* tag);
-  void put(const char* tag);
+  void get(const char* tag);//增加引用计数
+  void put(const char* tag);//减少引用计数,如果引用计数减为0,则执行销毁
 
   bool dirty_info, dirty_big_info;
 
 public:
-  bool is_ec_pg() const {
+  bool is_ec_pg() const {//是否ec的pg
     return pool.info.ec_pool();
   }
   // pg state
-  pg_info_t info;               ///< current pg info
+  pg_info_t info;               ///< current pg info//自已的info
   pg_info_t last_written_info;  ///< last written info
   __u8 info_struct_v;
   static const __u8 cur_struct_v = 9;
@@ -303,16 +305,16 @@ public:
   // v7 was SnapMapper addition in 86658392516d5175b2756659ef7ffaaf95b0f8ad
   // (first appeared in cuttlefish).
   static const __u8 compat_struct_v = 7;
-  bool must_upgrade() {
+  bool must_upgrade() {//是否需要升级
     return info_struct_v < cur_struct_v;
   }
-  bool can_upgrade() {
+  bool can_upgrade() {//能不能升级
     return info_struct_v >= compat_struct_v;
   }
-  void upgrade(ObjectStore *store);
+  void upgrade(ObjectStore *store);//版本升级
 
   const coll_t coll;
-  ObjectStore::CollectionHandle ch;
+  ObjectStore::CollectionHandle ch;//对集合操作的句柄,在osd::load_pgs中设置
   PGLog  pg_log;
   static string get_info_key(spg_t pgid) {
     return stringify(pgid) + "_info";
@@ -326,16 +328,17 @@ public:
   ghobject_t    pgmeta_oid;
 
   class MissingLoc {
-    map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator> needs_recovery_map;
+    map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator> needs_recovery_map;//指出哪些对象需要恢复(在active阶段我们会加入)
     map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator > missing_loc;
     set<pg_shard_t> missing_loc_sources;
     PG *pg;
     set<pg_shard_t> empty_set;
   public:
     boost::scoped_ptr<IsPGReadablePredicate> is_readable;
-    boost::scoped_ptr<IsPGRecoverablePredicate> is_recoverable;
+    boost::scoped_ptr<IsPGRecoverablePredicate> is_recoverable;//回调,确定对象是否可恢复
     explicit MissingLoc(PG *pg)
       : pg(pg) {}
+    //设置回调
     void set_backend_predicates(
       IsPGReadablePredicate *_is_readable,
       IsPGRecoverablePredicate *_is_recoverable) {
@@ -343,18 +346,20 @@ public:
       is_recoverable.reset(_is_recoverable);
     }
     string gen_prefix() const { return pg->gen_prefix(); }
+    //是否需要恢复,需要哪个版本
     bool needs_recovery(
       const hobject_t &hoid,
       eversion_t *v = 0) const {
       map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i =
 	needs_recovery_map.find(hoid);
       if (i == needs_recovery_map.end())
-	return false;
+	return false;//需要恢复的列表中没有它
       if (v)
-	*v = i->second.need;
+	*v = i->second.need;//需要哪个版本
       return true;
     }
     bool is_unfound(const hobject_t &hoid) const {
+    //如果需要恢复并且(missing_loc中没有它或者有它但不能恢复.)
       return needs_recovery(hoid) && (
 	!missing_loc.count(hoid) ||
 	!(*is_recoverable)(missing_loc.find(hoid)->second));
@@ -362,6 +367,8 @@ public:
     bool readable_with_acting(
       const hobject_t &hoid,
       const set<pg_shard_t> &acting) const;
+
+    //查看有多少个item为unfound
     uint64_t num_unfound() const {
       uint64_t ret = 0;
       for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i =
@@ -374,18 +381,24 @@ public:
       return ret;
     }
 
+    //清空recovery_map
+    //清空missing_loc
+    //清空missing_loc_sources
     void clear() {
       needs_recovery_map.clear();
       missing_loc.clear();
       missing_loc_sources.clear();
     }
 
+    //为missing_loc添加项
     void add_location(const hobject_t &hoid, pg_shard_t location) {
       missing_loc[hoid].insert(location);
     }
+    //移除missing_loc项
     void remove_location(const hobject_t &hoid, pg_shard_t location) {
       missing_loc[hoid].erase(location);
     }
+    //将missing中的数据添加至needs_recovery_map中
     void add_active_missing(const pg_missing_t &missing) {
       for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i =
 	     missing.get_items().begin();
@@ -401,9 +414,11 @@ public:
       }
     }
 
+    //向needs_recovery_map中添加项
     void add_missing(const hobject_t &hoid, eversion_t need, eversion_t have) {
       needs_recovery_map[hoid] = pg_missing_item(need, have);
     }
+    //修改hoid对应的需要版本
     void revise_need(const hobject_t &hoid, eversion_t need) {
       assert(needs_recovery(hoid));
       needs_recovery_map[hoid].need = need;
@@ -428,6 +443,7 @@ public:
     void check_recovery_sources(const OSDMapRef& osdmap);
 
     /// Call when hoid is no longer missing in acting set
+    //移除某一个具体的对象
     void recovered(const hobject_t &hoid) {
       needs_recovery_map.erase(hoid);
       missing_loc.erase(hoid);
@@ -446,10 +462,10 @@ public:
       recovered(hoid);
       boost::optional<pg_missing_item> item;
       auto miter = missing.get_items().find(hoid);
-      if (miter != missing.get_items().end()) {
+      if (miter != missing.get_items().end()) {//missing列表中有这个obj
 	item = miter->second;
-      } else {
-	for (auto &&i: to_recover) {
+      } else {//missing列表中没有
+	for (auto &&i: to_recover) {//遍历to_recover
 	  if (i == self)
 	    continue;
 	  auto pmiter = pmissing.find(i);
@@ -461,10 +477,10 @@ public:
 	  }
 	}
       }
-      if (!item)
+      if (!item)//没有找到,它被恢复了.
 	return; // recovered!
 
-      needs_recovery_map[hoid] = *item;
+      needs_recovery_map[hoid] = *item;//加入到need_recovery_map表中
       auto mliter =
 	missing_loc.insert(make_pair(hoid, set<pg_shard_t>())).first;
       assert(info.last_backfill.is_max());
@@ -481,13 +497,16 @@ public:
       }
     }
 
+    //知missing_loc中查hoid
     const set<pg_shard_t> &get_locations(const hobject_t &hoid) const {
       return missing_loc.count(hoid) ?
 	missing_loc.find(hoid)->second : empty_set;
     }
+    //获取missing_loc
     const map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &get_missing_locs() const {
       return missing_loc;
     }
+    //获取needs_recovery_map
     const map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator> &get_needs_recovery() const {
       return needs_recovery_map;
     }
@@ -519,7 +538,7 @@ protected:
 
 public:
   eversion_t  last_update_ondisk;    // last_update that has committed; ONLY DEFINED WHEN is_active()
-  eversion_t  last_complete_ondisk;  // last_complete that has committed.
+  eversion_t  last_complete_ondisk;  // last_complete that has committed.//本地最后一次完成落盘
   eversion_t  last_update_applied;
 
 
@@ -546,9 +565,9 @@ public:
   pg_shard_t primary;
   pg_shard_t pg_whoami;
   pg_shard_t up_primary;
-  vector<int> up, acting, want_acting;
+  vector<int> up, acting, want_acting;//up集合,acting集合,期望acting
   //哪些osd上有这个pg
-  set<pg_shard_t> actingbackfill, actingset, upset;
+  set<pg_shard_t> actingbackfill, actingset, upset;//当前可以执行backfill的集合
   map<pg_shard_t,eversion_t> peer_last_complete_ondisk;
   eversion_t  min_last_complete_ondisk;  // up: min over last_complete_ondisk, peer_last_complete_ondisk //ondisk完成的最小版本.
   eversion_t  pg_trim_to;//可以trim到的pglog version
@@ -681,9 +700,10 @@ protected:
   bool        need_up_thru;
   set<pg_shard_t>    stray_set;   // non-acting osds that have PG data.
   eversion_t  oldest_update; // acting: lowest (valid) last_update in active set
+  //所有对端的信息
   map<pg_shard_t, pg_info_t>    peer_info;   // info from peers (stray or prior)
   set<pg_shard_t> peer_purged; // peers purged
-  map<pg_shard_t, pg_missing_t> peer_missing;
+  map<pg_shard_t, pg_missing_t> peer_missing;//对端缺少的.
   set<pg_shard_t> peer_log_requested;  // logs i've requested (and start stamps)
   set<pg_shard_t> peer_missing_requested;
 
@@ -914,6 +934,7 @@ public:
   bool all_unfound_are_queried_or_lost(const OSDMapRef osdmap) const;
   virtual void dump_recovery_info(Formatter *f) const = 0;
 
+  //计算最小的已落盘(内存落盘)的最小complete
   bool calc_min_last_complete_ondisk() {
     eversion_t min = last_complete_ondisk;//我们最后一个完成的ondisk版本
     assert(!actingbackfill.empty());
@@ -1477,6 +1498,7 @@ public:
 
     /* States */
     struct Initial;
+    //定义状态机RecoveryMachine,初始状态定义为Initial
     class RecoveryMachine : public boost::statechart::state_machine< RecoveryMachine, Initial > {
       RecoveryState *state;
     public:
@@ -1504,7 +1526,7 @@ public:
 
       void send_query(pg_shard_t to, const pg_query_t &query) {
 	assert(state->rctx);
-	assert(state->rctx->query_map);
+	assert(state->rctx->query_map);//为query_map赋值,(key,(key,value))
 	(*state->rctx->query_map)[to.osd][spg_t(pg->info.pgid.pgid, to.shard)] =
 	  query;
       }
@@ -1546,22 +1568,24 @@ public:
 
     /* States */
 
+    //crash状态
     struct Crashed : boost::statechart::state< Crashed, RecoveryMachine >, NamedState {
       explicit Crashed(my_context ctx);
     };
 
     struct Reset;
 
+    //Initial状态,属于RecoveryMachine状态机
     struct Initial : boost::statechart::state< Initial, RecoveryMachine >, NamedState {
       explicit Initial(my_context ctx);
       void exit();
 
       typedef boost::mpl::list <
-	boost::statechart::transition< Initialize, Reset >,
+	boost::statechart::transition< Initialize, Reset >,//收到Initialize变更为Reset
 	boost::statechart::custom_reaction< Load >,
 	boost::statechart::custom_reaction< NullEvt >,
 	boost::statechart::transition< boost::statechart::event_base, Crashed >
-	> reactions;
+	> reactions;//监视条件
 
       boost::statechart::result react(const Load&);
       boost::statechart::result react(const MNotifyRec&);
@@ -1572,6 +1596,7 @@ public:
       }
     };
 
+    //reset状态
     struct Reset : boost::statechart::state< Reset, RecoveryMachine >, NamedState {
       explicit Reset(my_context ctx);
       void exit();
@@ -1590,6 +1615,7 @@ public:
       boost::statechart::result react(const ActMap&);
       boost::statechart::result react(const FlushedEvt&);
       boost::statechart::result react(const IntervalFlush&);
+      //reset状态收到其它事件,会被丢弃
       boost::statechart::result react(const boost::statechart::event_base&) {
 	return discard_event();
       }
@@ -1597,8 +1623,9 @@ public:
 
     struct Start;
 
+    //started状态,其有前置状态start
     struct Started : boost::statechart::state< Started, RecoveryMachine, Start >, NamedState {
-      explicit Started(my_context ctx);
+      explicit Started(my_context ctx);//此函数不做实事,仅简单打下日志
       void exit();
 
       typedef boost::mpl::list <
@@ -1627,13 +1654,14 @@ public:
     struct Primary;
     struct Stray;
 
+    //子状态start
     struct Start : boost::statechart::state< Start, Started >, NamedState {
-      explicit Start(my_context ctx);
+      explicit Start(my_context ctx);//在此函数中,区分主备,由于在load_pgs中我们已明确主备,故这里分primary,stray
       void exit();
 
       typedef boost::mpl::list <
-	boost::statechart::transition< MakePrimary, Primary >,
-	boost::statechart::transition< MakeStray, Stray >
+	boost::statechart::transition< MakePrimary, Primary >,//如果收到MakePrimary事件,走Primary状态
+	boost::statechart::transition< MakeStray, Stray >//如果收到MakeStray事件,走Stray状态
 	> reactions;
     };
 
@@ -1647,8 +1675,9 @@ public:
       IsIncomplete() : boost::statechart::event< IsIncomplete >() {}
     };
 
+    //primary状态
     struct Primary : boost::statechart::state< Primary, Started, Peering >, NamedState {
-      explicit Primary(my_context ctx);
+      explicit Primary(my_context ctx);//设置统计信息
       void exit();
 
       typedef boost::mpl::list <
@@ -1660,6 +1689,7 @@ public:
       boost::statechart::result react(const MNotifyRec&);
     };
 
+    //waitActingChange状态
     struct WaitActingChange : boost::statechart::state< WaitActingChange, Primary>,
 			      NamedState {
       typedef boost::mpl::list <
@@ -1681,11 +1711,12 @@ public:
     struct GetInfo;
     struct Active;
 
+    //peering状态
     struct Peering : boost::statechart::state< Peering, Primary, GetInfo >, NamedState {
       std::unique_ptr< PriorSet > prior_set;
       bool history_les_bound;  //< need osd_find_best_info_ignore_history_les
 
-      explicit Peering(my_context ctx);
+      explicit Peering(my_context ctx);//显示日志,标记进行peering状态
       void exit();
 
       typedef boost::mpl::list <
@@ -1699,6 +1730,7 @@ public:
 
     struct WaitLocalRecoveryReserved;
     struct Activating;
+    //active状态
     struct Active : boost::statechart::state< Active, Primary, Activating >, NamedState {
       explicit Active(my_context ctx);
       void exit();
@@ -1729,6 +1761,7 @@ public:
       boost::statechart::result react(const AllReplicasActivated&);
     };
 
+    //clean状态
     struct Clean : boost::statechart::state< Clean, Active >, NamedState {
       typedef boost::mpl::list<
 	boost::statechart::transition< DoRecovery, WaitLocalRecoveryReserved >
@@ -1737,9 +1770,10 @@ public:
       void exit();
     };
 
+    //recovered状态
     struct Recovered : boost::statechart::state< Recovered, Active >, NamedState {
       typedef boost::mpl::list<
-	boost::statechart::transition< GoClean, Clean >,
+	boost::statechart::transition< GoClean, Clean >,//转为Clean
 	boost::statechart::custom_reaction< AllReplicasActivated >
       > reactions;
       explicit Recovered(my_context ctx);
@@ -1750,6 +1784,7 @@ public:
       }
     };
 
+    //backfilling状态
     struct Backfilling : boost::statechart::state< Backfilling, Active >, NamedState {
       typedef boost::mpl::list<
 	boost::statechart::transition< Backfilled, Recovered >,
@@ -1760,6 +1795,7 @@ public:
       void exit();
     };
 
+    //waitRemoteBackfillReserved状态
     struct WaitRemoteBackfillReserved : boost::statechart::state< WaitRemoteBackfillReserved, Active >, NamedState {
       typedef boost::mpl::list<
 	boost::statechart::custom_reaction< RemoteBackfillReserved >,
@@ -1874,8 +1910,8 @@ public:
 	boost::statechart::transition< AllRemotesReserved, Recovering >
 	> reactions;
       set<pg_shard_t>::const_iterator remote_recovery_reservation_it;
-      explicit WaitRemoteRecoveryReserved(my_context ctx);
-      boost::statechart::result react(const RemoteRecoveryReserved &evt);
+      explicit WaitRemoteRecoveryReserved(my_context ctx);//这个构造函数就是为了触发RemoteRecoveryReserved事件,写成这样还不是因为用别脚框架搞的.
+      boost::statechart::result react(const RemoteRecoveryReserved &evt);//最终触发AllRemotesReserved
       void exit();
     };
 
@@ -1883,7 +1919,7 @@ public:
       typedef boost::mpl::list <
 	boost::statechart::transition< LocalRecoveryReserved, WaitRemoteRecoveryReserved >
 	> reactions;
-      explicit WaitLocalRecoveryReserved(my_context ctx);
+      explicit WaitLocalRecoveryReserved(my_context ctx);//此函数就是触发LocalRecoveryReserved事件
       void exit();
     };
 
@@ -1930,17 +1966,18 @@ public:
 
       typedef boost::mpl::list <
 	boost::statechart::custom_reaction< QueryState >,
-	boost::statechart::transition< GotInfo, GetLog >,
+	boost::statechart::transition< GotInfo, GetLog >,//如果收到GotInfo事件,走GetLog
 	boost::statechart::custom_reaction< MNotifyRec >
 	> reactions;
       boost::statechart::result react(const QueryState& q);
-      boost::statechart::result react(const MNotifyRec& infoevt);
+      boost::statechart::result react(const MNotifyRec& infoevt);//对端的响应信息(会迁至GetLog)
     };
 
     struct GotLog : boost::statechart::event< GotLog > {
       GotLog() : boost::statechart::event< GotLog >() {}
     };
 
+    //从getinfo我们转到getlog
     struct GetLog : boost::statechart::state< GetLog, Peering >, NamedState {
       pg_shard_t auth_log_shard;
       boost::intrusive_ptr<MOSDPGLog> msg;
@@ -1992,6 +2029,7 @@ public:
       boost::statechart::result react(const MLogRec& logrec);
     };
 
+    //incomplete状态
     struct Incomplete : boost::statechart::state< Incomplete, Peering>, NamedState {
       typedef boost::mpl::list <
 	boost::statechart::custom_reaction< AdvMap >,
@@ -2004,8 +2042,8 @@ public:
     };
 
 
-    RecoveryMachine machine;
-    PG *pg;
+    RecoveryMachine machine;//状态机
+    PG *pg;//状态机对应的哪个pg
 
     /// context passed in by state machine caller
     RecoveryCtx *orig_ctx;
@@ -2021,11 +2059,12 @@ public:
     boost::optional<RecoveryCtx> rctx;
 
   public:
-    explicit RecoveryState(PG *pg)
+    explicit RecoveryState(PG *pg)//完成状态机初始化,状态机处理initial状态
       : machine(this, pg), pg(pg), orig_ctx(0) {
-      machine.initiate();
+      machine.initiate();//状态机完成初始化,这里就会导致其进入initial状态
     }
 
+    //事件处理
     void handle_event(const boost::statechart::event_base &evt,
 		      RecoveryCtx *rctx) {
       start_handle(rctx);
@@ -2033,10 +2072,11 @@ public:
       end_handle();
     }
 
+    //事件处理
     void handle_event(CephPeeringEvtRef evt,
 		      RecoveryCtx *rctx) {
       start_handle(rctx);
-      machine.process_event(evt->get_event());
+      machine.process_event(evt->get_event());//走event_base,也就是说CephPeeringEvt这个类将多个事件封闭,这里终于解开了
       end_handle();
     }
 
@@ -2127,6 +2167,7 @@ public:
   int        get_role() const { return role; }
   void       set_role(int r) { role = r; }
 
+  //通过检查whoami是否与primary相等来确定主.
   bool       is_primary() const { return pg_whoami == primary; }
   bool       is_replica() const { return role > 0; }
 
