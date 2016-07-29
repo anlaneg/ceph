@@ -3442,7 +3442,9 @@ void OSD::load_pgs()
  * follow the same logic, but do all pgs at the same time so that we
  * can make a single pass across the osdmap history.
  */
-//计算每一个Pg在过去的osdmap中的变化间隔
+//计算每一个Pg在过去的osdmap中的变化间隔,将此间隔存在pg->past_intervals
+//最后一次发现在间隔不记录在past_intervals中.
+
 void OSD::build_past_intervals_parallel()
 {
   struct pistate {
@@ -3460,6 +3462,7 @@ void OSD::build_past_intervals_parallel()
   epoch_t cur_epoch = superblock.newest_map;
   {
     RWLock::RLocker l(pg_map_lock);
+    //为每一个pg
     for (ceph::unordered_map<spg_t, PG*>::iterator i = pg_map.begin();
         i != pg_map.end();
         ++i) {
@@ -3468,7 +3471,7 @@ void OSD::build_past_intervals_parallel()
       epoch_t start, end;
       if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map)) {//一般start=superblock.oldest_map,end=superblock.newest_map
         if (pg->info.history.same_interval_since == 0)
-          pg->info.history.same_interval_since = end;
+          pg->info.history.same_interval_since = end;//设置end
         continue;
       }
 
@@ -3476,7 +3479,7 @@ void OSD::build_past_intervals_parallel()
       pistate& p = pis[pg];//为每一个pg计算它的start_interval,last_interval
       p.start = start;
       p.end = end;
-      p.same_interval_since = 0;//加入pis
+      p.same_interval_since = 0;//加入pis(注same_interval_since未填充)
 
       //有多个pg,相互之间有start,end不一样,取极值cur_epoch最小,end_epoch最大
       if (start < cur_epoch)
@@ -3543,9 +3546,9 @@ void OSD::build_past_intervals_parallel()
 	cur_map, last_map,
 	pgid,
         recoverable.get(),
-	&pg->past_intervals,
+	&pg->past_intervals,//我们将旧的填充在此成员中
 	&debug);
-      if (new_interval) {//更新临时的p
+      if (new_interval) {//更新临时的p(他可能在下次出现在past_intervals中
 	dout(10) << __func__ << " epoch " << cur_epoch << " pg " << pg->info.pgid
 		 << " " << debug.str() << dendl;
 	p.old_up = up;
@@ -5995,7 +5998,7 @@ void OSD::update_waiting_for_pg(Session *session, OSDMapRef newmap)
       // drop this wait list on the ground
       i->second.clear();
     } else {
-      //防止pg已被split到不同目录.?
+      //防止pg已被split到不同目录.?,此时需要将等待划分到不同的子pg上去
       assert(session->osdmap->have_pg_pool(i->first.pool()));
       if (i->first.is_split(
 	    session->osdmap->get_pg_num(i->first.pool()),

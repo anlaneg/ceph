@@ -2043,7 +2043,7 @@ WRITE_CLASS_ENCODER(pg_hit_set_history_t)
 struct pg_history_t {
 	//pg的创建时间
   epoch_t epoch_created;       // epoch in which PG was created
-  //最后一次变动
+  //最后一次进入start的时间
   epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
   //上次到达clear状态的时间
   epoch_t last_epoch_clean;    // lower bound on last epoch the PG was completely clean.

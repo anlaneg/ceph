@@ -715,6 +715,7 @@ bool PG::_calc_past_interval_range(epoch_t *start, epoch_t *end, epoch_t oldest_
   map<epoch_t,pg_interval_t>::const_iterator pif = past_intervals.begin();
   if (pif != past_intervals.end()) {
     if (pif->first <= info.history.last_epoch_clean) {//如果版本比last_epoch_clean要小,说明这个版本之后重新达到了clean
+    	//此时这个version就没有意义了
       dout(10) << __func__ << ": already have past intervals back to "
 	       << info.history.last_epoch_clean << dendl;
       return false;//last_epoch_clean不可用.
@@ -7352,9 +7353,10 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
 	infoevt.from, infoevt.notify.info, infoevt.notify.epoch_sent)) {
     // we got something new ...
     unique_ptr<PriorSet> &prior_set = context< Peering >().prior_set;
-    if (old_start < pg->info.history.last_epoch_started) {
+    if (old_start < pg->info.history.last_epoch_started) {//如果合并时,被更新了,merge histroy时last_epoch_started被更新了.
+      //此时peer中的列表就可能会需要减掉某此成员
       dout(10) << " last_epoch_started moved forward, rebuilding prior" << dendl;
-      pg->build_prior(prior_set);
+      pg->build_prior(prior_set);//重新构造peer列表
 
       // filter out any osds that got dropped from the probe set from
       // peer_info_requested.  this is less expensive than restarting
@@ -7419,11 +7421,12 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
 		pinfo = &pg->peer_info[so];
 	      }
 	      if (!pinfo->is_incomplete())
-		any_up_complete_now = true;//up状态,complete状态
+		any_up_complete_now = true;//up状态,complete状态(只要这个集合中有一个进入,即为true
 	    } else {
-	      any_down_now = true;//down状态
+	      any_down_now = true;//down状态(只要这个集合中有一个进入即为true)
 	    }
 	  }
+	  //不能边一个up,complete的osd都没有且不能有down{如果没有down的可以认定是完全的,如果有down的,则无法认定是完全的}
 	  if (!any_up_complete_now && any_down_now) {//没有一个是up及complete的并且不存在down的.
 	    dout(10) << " no osds up+complete from interval " << interval << dendl;
 	    pg->state_set(PG_STATE_DOWN);
@@ -7516,7 +7519,7 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
   }
 
   // how much log to request?
-  //录找peer_info中最小的last_update
+  //录找peer_info中最小的last_update,找到整体集群的最小下限,然后从这个位置开始恢复
   eversion_t request_log_from = pg->info.last_update;
   assert(!pg->actingbackfill.empty());
   for (set<pg_shard_t>::iterator p = pg->actingbackfill.begin();

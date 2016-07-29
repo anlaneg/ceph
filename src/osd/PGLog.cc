@@ -140,10 +140,10 @@ void PGLog::proc_replica_log(
   dout(10) << "proc_replica_log for osd." << from << ": "
 	   << oinfo << " " << olog << " " << omissing << dendl;
 
-  if (olog.head < log.tail) {//如果权威曰志的head没有本地的tail大，则不相交，则不可能有分岐
+  if (olog.head < log.tail) {//olog与当前无重合
     dout(10) << __func__ << ": osd." << from << " does not overlap, not looking "
 	     << "for divergent objects" << dendl;
-    return;
+    return;//无法合并
   }
   if (olog.head == log.head) {//如果head相等，则不可能有分歧
     dout(10) << __func__ << ": osd." << from << " same log head, not looking "
@@ -339,9 +339,7 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   info.hit_set = oinfo.hit_set;
 
   // do we have divergent entries to throw out?
-  if (olog.head < log.head) {//权威日志的head 小于我们的head?(权威日志比我们要少)
-	//权威日志的last_update一定比我们大,为什么我们的log.head会大于olog.head呢?(没有搞懂)
-	//按原理,应该不能走到这个分支.-----需要确认
+  if (olog.head < log.head) {
     rewind_divergent_log(t, olog.head, info, rollbacker, dirty_info, dirty_big_info);
     changed = true;
   }
