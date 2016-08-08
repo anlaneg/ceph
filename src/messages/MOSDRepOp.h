@@ -47,7 +47,7 @@ public:
   __u8 acks_wanted;
 
   // transaction to exec
-  bufferlist logbl;
+  bufferlist logbl;//log将记录在此表里
   pg_stat_t pg_stats;
 
   // subop metadata

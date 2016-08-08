@@ -127,6 +127,7 @@ void ReplicatedBackend::run_recovery_op(
   delete h;
 }
 
+//针对pull,构造请求,针对push构造响应.
 void ReplicatedBackend::recover_object(
   const hobject_t &hoid,
   eversion_t v,
@@ -137,7 +138,7 @@ void ReplicatedBackend::recover_object(
 {
   dout(10) << __func__ << ": " << hoid << dendl;
   RPGHandle *h = static_cast<RPGHandle *>(_h);//两个函数均将数据封闭在_h中
-  if (get_parent()->get_local_missing().is_missing(hoid)) {//如果自已没有
+  if (get_parent()->get_local_missing().is_missing(hoid)) {//如果自已pglog中缺这个对象
     assert(!obc);
     // pull
     prepare_pull(//准备拉过来
@@ -203,6 +204,7 @@ bool ReplicatedBackend::can_handle_while_inactive(OpRequestRef op)
   }
 }
 
+//幅本形式的处理消息
 bool ReplicatedBackend::handle_message(
   OpRequestRef op
   )
@@ -213,7 +215,7 @@ bool ReplicatedBackend::handle_message(
     do_push(op);
     return true;
 
-  case MSG_OSD_PG_PULL:
+  case MSG_OSD_PG_PULL://处理pull
     do_pull(op);
     return true;
 
@@ -527,7 +529,7 @@ void ReplicatedBackend::submit_transaction(
   PGTransactionUPtr &&_t,//事务
   const eversion_t &trim_to,
   const eversion_t &roll_forward_to,
-  const vector<pg_log_entry_t> &_log_entries,
+  const vector<pg_log_entry_t> &_log_entries,//本次操作对应的pglog
   boost::optional<pg_hit_set_history_t> &hset_history,
   Context *on_local_applied_sync,
   Context *on_all_acked,
@@ -951,6 +953,7 @@ void ReplicatedBackend::_do_pull_response(OpRequestRef op)
   get_parent()->queue_transaction(std::move(t));
 }
 
+//pull处理
 void ReplicatedBackend::do_pull(OpRequestRef op)
 {
   MOSDPGPull *m = static_cast<MOSDPGPull *>(op->get_req());
@@ -961,10 +964,10 @@ void ReplicatedBackend::do_pull(OpRequestRef op)
   for (vector<PullOp>::iterator i = m->pulls.begin();
        i != m->pulls.end();
        ++i) {
-    replies[from].push_back(PushOp());
-    handle_pull(from, *i, &(replies[from].back()));
+    replies[from].push_back(PushOp());//针对每一个pull操作,构造成push消息
+    handle_pull(from, *i, &(replies[from].back()));//处理pull方法
   }
-  send_pushes(m->get_priority(), replies);
+  send_   pushes(m->get_priority(), replies);
 }
 
 void ReplicatedBackend::do_push_reply(OpRequestRef op)
@@ -1153,7 +1156,7 @@ void ReplicatedBackend::sub_op_modify(OpRequestRef op)
   }
 
   p = m->logbl.begin();
-  ::decode(log, p);
+  ::decode(log, p);//将pglog解出来
   rm->opt.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
 
   bool update_snaps = false;
@@ -1172,7 +1175,7 @@ void ReplicatedBackend::sub_op_modify(OpRequestRef op)
     m->pg_trim_to,
     m->pg_roll_forward_to,
     update_snaps,
-    rm->localt);
+    rm->localt);//记录log
 
   rm->opt.register_on_commit(
     parent->bless_context(
@@ -1422,27 +1425,30 @@ void ReplicatedBackend::calc_clone_subsets(
 	   << "  clone_subsets " << clone_subsets << dendl;
 }
 
+//查找最哪个osd上取,这里会遇到要的版本恰好在找的osd上也缺少的情况.
+//原因是我们在search_for_missing中仅解决了oid的缺少查找
+//将结果存放在h->pulls中
 void ReplicatedBackend::prepare_pull(
   eversion_t v,
   const hobject_t& soid,
   ObjectContextRef headctx,
   RPGHandle *h)
 {
-  assert(get_parent()->get_local_missing().get_items().count(soid));
+  assert(get_parent()->get_local_missing().get_items().count(soid));//本地一定有,否则不执行pull
   eversion_t _v = get_parent()->get_local_missing().get_items().find(
     soid)->second.need;
   assert(_v == v);
   const map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &missing_loc(
-    get_parent()->get_missing_loc_shards());
+    get_parent()->get_missing_loc_shards());//取所有已知位置的对象位置
   const map<pg_shard_t, pg_missing_t > &peer_missing(
-    get_parent()->get_shard_missing());
-  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator>::const_iterator q = missing_loc.find(soid);
+    get_parent()->get_shard_missing());//取missing集
+  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator>::const_iterator q = missing_loc.find(soid);//找谁上有它
   assert(q != missing_loc.end());
   assert(!q->second.empty());
 
   // pick a pullee
   vector<pg_shard_t> shuffle(q->second.begin(), q->second.end());
-  random_shuffle(shuffle.begin(), shuffle.end());
+  random_shuffle(shuffle.begin(), shuffle.end());//随机打乱
   vector<pg_shard_t>::iterator p = shuffle.begin();
   assert(get_osdmap()->is_up(p->osd));
   pg_shard_t fromshard = *p;
@@ -1455,12 +1461,12 @@ void ReplicatedBackend::prepare_pull(
 
   assert(peer_missing.count(fromshard));
   const pg_missing_t &pmissing = peer_missing.find(fromshard)->second;
-  if (pmissing.is_missing(soid, v)) {
+  if (pmissing.is_missing(soid, v)) {//如果peer也缺少此对象的v版本
     assert(pmissing.get_items().find(soid)->second.have != v);
     dout(10) << "pulling soid " << soid << " from osd " << fromshard
 	     << " at version " << pmissing.get_items().find(soid)->second.have
 	     << " rather than at version " << v << dendl;
-    v = pmissing.get_items().find(soid)->second.have;
+    v = pmissing.get_items().find(soid)->second.have;//更新版本为其拥有的版本v
     assert(get_parent()->get_log().get_log().objects.count(soid) &&
 	   (get_parent()->get_log().get_log().objects.find(soid)->second->op ==
 	    pg_log_entry_t::LOST_REVERT) &&
@@ -1497,13 +1503,13 @@ void ReplicatedBackend::prepare_pull(
     recovery_info.size = ((uint64_t)-1);
   }
 
-  h->pulls[fromshard].push_back(PullOp());
+  h->pulls[fromshard].push_back(PullOp());//指定从哪个osd拉取
   PullOp &op = h->pulls[fromshard].back();
-  op.soid = soid;
+  op.soid = soid;//对象
 
   op.recovery_info = recovery_info;
   op.recovery_info.soid = soid;
-  op.recovery_info.version = v;
+  op.recovery_info.version = v;//版本
   op.recovery_progress.data_complete = false;
   op.recovery_progress.omap_complete = false;
   op.recovery_progress.data_recovered_to = 0;
@@ -1786,7 +1792,7 @@ bool ReplicatedBackend::handle_pull_response(
 	   << " data.size() is " << data.length()
 	   << " data_included: " << data_included
 	   << dendl;
-  if (pop.version == eversion_t()) {
+  if (pop.version == eversion_t()) {//对空版本的处理
     // replica doesn't have it!
     _failed_push(from, pop.soid);
     return false;
@@ -1968,6 +1974,7 @@ void ReplicatedBackend::send_pulls(int prio, map<pg_shard_t, vector<PullOp> > &p
   }
 }
 
+//获取object信息,并填充进pushOp
 int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
 				     const ObjectRecoveryProgress &progress,
 				     ObjectRecoveryProgress *out_progress,
@@ -1988,12 +1995,12 @@ int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
           << dendl;
 
   if (progress.first) {
-    int r = store->omap_get_header(coll, ghobject_t(recovery_info.soid), &out_op->omap_header);
+    int r = store->omap_get_header(coll, ghobject_t(recovery_info.soid), &out_op->omap_header);//读omap_head
     if(r < 0) {
       dout(1) << __func__ << " get omap header failed: " << cpp_strerror(-r) << dendl; 
       return r;
     }
-    r = store->getattrs(ch, ghobject_t(recovery_info.soid), out_op->attrset);
+    r = store->getattrs(ch, ghobject_t(recovery_info.soid), out_op->attrset);//读对象属性
     if(r < 0) {
       dout(1) << __func__ << " getattrs failed: " << cpp_strerror(-r) << dendl;
       return r;
@@ -2003,7 +2010,7 @@ int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
     bufferlist bv = out_op->attrset[OI_ATTR];
     object_info_t oi(bv);
 
-    if (oi.version != recovery_info.version) {
+    if (oi.version != recovery_info.version) {//本地对象版本与请求的版本不一致.
       get_parent()->clog_error() << get_info().pgid << " push "
 				 << recovery_info.soid << " v "
 				 << recovery_info.version
@@ -2271,7 +2278,7 @@ void ReplicatedBackend::handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply)
     get_parent()->clog_error() << get_info().pgid << " "
 			       << peer << " tried to pull " << soid
 			       << " but got " << cpp_strerror(-r) << "\n";
-    prep_push_op_blank(soid, reply);
+    prep_push_op_blank(soid, reply);//空的,有错误,填充reply
   } else {
     ObjectRecoveryInfo &recovery_info = op.recovery_info;
     ObjectRecoveryProgress &progress = op.recovery_progress;
@@ -2416,17 +2423,17 @@ int ReplicatedBackend::start_pushes(
   for (set<pg_shard_t>::iterator i =
 	 get_parent()->get_actingbackfill_shards().begin();
        i != get_parent()->get_actingbackfill_shards().end();
-       ++i) {
+       ++i) {//遍历peer
     if (*i == get_parent()->whoami_shard()) continue;
     pg_shard_t peer = *i;
     map<pg_shard_t, pg_missing_t>::const_iterator j =
-      get_parent()->get_shard_missing().find(peer);
+      get_parent()->get_shard_missing().find(peer);//找peer的missing表项
     assert(j != get_parent()->get_shard_missing().end());
-    if (j->second.is_missing(soid)) {
+    if (j->second.is_missing(soid)) {//如果缺少此对象
       ++pushes;
-      h->pushes[peer].push_back(PushOp());
+      h->pushes[peer].push_back(PushOp());//定义pushes
       prep_push_to_replica(obc, soid, peer,
-			   &(h->pushes[peer].back()), h->cache_dont_need);
+			   &(h->pushes[peer].back()), h->cache_dont_need);//需要从本地读取并加入pushes
     }
   }
   return pushes;

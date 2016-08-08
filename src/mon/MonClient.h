@@ -272,15 +272,15 @@ public:
     Mutex::Locker l(monc_lock);
     map<string,ceph_mon_subscribe_item>::iterator i = sub_new.find(what);
     if (i != sub_new.end()) {
-      if (i->second.start >= start)
+      if (i->second.start >= start)//已有人注册了高版本
 	return false;
-      i->second.start = start;
+      i->second.start = start;//无人注册,加入
       i->second.flags = flags;
       return true;
     }
 
-    i = sub_sent.find(what);
-    if (i == sub_sent.end() || i->second.start < start) {
+    i = sub_sent.find(what);//是否已发送
+    if (i == sub_sent.end() || i->second.start < start) {//未发送,注册
       ceph_mon_subscribe_item& item = sub_new[what];
       item.start = start;
       item.flags = flags;

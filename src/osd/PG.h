@@ -565,7 +565,9 @@ public:
   pg_shard_t primary;
   pg_shard_t pg_whoami;
   pg_shard_t up_primary;
-  vector<int> up, acting, want_acting;//up集合,acting集合,期望acting
+  vector<int> up, acting, want_acting;//up集合,acting集合,期望acting{恢复时用}
+  //哪些osd上有这个pg且可以用来恢复
+  //actingbackfill是可以帮助恢复的osd集合,它一般会比up集还大.
   //哪些osd上有这个pg
   set<pg_shard_t> actingbackfill, actingset, upset;//当前可以执行backfill的集合
   map<pg_shard_t,eversion_t> peer_last_complete_ondisk;
@@ -1735,8 +1737,8 @@ public:
       explicit Active(my_context ctx);
       void exit();
 
-      const set<pg_shard_t> remote_shards_to_reserve_recovery;
-      const set<pg_shard_t> remote_shards_to_reserve_backfill;
+      const set<pg_shard_t> remote_shards_to_reserve_recovery;//可执行增量恢复的
+      const set<pg_shard_t> remote_shards_to_reserve_backfill;//可执行backfill的
       bool all_replicas_activated;
 
       typedef boost::mpl::list <
@@ -1919,7 +1921,7 @@ public:
       typedef boost::mpl::list <
 	boost::statechart::transition< LocalRecoveryReserved, WaitRemoteRecoveryReserved >
 	> reactions;
-      explicit WaitLocalRecoveryReserved(my_context ctx);//此函数就是触发LocalRecoveryReserved事件
+      explicit WaitLocalRecoveryReserved(my_context ctx);//此函数就是触发LocalRecoveryReserved事件(非常别脚)
       void exit();
     };
 
@@ -2241,6 +2243,7 @@ public:
     version_t *user_version,
     int *return_code) const;
   eversion_t projected_last_update;
+  //每一个版本的epoch来源于osdmap,而version字段来源于pg_log.get_head().version+1
   eversion_t get_next_version() const {
     eversion_t at_version(
       get_osdmap()->get_epoch(),

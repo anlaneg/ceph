@@ -117,6 +117,7 @@ int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **inde
   }
 }
 
+//查找index,看其在col_indices中是否存在
 bool IndexManager::get_index_optimistic(coll_t c, Index *index) {
   RWLock::RLocker l(lock);
   ceph::unordered_map<coll_t, CollectionIndex* > ::iterator it = col_indices.find(c);
@@ -126,6 +127,7 @@ bool IndexManager::get_index_optimistic(coll_t c, Index *index) {
   return true;
 }
 
+//获取,如果不存在,则创建
 int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {
   if (get_index_optimistic(c, index))
     return 0;
@@ -138,8 +140,8 @@ int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {
     int r = build_index(c, path, &colIndex);
     if (r < 0)
       return r;
-    col_indices[c] = colIndex;
-    index->index = colIndex;
+    col_indices[c] = colIndex;//加入缓存
+    index->index = colIndex;//填充index的index数据结构
   } else {
     index->index = it->second;
   }

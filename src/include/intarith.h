@@ -96,6 +96,7 @@ static inline unsigned ctzll(unsigned long long v) {
 
 // count leading zeros
 // NOTE: the builtin is nondeterministic on 0 input
+//返回前导0的数目
 static inline unsigned clz(unsigned v) {
   if (v == 0)
     return sizeof(v) * 8;
@@ -113,6 +114,8 @@ static inline unsigned clzll(unsigned long long v) {
 }
 
 // count bits (set + any 0's that follow)
+//采用__builtin_clz来获得前导0的数目,返回来被size(v)*8来减
+//于是用来表示v值最高位,占用的位序号.
 static inline unsigned cbits(unsigned v) {
   if (v == 0)
     return 0;

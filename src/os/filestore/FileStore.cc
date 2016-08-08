@@ -156,12 +156,14 @@ ostream& operator<<(ostream& out, const FileStore::OpSequencer& s)
   return out << *s.parent;
 }
 
+//获取coll的路径名称
 int FileStore::get_cdir(const coll_t& cid, char *s, int len)
 {
-  const string &cid_str(cid.to_str());
+  const string &cid_str(cid.to_str());//构造coll_t名称,例如3.abe_head
   return snprintf(s, len, "%s/current/%s", basedir.c_str(), cid_str.c_str());
 }
 
+//获取index
 int FileStore::get_index(const coll_t& cid, Index *index)
 {
   int r = index_manager.get_index(cid, basedir, index);
@@ -2724,7 +2726,7 @@ void FileStore::_do_transaction(
         coll_t cid = i.get_cid(op->cid);
         tracepoint(objectstore, mkcoll_enter, osr_name);
         if (_check_replay_guard(cid, spos) > 0)
-          r = _create_collection(cid, spos);
+          r = _create_collection(cid, spos);//创建collection
         tracepoint(objectstore, mkcoll_exit, r);
       }
       break;
@@ -5046,7 +5048,7 @@ int FileStore::_create_collection(
   int r = ::mkdir(fn, 0755);
   if (r < 0)
     r = -errno;
-  if (r == -EEXIST && replaying)
+  if (r == -EEXIST && replaying)//如果是已存在,则属正常
     r = 0;
   dout(10) << "create_collection " << fn << " = " << r << dendl;
 
@@ -5057,14 +5059,14 @@ int FileStore::_create_collection(
     return r;
 
   // create parallel temp collection, too
-  if (!c.is_meta() && !c.is_temp()) {
+  if (!c.is_meta() && !c.is_temp()) {//创建pg_temp
     coll_t temp = c.get_temp();
     r = _create_collection(temp, spos);
     if (r < 0)
       return r;
   }
 
-  _set_replay_guard(c, spos);
+  _set_replay_guard(c, spos);//刷到硬盘
   return 0;
 }
 
@@ -5399,12 +5401,12 @@ int FileStore::_split_collection(const coll_t& cid,
   int r;
   {
     dout(15) << __func__ << " " << cid << " bits: " << bits << dendl;
-    if (!collection_exists(cid)) {
+    if (!collection_exists(cid)) {//cid必须存在
       dout(2) << __func__ << ": " << cid << " DNE" << dendl;
       assert(replaying);
       return 0;
     }
-    if (!collection_exists(dest)) {
+    if (!collection_exists(dest)) {//dest必须存在
       dout(2) << __func__ << ": " << dest << " DNE" << dendl;
       assert(replaying);
       return 0;

@@ -506,7 +506,7 @@ public:
 
   int get_nodeid() const { return whoami; }
 
-  std::atomic<epoch_t> max_oldest_map;
+  std::atomic<epoch_t> max_oldest_map;//记录最旧的版本
 private:
   OSDMapRef osdmap;//记录整个osd中最新的osdmap
 
@@ -1043,7 +1043,7 @@ public:
 private:
   // split
   Mutex in_progress_split_lock;
-  map<spg_t, spg_t> pending_splits; // child -> parent
+  map<spg_t, spg_t> pending_splits; // child -> parent (未决split)
   map<spg_t, set<spg_t> > rev_pending_splits; // parent -> [children]
   set<spg_t> in_progress_splits;       // child
 
@@ -2110,7 +2110,7 @@ protected:
   }
 
 
-  epoch_t last_pg_create_epoch;
+  epoch_t last_pg_create_epoch;//整个osd最后一次创建pg的时间点
 
   void handle_pg_create(OpRequestRef op);
 

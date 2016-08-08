@@ -123,7 +123,7 @@ public:
     Mutex::Locker l(lock);
     assert(!queue_pointers.count(item) &&
 	   !in_progress.count(item));
-    queues[prio].push_back(make_pair(item, on_reserved));
+    queues[prio].push_back(make_pair(item, on_reserved));//加入queres
     queue_pointers.insert(make_pair(item, make_pair(prio,--(queues[prio]).end())));
     do_queues();
   }

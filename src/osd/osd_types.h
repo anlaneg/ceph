@@ -300,9 +300,9 @@ WRITE_CLASS_ENCODER(old_pg_t)
 
 // placement group id
 struct pg_t {
-  uint64_t m_pool;
-  uint32_t m_seed;
-  int32_t m_preferred;
+  uint64_t m_pool;//所属的pool
+  uint32_t m_seed;//pg编号
+  int32_t m_preferred;//这个值大于0表示是local pg
 
   pg_t() : m_pool(0), m_seed(0), m_preferred(-1) {}
   pg_t(ps_t seed, uint64_t pool, int pref=-1) :
@@ -316,6 +316,7 @@ struct pg_t {
     *this = opg.v;
   }
 
+  //新旧版本间问题,忽略
   old_pg_t get_old_pg() const {
     old_pg_t o;
     assert(m_pool < 0xffffffffull);
@@ -446,6 +447,7 @@ struct spg_t {
   unsigned get_split_bits(unsigned pg_num) const {
     return pgid.get_split_bits(pg_num);
   }
+  //父与其相比pgid中m_seed的最高位小一个1
   spg_t get_parent() const {
     return spg_t(pgid.get_parent(), shard);
   }
@@ -657,6 +659,7 @@ public:
 
   // get a TEMP collection that corresponds to the current collection,
   // which we presume is a pg collection.
+  //构造一个temp类型的coll_t
   coll_t get_temp() const {
     assert(type == TYPE_PG);
     return coll_t(TYPE_PG_TEMP, pgid, 0);
@@ -2057,9 +2060,9 @@ struct pg_history_t {
    * must have been a clean interval between e and now and that we cannot be
    * in the active set during the interval containing e.
    */
-  epoch_t same_up_since;       // same acting set since
-  epoch_t same_interval_since;   // same acting AND up set since
-  epoch_t same_primary_since;  // same primary at least back through this epoch.
+  epoch_t same_up_since;       // same acting set since //自此时间点开始至今up集无变化
+  epoch_t same_interval_since;   // same acting AND up set since //自此时间点up,acting无变化,即间隔开始点
+  epoch_t same_primary_since;  // same primary at least back through this epoch. //primary无变化点.
 
   eversion_t last_scrub;
   eversion_t last_deep_scrub;
@@ -2163,7 +2166,7 @@ inline ostream& operator<<(ostream& out, const pg_history_t& h) {
 struct pg_info_t {
   spg_t pgid;
   eversion_t last_update;      ///< last object version applied to store.(写日志时更新)
-  eversion_t last_complete;    ///< last version pg was complete through.
+  eversion_t last_complete;    ///< last version pg was complete through.(如果last_complete与last_update一样时,均在写日志时更新)
   epoch_t last_epoch_started;  ///< last epoch at which this pg started on this osd(每到达一次active,就将此值设置为active状态时的osdmap版本号)
   
   version_t last_user_version; ///< last user object version applied to store(写日志时更新成user_version)

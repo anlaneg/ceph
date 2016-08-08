@@ -462,7 +462,7 @@ public:
 
       assert(e.version > head);
       assert(head.version == 0 || e.version.version > head.version);
-      head = e.version;
+      head = e.version;//head直接取pg_log_entry_t中的版本号
 
       // to our index
       //索引加入
@@ -809,7 +809,8 @@ protected:
     ceph::unordered_map<hobject_t, pg_log_entry_t*>::const_iterator objiter =
       log.objects.find(hoid);
     if (objiter != log.objects.end() &&
-	objiter->second->version >= first_divergent_update) {
+	objiter->second->version >= first_divergent_update) {//后面对此对象又进行了变更,这个对象恢复missing表
+      //中的即可,无需再处理.
       /// Case 1)
       ldpp_dout(dpp, 10) << __func__ << ": more recent entry found: "
 			 << *objiter->second << ", already merged" << dendl;
@@ -835,10 +836,14 @@ protected:
       return;
     }
 
+    //走到这一步,满足以下条件
+    //objiter == log.objects.end() || objiter->second->version < first_divergent_update
+
     ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 		       <<" has no more recent entries in log" << dendl;
     if (prior_version == eversion_t() || entries.front().is_clone()) {
       /// Case 2)
+      //就我(主)上面有,权威日志做为集群的一员,上面没有,说明没有写完成,客户端认为是失败,故处理为删除)
       ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			 << " prior_version or op type indicates creation,"
 			 << " deleting"
@@ -862,16 +867,18 @@ protected:
 			 << " missing, " << missing.get_items().at(hoid)
 			 << " adjusting" << dendl;
 
-      if (missing.get_items().at(hoid).have == prior_version) {
+      //我们有这个版本(但权威日志没有)missing集中认为有它的prior_version
+      //丢弃
+      if (missing.get_items().at(hoid).have == prior_version) {//这种情况下暗指对面的日志没有这部分内容.
 	ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			   << " missing.have is prior_version " << prior_version
 			   << " removing from missing" << dendl;
-	missing.rm(missing.get_items().find(hoid));
+	missing.rm(missing.get_items().find(hoid));//如果prior_version原始版本已存在,则丢弃
       } else {
 	ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			   << " missing.have is " << missing.get_items().at(hoid).have
 			   << ", adjusting" << dendl;
-	missing.revise_need(hoid, prior_version);
+	missing.revise_need(hoid, prior_version);//如果对象不存在,添加对象,并指明版本,如果对象存在,则指明需要prior_version版本
 	if (prior_version <= info.log_tail) {
 	  ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			     << " prior_version " << prior_version

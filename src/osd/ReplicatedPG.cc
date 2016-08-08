@@ -3109,7 +3109,7 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
     }
 
     // version
-    ctx->at_version = get_next_version();
+    ctx->at_version = get_next_version();//在这里我们准备了起始的版本号(此值当赋给pglog)
     ctx->mtime = m->get_mtime();
 
     dout(10) << "do_op " << soid << " " << ctx->ops
@@ -6934,6 +6934,10 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
   }
 
   // append to log
+  //添加操作"log_op_type",对象"soid",
+  //版本"ctx->at_version",前一版本"ctx->obs->oi.version"
+  //用户版本"ctx->user_at_version",请求id "ctx->reqid"
+  //返回值
   ctx->log.push_back(pg_log_entry_t(log_op_type, soid, ctx->at_version,
 				    ctx->obs->oi.version,
 				    ctx->user_at_version, ctx->reqid,
@@ -8608,7 +8612,7 @@ void ReplicatedPG::issue_repop(RepGather *repop, OpContext *ctx)
       if (*i == get_primary()) continue;
       pg_info_t &pinfo = peer_info[*i];
       // keep peer_info up to date
-      if (pinfo.last_complete == pinfo.last_update)
+      if (pinfo.last_complete == pinfo.last_update)//这里是在更新对端的update版本
 	pinfo.last_complete = ctx->at_version;
       pinfo.last_update = ctx->at_version;
     }
@@ -9547,7 +9551,7 @@ int ReplicatedPG::recover_missing(
   int priority,
   PGBackend::RecoveryHandle *h)
 {
-  if (missing_loc.is_unfound(soid)) {
+  if (missing_loc.is_unfound(soid)) {//如果没有发现,则忽略
     dout(7) << "pull " << soid
 	    << " v " << v 
 	    << " but it is unfound" << dendl;
@@ -9600,9 +9604,9 @@ int ReplicatedPG::recover_missing(
 	0);
     assert(head_obc);
   }
-  start_recovery_op(soid);
+  start_recovery_op(soid);//增加计数,用于总是限制
   assert(!recovering.count(soid));
-  recovering.insert(make_pair(soid, obc));//指明正在恢复
+  recovering.insert(make_pair(soid, obc));//指明正在恢复,防止重复恢复
   pgbackend->recover_object(//构造h中的恢复方式pull或者push?
     soid,
     v,
@@ -10140,7 +10144,7 @@ void ReplicatedPG::on_shutdown()
 void ReplicatedPG::on_activate()
 {
   // all clean?
-  if (needs_recovery()) {
+  if (needs_recovery()) {//是否有missing集
     dout(10) << "activate not all replicas are up-to-date, queueing recovery" << dendl;
     queue_peering_event(
       CephPeeringEvtRef(
@@ -10479,11 +10483,11 @@ bool ReplicatedPG::start_recovery_ops(
 
   const pg_missing_t &missing = pg_log.get_missing();
 
-  int num_missing = missing.num_missing();
+  int num_missing = missing.num_missing();//有多少没有发现位置的.
   int num_unfound = get_num_unfoTund();
 
   if (num_missing == 0) {
-    info.last_complete = info.last_update;
+    info.last_complete = info.last_update;//如果已恢复完成,则last_complete赋值,使两者相等
   }
 
   if (num_missing == num_unfound) {
@@ -10493,7 +10497,7 @@ bool ReplicatedPG::start_recovery_ops(
   }
   if (!started) {
     // We still have missing objects that we should grab from replicas.
-    started += recover_primary(max, handle);//恢复主
+    started += (max, handle);//恢复主
   }
   if (!started && num_unfound != get_num_unfound()) {
     // second chance to recovery replicas

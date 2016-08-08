@@ -3924,7 +3924,7 @@ void Monitor::dispatch_op(MonOpRequestRef op)
       handle_get_version(op);
       break;
 
-    case CEPH_MSG_MON_SUBSCRIBE:
+    case CEPH_MSG_MON_SUBSCRIBE://monitor订阅消息
       /* FIXME: check what's being subscribed, filter accordingly */
       handle_subscribe(op);
       break;

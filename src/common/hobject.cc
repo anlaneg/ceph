@@ -112,7 +112,6 @@ void hobject_t::encode(bufferlist& bl) const
   ::encode(max, bl);
   ::encode(nspace, bl);
   ::encode(pool, bl);
-  assert(!max || (*this == hobject_t(hobject_t::get_max())));
   ENCODE_FINISH(bl);
 }
 
@@ -142,12 +141,6 @@ void hobject_t::decode(bufferlist::iterator& bl)
 	oid.name.empty()) {
       pool = INT64_MIN;
       assert(is_min());
-    }
-
-    // for compatibility with some earlier verisons which might encoded
-    // a non-canonical max object
-    if (max) {
-      *this = hobject_t::get_max();
     }
   }
   DECODE_FINISH(bl);
@@ -352,6 +345,7 @@ int cmp_nibblewise(const hobject_t& l, const hobject_t& r)
   return 0;
 }
 
+//小于返回-1,大于返回1,否则返回0
 int cmp_bitwise(const hobject_t& l, const hobject_t& r)
 {
   if (l.max < r.max)

@@ -437,13 +437,13 @@ bool spg_t::parse(const char *s)
   }
   return true;
 }
-
+//<pool_id:10进制>.<m_seed:16进制>{P<shard_id:10进制>s}_head
 char *spg_t::calc_name(char *buf, const char *suffix_backwords) const
 {
   while (*suffix_backwords)
-    *--buf = *suffix_backwords++;
+    *--buf = *suffix_backwords++;//反序向buf中加入数据
 
-  if (!is_no_shard()) {
+  if (!is_no_shard()) {//只有ec的pg才具有s标记
     buf = ritoa<uint8_t, 10>((uint8_t)shard.id, buf);
     *--buf = 's';
   }
@@ -459,6 +459,7 @@ ostream& operator<<(ostream& out, const spg_t &pg)
   return out;
 }
 
+//搞清楚这个pg是从谁分裂来的.
 pg_t pg_t::get_ancestor(unsigned old_pg_num) const
 {
   int old_bits = cbits(old_pg_num);
@@ -468,6 +469,7 @@ pg_t pg_t::get_ancestor(unsigned old_pg_num) const
   return ret;
 }
 
+//检查是否需要分裂,并采用children返回分裂后的pg_t列表,true,false
 bool pg_t::is_split(unsigned old_pg_num, unsigned new_pg_num, set<pg_t> *children) const
 {
   assert(m_seed < old_pg_num);
@@ -480,21 +482,28 @@ bool pg_t::is_split(unsigned old_pg_num, unsigned new_pg_num, set<pg_t> *childre
     int old_bits = cbits(old_pg_num);
     int old_mask = (1 << old_bits) - 1;//掩码
     for (int n = 1; ; n++) {
+      //这两行代码是一个优化,简单处理,我们从old_pg_num到new_pg_num
+      //遍历,如果s & old_mask == m_seed,我们即可向children里添加成员
+      //但是直正能被加入的这些数据都有一个特点,其后(old_bits)位的数据,都应
+      //是m_seed,所以我们可以直接构造这样的数据,这个for循环优化后的结果
+      //并用下面这两行来构造这样的s.这个循环的次数就减少了.
       int next_bit = (n << (old_bits-1));
       unsigned s = next_bit | m_seed;
 
+      //s小于old_pg_num表示已存在,不用考虑,而等于m_seed恰好是自已,也不用考虑
       if (s < old_pg_num || s == m_seed)
 	continue;
-      if (s >= new_pg_num)
+      if (s >= new_pg_num)//超过了用户设定的值,说明循环结束了
 	break;
-      //没有搞清楚这一段代码在做什么?
+      //检查此s编号是否需要从自已分裂(如果s&old_mask==m_seed即说明需要从自已分裂)
       if ((unsigned)ceph_stable_mod(s, old_pg_num, old_mask) == m_seed) {
-	split = true;
+	split = true;//标明需要分裂
 	if (children)
-	  children->insert(pg_t(s, m_pool, m_preferred));
+	  children->insert(pg_t(s, m_pool, m_preferred));//s即为m_seed
       }
     }
   }
+  //作者为了显示自已的方法的优秀,直接将简单方法采用可比对的方式注释掉了,感觉好自恋
   if (false) {
     // brute force
     int old_bits = cbits(old_pg_num);
@@ -516,9 +525,13 @@ unsigned pg_t::get_split_bits(unsigned pg_num) const {
   assert(pg_num > 1);
 
   // Find unique p such that pg_num \in [2^(p-1), 2^p)
+  //找出pg_num所在的区间,这个区间可以采用p来表式成范围:[2^(p-1),2^p]
+  //注pg_num不能等于0,在调用此函数时.
   unsigned p = cbits(pg_num);
   assert(p); // silence coverity #751330 
 
+  //m_seed % (2^(p-1))
+  //m_seed的意义要搞清楚.
   if ((m_seed % (1<<(p-1))) < (pg_num % (1<<(p-1))))
     return p;
   else
@@ -526,6 +539,8 @@ unsigned pg_t::get_split_bits(unsigned pg_num) const {
 }
 
 //将当前m_seed 最高有效位清0
+//父pg就是m_seed的最高0清掉
+//这个函数比较原始,实际上它相当于向其对应的2^n次(下限)上求与自已同余的
 pg_t pg_t::get_parent() const
 {
   unsigned bits = cbits(m_seed);
@@ -3106,7 +3121,7 @@ bool pg_interval_t::check_new_interval(
 	osdmap,
 	lastmap,
 	pgid)) {
-	//设置past_intervals
+	//设置past_intervals(如果有变化,填充变之前的)
     pg_interval_t& i = (*past_intervals)[same_interval_since];
     i.first = same_interval_since;
     i.last = osdmap->get_epoch() - 1;
@@ -3116,6 +3131,7 @@ bool pg_interval_t::check_new_interval(
     i.primary = old_acting_primary;
     i.up_primary = old_up_primary;
 
+    //后面这一段分析primary是否已进入到可读写
     unsigned num_acting = 0;
     for (vector<int>::const_iterator p = i.acting.begin(); p != i.acting.end();
 	 ++p)

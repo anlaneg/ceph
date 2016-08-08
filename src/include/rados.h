@@ -87,6 +87,9 @@ static inline int ceph_stable_mod(int x, int b, int bmask)
 		return x & bmask;
 	else
 		return x & (bmask >> 1);
+		//直观上,我们应该return x & bmask
+		//但x进入时,是一个[2^(n-1) ,2^n]范围内的值,b的范围[2^(n-2),2^n]内的值
+		//如果我们直接返回x&bmask的话,可能会导致其大于b,而b是pg的总数量
 }
 
 /*

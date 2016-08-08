@@ -51,7 +51,7 @@ struct Index {
 class IndexManager {
   RWLock lock; ///< Lock for Index Manager
   bool upgrade;
-  ceph::unordered_map<coll_t, CollectionIndex* > col_indices;
+  ceph::unordered_map<coll_t, CollectionIndex* > col_indices;//用来缓存index
 
   /**
    * Index factory

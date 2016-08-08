@@ -1510,6 +1510,7 @@ ceph_object_layout OSDMap::make_object_layout(
   return ol;
 }
 
+//移除掉不存在的item
 void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
 				      vector<int>& osds) const
 {
@@ -1517,15 +1518,15 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
     unsigned removed = 0;
     for (unsigned i = 0; i < osds.size(); i++) {
       if (!exists(osds[i])) {
-	removed++;
+	removed++;//有多少个需要移除
 	continue;
       }
       if (removed) {
-	osds[i - removed] = osds[i];
+	osds[i - removed] = osds[i];//前移,保证不存在空
       }
     }
     if (removed)
-      osds.resize(osds.size() - removed);
+      osds.resize(osds.size() - removed);//减小空间.(移除排已移动的)
   } else {
     for (vector<int>::iterator p = osds.begin(); p != osds.end(); ++p) {
       if (!exists(*p))
@@ -1554,10 +1555,10 @@ int OSDMap::_pg_to_raw_osds(
   if (ruleno >= 0)
     crush->do_rule(ruleno, pps, *osds, size, osd_weight);//执行此规则
 
-  _remove_nonexistent_osds(pool, *osds);
+  _remove_nonexistent_osds(pool, *osds);//移除掉不存在osd
 
   *primary = -1;
-  for (unsigned i = 0; i < osds->size(); ++i) {
+  for (unsigned i = 0; i < osds->size(); ++i) {//第一个存在的osd即为主.
     if ((*osds)[i] != CRUSH_ITEM_NONE) {
       *primary = (*osds)[i];//找到主.
       break;
@@ -1570,6 +1571,7 @@ int OSDMap::_pg_to_raw_osds(
 }
 
 // pg -> (up osd list)
+//分析raw集合,丢弃掉未up的,得到up集,并将首个up元素,命名为primary
 void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
                              vector<int> *up, int *primary) const
 {
@@ -1651,13 +1653,14 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
   }
 }
 
+//通过两个集合,pg_temp,primary_temp来分析此pg的acting集合及acting_primary
 void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
                             vector<int> *temp_pg, int *temp_primary) const
 {
   pg = pool.raw_pg_to_pg(pg);
   map<pg_t,vector<int32_t> >::const_iterator p = pg_temp->find(pg);
   temp_pg->clear();
-  if (p != pg_temp->end()) {
+  if (p != pg_temp->end()) {//这个pg在pg_temp集合中
     for (unsigned i=0; i<p->second.size(); i++) {
       if (!exists(p->second[i]) || is_down(p->second[i])) {
 	if (pool.can_shift_osds()) {
@@ -1670,12 +1673,12 @@ void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
       }
     }
   }
-  map<pg_t,int32_t>::const_iterator pp = primary_temp->find(pg);
+  map<pg_t,int32_t>::const_iterator pp = primary_temp->find(pg);//查看这个pg是否在primary_temp集合中
   *temp_primary = -1;
   if (pp != primary_temp->end()) {
     *temp_primary = pp->second;
-  } else if (!temp_pg->empty()) { // apply pg_temp's primary
-    for (unsigned i = 0; i < temp_pg->size(); ++i) {
+  } else if (!temp_pg->empty()) { // apply pg_temp's primary(说明pg_temp中含有此pg)
+    for (unsigned i = 0; i < temp_pg->size(); ++i) {//如果pg不在primary_temp记录中,则返回首个可用的.
       if ((*temp_pg)[i] != CRUSH_ITEM_NONE) {
 	*temp_primary = (*temp_pg)[i];
 	break;

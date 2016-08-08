@@ -290,8 +290,9 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   // If our log is empty, the incoming log needs to have not been trimmed.
   assert(!log.null() || olog.tail == eversion_t());
   // The logs must overlap.
-  assert(log.head >= olog.tail && olog.head >= log.tail);
+  assert(log.head >= olog.tail && olog.head >= log.tail);//日志一定是有交集才能走到这个流程(前面选权威时来保证这点)
 
+  //missing拿出来显示下.
   for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i = missing.get_items().begin();
        i != missing.get_items().end();
        ++i) {
@@ -339,6 +340,7 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   info.hit_set = oinfo.hit_set;
 
   // do we have divergent entries to throw out?
+  //一直觉得这种情况不应出现,但epoch是一个u32_t类型,所以可能发生环回.
   if (olog.head < log.head) {
     rewind_divergent_log(t, olog.head, info, rollbacker, dirty_info, dirty_big_info);
     changed = true;
