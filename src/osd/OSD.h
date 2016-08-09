@@ -1421,10 +1421,11 @@ public:
     list<OpRequestRef> waiting_on_map;
 
     OSDMapRef osdmap;  /// Map as of which waiting_for_pg is current
+    //指出当前session上有哪些pg的有请求在等待second指出请求
     map<spg_t, list<OpRequestRef> > waiting_for_pg;
 
     Spinlock sent_epoch_lock;
-    epoch_t last_sent_epoch;
+    epoch_t last_sent_epoch;//指出上一次发送过的epoch,防止发好多次{每个请求来都要发,需要检查之前已发送这个}
     Spinlock received_map_lock;
     epoch_t received_map_epoch; // largest epoch seen in MOSDMap from here
 
@@ -1449,7 +1450,7 @@ private:
 
   Mutex session_waiting_lock;
   set<Session*> session_waiting_for_map;
-  map<spg_t, set<Session*> > session_waiting_for_pg;
+  map<spg_t, set<Session*> > session_waiting_for_pg;//指出在哪些pg上有session在等待{session里有这个pg上等待的请求}
 
   void clear_waiting_sessions() {
     Mutex::Locker l(session_waiting_lock);
@@ -1545,7 +1546,7 @@ private:
     Mutex::Locker l(session_waiting_lock);
     set<Session*> &s = session_waiting_for_pg[pgid];
     set<Session*>::const_iterator i = s.find(session);
-    if (i == s.cend()) {
+    if (i == s.end()) {
       session->get();
       s.insert(session);
     }

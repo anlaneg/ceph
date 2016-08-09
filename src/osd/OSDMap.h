@@ -800,11 +800,11 @@ public:
     vector<int> group;
     int nrep = pg_to_acting_osds(pg, &group, &primary);
     if (osd == primary)
-      return true;
+      return true;//是主,ok
     if (pg_is_ec(pg))
       return false;
 
-    return calc_pg_role(osd, group, nrep) >= 0;
+    return calc_pg_role(osd, group, nrep) >= 0;//检查ec是否负责此块.
   }
 
 

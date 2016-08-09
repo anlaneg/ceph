@@ -127,7 +127,7 @@ void ReplicatedBackend::run_recovery_op(
   delete h;
 }
 
-//针对pull,构造请求,针对push构造响应.
+//针对pull,构造请求,针对push构造响应.(如果主上有,优先从主上拿,主上没有从别的上面拿)
 void ReplicatedBackend::recover_object(
   const hobject_t &hoid,
   eversion_t v,
@@ -212,14 +212,14 @@ bool ReplicatedBackend::handle_message(
   dout(10) << __func__ << ": " << op << dendl;
   switch (op->get_req()->get_type()) {
   case MSG_OSD_PG_PUSH:
-    do_push(op);
+    do_push(op);//收到主(从)发送过来的push操作
     return true;
 
   case MSG_OSD_PG_PULL://处理pull
     do_pull(op);
     return true;
 
-  case MSG_OSD_PG_PUSH_REPLY:
+  case MSG_OSD_PG_PUSH_REPLY://push_reply
     do_push_reply(op);
     return true;
 
@@ -860,7 +860,7 @@ void ReplicatedBackend::_do_push(OpRequestRef op)
        i != m->pushes.end();
        ++i) {
     replies.push_back(PushReplyOp());
-    handle_push(from, *i, &(replies.back()), &t);
+    handle_push(from, *i, &(replies.back()), &t);//针对每个push响应PushReplyOp,暂时加入
   }
 
   MOSDPGPushReply *reply = new MOSDPGPushReply;
@@ -875,7 +875,7 @@ void ReplicatedBackend::_do_push(OpRequestRef op)
     new PG_SendMessageOnConn(
       get_parent(), reply, m->get_connection()));
 
-  get_parent()->queue_transaction(std::move(t));
+  get_parent()->queue_transaction(std::move(t));//push操作事务入队处
 }
 
 struct C_ReplicatedBackend_OnPullComplete : GenContext<ThreadPool::TPHandle&> {
@@ -1672,6 +1672,7 @@ int ReplicatedBackend::send_pull_legacy(int prio, pg_shard_t peer,
   return 0;
 }
 
+//写对象到本地文件系统
 void ReplicatedBackend::submit_push_data(
   ObjectRecoveryInfo &recovery_info,
   bool first,
@@ -1698,7 +1699,7 @@ void ReplicatedBackend::submit_push_data(
   }
 
   if (first) {
-    t->remove(coll, ghobject_t(target_oid));
+    t->remove(coll, ghobject_t(target_oid));//移除
     t->touch(coll, ghobject_t(target_oid));
     t->truncate(coll, ghobject_t(target_oid), recovery_info.size);
     t->omap_setheader(coll, ghobject_t(target_oid), omap_header);
@@ -1720,7 +1721,7 @@ void ReplicatedBackend::submit_push_data(
     bufferlist bit;
     bit.substr_of(data_included, off, p.get_len());
     t->write(coll, ghobject_t(target_oid),
-	     p.get_start(), p.get_len(), bit, fadvise_flags);
+	     p.get_start(), p.get_len(), bit, fadvise_flags);//写文件
     off += p.get_len();
   }
 
@@ -2429,7 +2430,7 @@ int ReplicatedBackend::start_pushes(
     map<pg_shard_t, pg_missing_t>::const_iterator j =
       get_parent()->get_shard_missing().find(peer);//找peer的missing表项
     assert(j != get_parent()->get_shard_missing().end());
-    if (j->second.is_missing(soid)) {//如果缺少此对象
+    if (j->second.is_missing(soid)) {//如果peer j 也缺少此对象
       ++pushes;
       h->pushes[peer].push_back(PushOp());//定义pushes
       prep_push_to_replica(obc, soid, peer,

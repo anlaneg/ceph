@@ -1597,15 +1597,16 @@ void ReplicatedPG::get_src_oloc(const object_t& oid, const object_locator_t& olo
     src_oloc.key = oid.name;
 }
 
+//请求处理入口
 void ReplicatedPG::do_request(
   OpRequestRef& op,
   ThreadPool::TPHandle &handle)
 {
   assert(!op_must_wait_for_map(get_osdmap()->get_epoch(), op));
-  if (can_discard_request(op)) {
+  if (can_discard_request(op)) {//检查消息能否丢弃
     return;
   }
-  if (flushes_in_progress > 0) {//恢复时此值大于1.表示pg正在处理
+  if (flushes_in_progress > 0) {//恢复时此值大于1.表示pg正在处理(pg.start_flush被调用)
     dout(20) << flushes_in_progress
 	     << " flushes_in_progress pending "
 	     << "waiting for active on " << op << dendl;
@@ -1615,14 +1616,14 @@ void ReplicatedPG::do_request(
   }
 
   //没有peered时,挂起
-  if (!is_peered()) {
+  if (!is_peered()) {//恢复时,大家进入Active状态时,置上此标记
     // Delay unless PGBackend says it's ok
-    if (pgbackend->can_handle_while_inactive(op)) {
+    if (pgbackend->can_handle_while_inactive(op)) {//检查后端是否支持
       bool handled = pgbackend->handle_message(op);
       assert(handled);
       return;
     } else {
-      waiting_for_peered.push_back(op);
+      waiting_for_peered.push_back(op);//加入等待peered
       op->mark_delayed("waiting for peered");
       return;
     }
@@ -1632,25 +1633,25 @@ void ReplicatedPG::do_request(
   if (pgbackend->handle_message(op))//交给pg后端处理此操作,如果后端不处理,则返回false
 	  //这里,读写流程在此处返回的是false
 	  //这里,如果是osd发给副本的消息,则在此处将被处理,不再继续下去
-    return;
+    return;//从这里我们处理的都是不需要发送对端的.
 
   switch (op->get_req()->get_type()) {
   case CEPH_MSG_OSD_OP:
-    if (!is_active()) {//未active
+    if (!is_active()) {//未到active状态
       dout(20) << " peered, not active, waiting for active on " << op << dendl;
-      waiting_for_active.push_back(op);
+      waiting_for_active.push_back(op);//加入等待active
       op->mark_delayed("waiting for active");
       return;
     }
     if (is_replay()) {//pg状态是重做.
       dout(20) << " replay, waiting for active on " << op << dendl;
-      waiting_for_active.push_back(op);
+      waiting_for_active.push_back(op);//加入等待active
       op->mark_delayed("waiting for replay end");
       return;
     }
     // verify client features
     if ((pool.info.has_tiers() || pool.info.is_tier()) &&
-	!op->has_feature(CEPH_FEATURE_OSD_CACHEPOOL)) {
+	!op->has_feature(CEPH_FEATURE_OSD_CACHEPOOL)) {//检查客户端是否能操作cache
       osd->reply_op_error(op, -EOPNOTSUPP);
       return;
     }
@@ -10852,8 +10853,8 @@ uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
     dout(10) << " peer osd." << peer << " missing " << m_sz << " objects." << dendl;
     dout(20) << " peer osd." << peer << " missing " << pm->second.get_items() << dendl;
 
-    // oldest first!
-    const pg_missing_t &m(pm->second);
+    // oldest first!//遍历m,并用max控制它,不容许处理太多
+    const pg_missing_t &m(pm->second);//missing集
     for (map<version_t, hobject_t>::const_iterator p = m.get_rmissing().begin();
 	 p != m.get_rmissing().end() && started < max;
 	   ++p) {
@@ -10882,14 +10883,14 @@ uint64_t ReplicatedPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
 	continue;
       }
 
-      //主上也没有head
+      //主上也是missing
       if (soid.is_snap() && pg_log.get_missing().is_missing(soid.get_head())) {
 	dout(10) << __func__ << ": " << soid.get_head()
 		 << " still missing on primary" << dendl;
 	continue;
       }
 
-      //主上没有snap
+      //主上也是missing
       if (soid.is_snap() && pg_log.get_missing().is_missing(soid.get_snapdir())) {
 	dout(10) << __func__ << ": " << soid.get_snapdir()
 		 << " still missing on primary" << dendl;

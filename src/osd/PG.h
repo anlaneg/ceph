@@ -840,10 +840,10 @@ protected:
   unsigned flushes_in_progress;
 
   // ops waiting on peered
-  list<OpRequestRef>            waiting_for_peered;
+  list<OpRequestRef>            waiting_for_peered;//等待达到peered状态后执行
 
   // ops waiting on active (require peered as well)
-  list<OpRequestRef>            waiting_for_active;
+  list<OpRequestRef>            waiting_for_active;//等待达到active状态后执行
 
   list<OpRequestRef>            waiting_for_cache_not_full;
   list<OpRequestRef>            waiting_for_all_missing;
@@ -2351,6 +2351,7 @@ public:
   bool old_peering_evt(CephPeeringEvtRef evt) {
     return old_peering_msg(evt->get_epoch_sent(), evt->get_epoch_requested());
   }
+  //检查e是否小于等于cur_epoch
   static bool have_same_or_newer_map(epoch_t cur_epoch, epoch_t e) {
     return e <= cur_epoch;
   }

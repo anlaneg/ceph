@@ -1954,17 +1954,17 @@ void PG::take_op_map_waiters()
   }
 }
 
-//请求入队
-void PG::queue_op(OpRequestRef& op)
+void PG::queue_op(OpRequestRef& op)//"请求操作"入pg的队
 {
-  Mutex::Locker l(map_lock);
+  Mutex::Locker l(map_lock);//对map_lock加锁{此期间osdmap不会发生变化}
   if (!waiting_for_map.empty()) {//检查这个pg,是否在等待dbmap,如果是,则直接等待即可.
     // preserve ordering
+	//保证请求的有序
     waiting_for_map.push_back(op);
     op->mark_delayed("waiting_for_map not empty");
     return;
   }
-  //必须等待的情况
+  //如果我们的osdmap的epoch小于op的版本{我们的osdmap需要更新,我们先记录这些op}
   if (op_must_wait_for_map(get_osdmap_with_maplock()->get_epoch(), op)) {
     waiting_for_map.push_back(op);
     op->mark_delayed("op must wait for map");
@@ -5421,20 +5421,20 @@ bool PG::can_discard_op(OpRequestRef& op)
     return true;
   }
 
-  if (m->get_map_epoch() < info.history.same_primary_since) {
+  if (m->get_map_epoch() < info.history.same_primary_since) {//主已发生切换,对端发送有误
     dout(7) << " changed after " << m->get_map_epoch()
 	    << ", dropping " << *m << dendl;
     return true;
   }
 
   if (m->get_map_epoch() < pool.info.last_force_op_resend &&
-      m->get_connection()->has_feature(CEPH_FEATURE_OSD_POOLRESEND)) {
+      m->get_connection()->has_feature(CEPH_FEATURE_OSD_POOLRESEND)) {//意思不明?
     dout(7) << __func__ << " sent before last_force_op_resend "
 	    << pool.info.last_force_op_resend << ", dropping" << *m << dendl;
     return true;
   }
 
-  if (is_replay()) {
+  if (is_replay()) {//意思不明?
     if (m->get_version().version > 0) {
       dout(7) << " queueing replay at " << m->get_version()
 	      << " for " << *m << dendl;
@@ -5543,11 +5543,11 @@ bool PG::can_discard_request(OpRequestRef& op)
   return true;
 }
 
-//检查消息中包含的version与cur_epoch进行比对,如果cur_epoch>version则返回true
+//检查消息中包含的version与cur_epoch进行比对,如果version>cur_epoch则返回true
 bool PG::op_must_wait_for_map(epoch_t cur_epoch, OpRequestRef& op)
 {
   switch (op->get_req()->get_type()) {
-  case CEPH_MSG_OSD_OP:
+  case CEPH_MSG_OSD_OP://对于osdop操作
     return !have_same_or_newer_map(
       cur_epoch,
       static_cast<MOSDOp*>(op->get_req())->get_map_epoch());
