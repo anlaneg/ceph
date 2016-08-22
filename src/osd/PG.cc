@@ -313,6 +313,14 @@ void PG::proc_master_log(
   might_have_unfound.insert(from);//标记对象可能在此osd上.
 
   // See doc/dev/osd_internals/last_epoch_started
+  //这里,权威日志的last_epoch_started比我们的大,我们需要更新,没什么可说的,因为权威
+  //代表了集群,我们与其差距大时,很容易出现.
+  //如果我们的last_epoch_started比权威大,代码未明确指出,在上面提到的文档中有说明,
+  //我们保持了这个last_epoch_started,原因是,last_epoch_started总能保证在其之前,所有的
+  //info,log均已实例化至硬盘,那么他是怎么做到的?
+  //在GetLog状态向getMissing状态转换时,我们收到了权威日志的响应,我们将其保存在内存里,在GotLog事件被
+  //发出时,queue_peering_event函数中,我们进行了写事务,故已被实例化到硬盘.然后我们在activing状态
+  //更新了last_eoch_started,故我们保证了.
   if (oinfo.last_epoch_started > info.last_epoch_started) {
     info.last_epoch_started = oinfo.last_epoch_started;//大者优先
     dirty_info = true;
@@ -483,12 +491,15 @@ bool PG::search_for_missing(
   return found_missing;
 }
 
+//true表示此对象可以读,false表示此对象可写
 bool PG::MissingLoc::readable_with_acting(
   const hobject_t &hoid,
   const set<pg_shard_t> &acting) const {
-  if (!needs_recovery(hoid)) return true;
+  if (!needs_recovery(hoid)) return true;//如果不需要恢复,返回true
   auto missing_loc_entry = missing_loc.find(hoid);
-  if (missing_loc_entry == missing_loc.end()) return false;
+  if (missing_loc_entry == missing_loc.end()) return false//需要恢复,但missing_loc中无此对象,说明位置暂时不清楚;
+  
+  //收集现有的此对象的已知位置,检查是否可读
   const set<pg_shard_t> &locs = missing_loc_entry->second;
   dout(10) << __func__ << ": locs:" << locs << dendl;
   set<pg_shard_t> have_acting;
@@ -496,9 +507,9 @@ bool PG::MissingLoc::readable_with_acting(
        i != locs.end();
        ++i) {
     if (acting.count(*i))
-      have_acting.insert(*i);
+      have_acting.insert(*i);//将所有已知位置加入到have_acting集合中
   }
-  return (*is_readable)(have_acting);
+  return (*is_readable)(have_acting);//检查是否可读(幅本情况:如果集合中包含主,则可读)
 }
 
 void PG::MissingLoc::add_batch_sources_info(
@@ -738,7 +749,7 @@ bool PG::_calc_past_interval_range(epoch_t *start, epoch_t *end, epoch_t oldest_
 
 void PG::generate_past_intervals()
 {
-  //先粗略的找个起始位置终止位置.
+  //先粗略的找个起始位置终止位置.{范围:我们记录的上一次clean时间,到现在}
   epoch_t cur_epoch, end_epoch;
   if (!_calc_past_interval_range(&cur_epoch, &end_epoch,
       osd->get_superblock().oldest_map)) {
@@ -1018,7 +1029,7 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
        ++i) {
 	  //先考虑自前一次的last_epoch_started中选出一个最大版本，这些osd一定在此后又到到达了started
     if (!cct->_conf->osd_find_best_info_ignore_history_les &&
-	max_last_epoch_started_found < i->second.history.last_epoch_started) {
+	max_last_epoch_started_found < i->second.history.last_epoch_started) {//history.last_epoch_started是整个集群进入started的下限
       *history_les_bound = true;//histroy中发现
       max_last_epoch_started_found = i->second.history.last_epoch_started;
     }
@@ -1184,6 +1195,10 @@ void PG::calc_ec_acting(
  * incomplete, or another osd has a longer tail that allows us to
  * bring other up nodes up to date.
  */
+//将up集中的,完整的加入want集及acting_backfill集
+//将up集中,不完整的加入到backfill集,acting_backfill
+//将acting集中完整的加入want,acting_backfill集{如果数量够了,就不考虑了}
+//将其它非up,非acting集合,且完整的,加入want,acting_backfill集{如果数量够了,就不考虑了}
 void PG::calc_replicated_acting(
   map<pg_shard_t, pg_info_t>::const_iterator auth_log_shard,//权威日志
   unsigned size,//副本数
@@ -1255,7 +1270,7 @@ void PG::calc_replicated_acting(
 	  want->push_back(*i);
 	  acting_backfill->insert(up_cand);
 	}
-      } else {
+      } else {//同类型走这个
 	backfill->insert(up_cand);
 	acting_backfill->insert(up_cand);//这种都是不完全的.
       }
@@ -1336,7 +1351,8 @@ void PG::calc_replicated_acting(
  * calculate the desired acting, and request a change with the monitor
  * if it differs from the current acting.
  */
-//选择权威日志,分辨系统中哪些osd可用来做恢复,哪些将来做为acting集,哪个做为主,哪个需要恢复
+//选择权威日志,分辨系统中哪些osd需要恢复(acting_backfill中的部分),哪些osd是完整的(want集),哪些需要执行全恢复(target_backfill)
+//返回false时,或者选择不了权威日志,或者当前的完整osd无法帮助恢复
 bool PG::choose_acting(pg_shard_t &auth_log_shard_id, bool *history_les_bound)
 {
   map<pg_shard_t, pg_info_t> all_info(peer_info.begin(), peer_info.end());
@@ -1482,10 +1498,14 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id, bool *history_les_bound)
       osd->queue_want_pg_temp(info.pgid.pgid, want);
     return false;
   }
-  want_acting.clear();
-  actingbackfill = want_acting_backfill;
+
+  //这段主要是设置want_acting,actingbackfill,backfill_targets
+  //want集都完全,故want_acting就为空
+  want_acting.clear();//旧的want_acting不要了
+  actingbackfill = want_acting_backfill;//完成的,不完整的,需要backfill的都在这里面
   dout(10) << "actingbackfill is " << actingbackfill << dendl;
   assert(backfill_targets.empty() || backfill_targets == want_backfill);
+  //设置backfill_targets
   if (backfill_targets.empty()) {
     // Caller is GetInfo
     backfill_targets = want_backfill;
@@ -1496,6 +1516,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id, bool *history_les_bound)
     }
   } else {
     // Will not change if already set because up would have had to change
+	//不会变的情况,例如别人down后起来,我们走过状态机,发现没变化.
     assert(backfill_targets == want_backfill);
     // Verify that nothing in backfill is in stray_set
     for (set<pg_shard_t>::iterator i = want_backfill.begin();
@@ -1566,7 +1587,7 @@ struct C_PG_ActivateCommitted : public Context {
   epoch_t activation_epoch;
   C_PG_ActivateCommitted(PG *p, epoch_t e, epoch_t ae)
     : pg(p), epoch(e), activation_epoch(ae) {}
-  void finish(int r) {
+  void finish(int r) {//当active状态的数据被写入后,此将执行
     pg->_activate_committed(epoch, activation_epoch);
   }
 };
@@ -1622,7 +1643,7 @@ void PG::activate(ObjectStore::Transaction& t,
      * unless it's smaller (could happen if we are going peered rather than
      * active, see doc/dev/osd_internals/last_epoch_started.rst) */
     if (info.last_epoch_started < activation_epoch)
-      info.last_epoch_started = activation_epoch;
+      info.last_epoch_started = activation_epoch;//对于幅本
   }
 
   auto &missing = pg_log.get_missing();
@@ -1645,7 +1666,7 @@ void PG::activate(ObjectStore::Transaction& t,
     new C_PG_ActivateCommitted(
       this,//当前pg
       get_osdmap()->get_epoch(),//pg版本
-      activation_epoch));//当前版本
+      activation_epoch));//当前版本{事务写完成后,将被执行}
   
   // initialize snap_trimq
   if (is_primary()) {
@@ -1703,21 +1724,22 @@ void PG::activate(ObjectStore::Transaction& t,
        * cover case where peer sort order was different and
        * last_backfill cannot be interpreted
        */
-      bool force_restart_backfill =
+      bool force_restart_backfill = //如果对方还没有恢复完,对方和我们的sort_bitwise不一致,这种需要强制backfill
 	!pi.last_backfill.is_max() &&
 	pi.last_backfill_bitwise != get_sort_bitwise();
 
       //两个的版本一致,如果对方没有info发info,否则把自已log发一遍.
       if (pi.last_update == info.last_update && !force_restart_backfill) {
         // empty log
-    	if (!pi.last_backfill.is_max())
+    	if (!pi.last_backfill.is_max())//对方还没有恢复完
     		//如果此条件成立,则pi.last_backfill_bitwise == get_sort_bitwise()
     		osd->clog->info() << info.pgid << " continuing backfill to osd."
 			    << peer
 			    << " from (" << pi.log_tail << "," << pi.last_update
 			    << "] " << pi.last_backfill
 			    << " to " << info.last_update;
-    	if (!pi.is_empty() && activator_map) {//如果没有info信息,则向其发送info信息
+    	//对于pi.last_backfill.is_max成立的,将执行backfill
+    	if (!pi.is_empty() && activator_map) {//对方没有发送过来info信息,则向其发送info信息,使其更新info信息
     		dout(10) << "activate peer osd." << peer << " is up to date, queueing in pending_activators" << dendl;
     		(*activator_map)[peer.osd].push_back(
     				make_pair(
@@ -1727,13 +1749,13 @@ void PG::activate(ObjectStore::Transaction& t,
 									get_osdmap()->get_epoch(),
 									info),
 								past_intervals));
-    	} else {//有info信息,准备发送pglog
+    	} else {//向我们发送过info信息,我们把pglog发送过去,防止它少
     		dout(10) << "activate peer osd." << peer << " is up to date, but sending pg_log anyway" << dendl;
     		m = new MOSDPGLog(
     				i->shard, pg_whoami.shard,
 					get_osdmap()->get_epoch(), info);
     	}
-      } else if (
+      } else if (//log之间无交集或者上次打算执行backfill或者强制需要执行backfill或者属于backfill_targets集
     	pg_log.get_tail() > pi.last_update ||
 		pi.last_backfill == hobject_t() ||
 		force_restart_backfill ||
@@ -1753,7 +1775,7 @@ void PG::activate(ObjectStore::Transaction& t,
 
     	  pi.last_update = info.last_update;
     	  pi.last_complete = info.last_update;
-    	  pi.set_last_backfill(hobject_t(), get_sort_bitwise());
+    	  pi.set_last_backfill(hobject_t(), get_sort_bitwise());//设置这样的last_backfill对幅本来说,意味着需要fillback
     	  pi.last_epoch_started = info.last_epoch_started;
     	  pi.history = info.history;
     	  pi.hit_set = info.hit_set;
@@ -1771,7 +1793,7 @@ void PG::activate(ObjectStore::Transaction& t,
     	  m->info.log_tail = m->log.tail;
     	  pi.log_tail = m->log.tail;  // sigh...
 
-    	  pm.clear();
+    	  pm.clear();//missing集清空,向其发送pglog,info
       } else {//需要恢复的,添加日志及log
     	  // catch up
     	  assert(pg_log.get_tail() <= pi.last_update);
@@ -1785,7 +1807,7 @@ void PG::activate(ObjectStore::Transaction& t,
       // share past_intervals if we are creating the pg on the replica
       // based on whether our info for that peer was dne() *before*
       // updating pi.history in the backfill block above.
-      if (needs_past_intervals) //如果需要past_intervals,则添加passt_intervals
+      if (needs_past_intervals) //如果需要past_intervals,则添加passt_intervals{可能是新队友,要告诉他过去的历史}
     	  m->past_intervals = past_intervals;
 
       // update local version of peer's missing list!
@@ -1794,7 +1816,7 @@ void PG::activate(ObjectStore::Transaction& t,
              p != m->log.log.end();
              ++p)
         	if (cmp(p->soid, pi.last_backfill, get_sort_bitwise()) <= 0)
-        		pm.add_next_event(*p);
+        		pm.add_next_event(*p);//我们当前计算的missing表,一会我们会将这些发送过去.
       }
       
       //发送到对端(把刚才三种情况的消息发送给对端)
@@ -1805,9 +1827,10 @@ void PG::activate(ObjectStore::Transaction& t,
       }
 
       // peer now has 
-      pi.last_update = info.last_update;
+      pi.last_update = info.last_update;//更新大家的last_update相同
 
       // update our missing
+      //如果对端不少对象,更新它的last_complete为pi.last_update{需要执行backfill的pm也是0,它们也将被发送pi.last_complete更新}
       if (pm.num_missing() == 0) {
     	  pi.last_complete = pi.last_update;
     	  dout(10) << "activate peer osd." << peer << " " << pi << " uptodate" << dendl;
@@ -1817,6 +1840,7 @@ void PG::activate(ObjectStore::Transaction& t,
     }
 
     // Set up missing_loc
+    //计算missing的位置.
     set<pg_shard_t> complete_shards;
     for (set<pg_shard_t>::iterator i = actingbackfill.begin();
 	 i != actingbackfill.end();
@@ -1879,7 +1903,7 @@ void PG::activate(ObjectStore::Transaction& t,
       build_might_have_unfound();
 
       state_set(PG_STATE_DEGRADED);
-      if (have_unfound())
+      if (have_unfound())//如果有未发现的对象,尝试更大范围
 	discover_all_missing(query_map);
     }
 
@@ -1900,7 +1924,7 @@ void PG::activate(ObjectStore::Transaction& t,
   }
 }
 
-bool PG::op_has_sufficient_caps(OpRequestRef& op)
+bool PG::op_has_sufficient_caps(OpRequestRef& op)//没有搞清楚这个目的
 {
   // only check MOSDOp
   if (op->get_req()->get_type() != CEPH_MSG_OSD_OP)
@@ -2023,7 +2047,7 @@ void PG::replay_queued_ops()
 void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
 {
   lock();
-  if (pg_has_reset_since(epoch)) {
+  if (pg_has_reset_since(epoch)) {//这种情况下不用计算了,状态已转入reset
     dout(10) << "_activate_committed " << epoch
 	     << ", that was an old interval" << dendl;
   } else if (is_primary()) {
@@ -2119,20 +2143,20 @@ void PG::queue_recovery(bool front)
 bool PG::queue_scrub()
 {
   assert(_lock.is_locked());
-  if (is_scrubbing()) {
+  if (is_scrubbing()) {//是否正在清洗
     return false;
   }
   scrubber.must_scrub = false;
-  state_set(PG_STATE_SCRUBBING);
-  if (scrubber.must_deep_scrub) {
-    state_set(PG_STATE_DEEP_SCRUB);
+  state_set(PG_STATE_SCRUBBING);//置为正在清洗状态
+  if (scrubber.must_deep_scrub) {//如果需要重度清洗
+    state_set(PG_STATE_DEEP_SCRUB);//置为正在重度清洗
     scrubber.must_deep_scrub = false;
   }
-  if (scrubber.must_repair || scrubber.auto_repair) {
+  if (scrubber.must_repair || scrubber.auto_repair) {//置修复
     state_set(PG_STATE_REPAIR);
     scrubber.must_repair = false;
   }
-  requeue_scrub();
+  requeue_scrub();//入队
   return true;
 }
 
@@ -3439,7 +3463,7 @@ void PG::requeue_ops(list<OpRequestRef> &ls)
 bool PG::sched_scrub()
 {
   assert(_lock.is_locked());
-  if (!(is_primary() && is_active() && is_clean() && !is_scrubbing())) {
+  if (!(is_primary() && is_active() && is_clean() && !is_scrubbing())) {//状态不对,不做
     return false;
   }
 
@@ -3481,6 +3505,7 @@ bool PG::sched_scrub()
     }
   }
 
+  //设置自动修复
   if (cct->_conf->osd_scrub_auto_repair
       && get_pgbackend()->auto_repair_supported()
       && time_for_deep
@@ -3497,32 +3522,32 @@ bool PG::sched_scrub()
   }
 
   bool ret = true;
-  if (!scrubber.reserved) {
+  if (!scrubber.reserved) {//第一次进来,还没有预订
     assert(scrubber.reserved_peers.empty());
-    if (osd->inc_scrubs_pending()) {
+    if (osd->inc_scrubs_pending()) {//未绝可增加
       dout(20) << "sched_scrub: reserved locally, reserving replicas" << dendl;
-      scrubber.reserved = true;
-      scrubber.reserved_peers.insert(pg_whoami);
-      scrub_reserve_replicas();
-    } else {
+      scrubber.reserved = true;//标记开始预订
+      scrubber.reserved_peers.insert(pg_whoami);//加入自已
+      scrub_reserve_replicas();//向其它osd发起预订
+    } else {//自身无法预订
       dout(20) << "sched_scrub: failed to reserve locally" << dendl;
       ret = false;
     }
   }
-  if (scrubber.reserved) {
-    if (scrubber.reserve_failed) {
+  if (scrubber.reserved) {//非第一次
+    if (scrubber.reserve_failed) {//有失败
       dout(20) << "sched_scrub: failed, a peer declined" << dendl;
-      clear_scrub_reserved();
+      clear_scrub_reserved();//取消预订
       scrub_unreserve_replicas();
       ret = false;
-    } else if (scrubber.reserved_peers.size() == acting.size()) {
+    } else if (scrubber.reserved_peers.size() == acting.size()) {//每个人都说可以搞,那么do it
       dout(20) << "sched_scrub: success, reserved self and replicas" << dendl;
       if (time_for_deep) {
 	dout(10) << "sched_scrub: scrub will be deep" << dendl;
 	state_set(PG_STATE_DEEP_SCRUB);
       }
-      queue_scrub();
-    } else {
+      queue_scrub();//清洗入口(pg的清洗将从此处进入)
+    } else {//从还没有回复
       // none declined, since scrubber.reserved is set
       dout(20) << "sched_scrub: reserved " << scrubber.reserved_peers << ", waiting for replicas" << dendl;
     }
@@ -3600,6 +3625,7 @@ void PG::sub_op_scrub_map(OpRequestRef op)
 }
 
 // send scrub v3 messages (chunky scrub)
+//向副本发送请求map的肖息
 void PG::_request_scrub_map(
   pg_shard_t replica, eversion_t version,
   hobject_t start, hobject_t end,
@@ -3618,34 +3644,36 @@ void PG::_request_scrub_map(
     replica.osd, repscrubop, get_osdmap()->get_epoch());
 }
 
+//从上接受到主的资源预留请求
 void PG::sub_op_scrub_reserve(OpRequestRef op)
 {
   MOSDSubOp *m = static_cast<MOSDSubOp*>(op->get_req());
   assert(m->get_type() == MSG_OSD_SUBOP);
   dout(7) << "sub_op_scrub_reserve" << dendl;
 
-  if (scrubber.reserved) {
+  if (scrubber.reserved) {//如果已预留,则不响应.
     dout(10) << "Ignoring reserve request: Already reserved" << dendl;
     return;
   }
 
   op->mark_started();
 
-  scrubber.reserved = osd->inc_scrubs_pending();
+  scrubber.reserved = osd->inc_scrubs_pending();//检查是否足够预留
 
   MOSDSubOpReply *reply = new MOSDSubOpReply(
     m, pg_whoami, 0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
-  ::encode(scrubber.reserved, reply->get_data());
+  ::encode(scrubber.reserved, reply->get_data());//响应预留情况.
   osd->send_message_osd_cluster(reply, m->get_connection());
 }
 
+//清洗预订响应.
 void PG::sub_op_scrub_reserve_reply(OpRequestRef op)
 {
   MOSDSubOpReply *reply = static_cast<MOSDSubOpReply*>(op->get_req());
   assert(reply->get_type() == MSG_OSD_SUBOPREPLY);
   dout(7) << "sub_op_scrub_reserve_reply" << dendl;
 
-  if (!scrubber.reserved) {
+  if (!scrubber.reserved) {//如果本端没有要求预订
     dout(10) << "ignoring obsolete scrub reserve reply" << dendl;
     return;
   }
@@ -3657,22 +3685,22 @@ void PG::sub_op_scrub_reserve_reply(OpRequestRef op)
   bool reserved;
   ::decode(reserved, p);
 
-  if (scrubber.reserved_peers.find(from) != scrubber.reserved_peers.end()) {
+  if (scrubber.reserved_peers.find(from) != scrubber.reserved_peers.end()) {//之前已收到过它的响应
     dout(10) << " already had osd." << from << " reserved" << dendl;
   } else {
     if (reserved) {
       dout(10) << " osd." << from << " scrub reserve = success" << dendl;
-      scrubber.reserved_peers.insert(from);
+      scrubber.reserved_peers.insert(from);//加入接受预订
     } else {
       /* One decline stops this pg from being scheduled for scrubbing. */
       dout(10) << " osd." << from << " scrub reserve = fail" << dendl;
-      scrubber.reserve_failed = true;
+      scrubber.reserve_failed = true;//如果有一个osd拒绝预订,则置为true
     }
-    sched_scrub();
+    sched_scrub();//处理调度(有对端响应回来了)
   }
 }
 
-void PG::sub_op_scrub_unreserve(OpRequestRef op)
+void PG::sub_op_scrub_unreserve(OpRequestRef op)//清空预定,无需响应对端
 {
   assert(op->get_req()->get_type() == MSG_OSD_SUBOP);
   dout(7) << "sub_op_scrub_unreserve" << dendl;
@@ -3714,12 +3742,12 @@ void PG::clear_scrub_reserved()
   }
 }
 
-void PG::scrub_reserve_replicas()
+void PG::scrub_reserve_replicas()//要求副本预留
 {
   assert(backfill_targets.empty());
   for (set<pg_shard_t>::iterator i = actingbackfill.begin();
        i != actingbackfill.end();
-       ++i) {
+       ++i) {//向所有副本发送
     if (*i == pg_whoami) continue;
     dout(10) << "scrub requesting reserve from osd." << *i << dendl;
     vector<OSDOp> scrub(1);
@@ -3736,7 +3764,7 @@ void PG::scrub_reserve_replicas()
   }
 }
 
-void PG::scrub_unreserve_replicas()
+void PG::scrub_unreserve_replicas()//取消预订
 {
   assert(backfill_targets.empty());
   for (set<pg_shard_t>::iterator i = actingbackfill.begin();
@@ -3757,7 +3785,7 @@ void PG::scrub_unreserve_replicas()
   }
 }
 
-void PG::_scan_rollback_obs(
+void PG::_scan_rollback_obs(//rollback_obs中的对象需要移除
   const vector<ghobject_t> &rollback_obs,
   ThreadPool::TPHandle &handle)
 {
@@ -3773,17 +3801,17 @@ void PG::_scan_rollback_obs(
 			<< *i << " generation < trimmed_to "
 			<< trimmed_to
 			<< "...repaired";
-      t.remove(coll, *i);
+      t.remove(coll, *i);//在事务中添加并移除过期的对象.
     }
   }
   if (!t.empty()) {
     derr << __func__ << ": queueing trans to clean up obsolete rollback objs"
 	 << dendl;
-    osd->store->queue_transaction(osr.get(), std::move(t), NULL);
+    osd->store->queue_transaction(osr.get(), std::move(t), NULL);//事务入队.(清楚rollback对象)
   }
 }
 
-void PG::_scan_snaps(ScrubMap &smap) 
+void PG::_scan_snaps(ScrubMap &smap) //对快照的扫描处理.
 {
   for (map<hobject_t, ScrubMap::object, hobject_t::BitwiseComparator>::iterator i = smap.objects.begin();
        i != smap.objects.end();
@@ -3791,10 +3819,10 @@ void PG::_scan_snaps(ScrubMap &smap)
     const hobject_t &hoid = i->first;
     ScrubMap::object &o = i->second;
 
-    if (hoid.snap < CEPH_MAXSNAP) {
+    if (hoid.snap < CEPH_MAXSNAP) {//快照
       // fake nlinks for old primaries
       bufferlist bl;
-      if (o.attrs.find(OI_ATTR) == o.attrs.end()) {
+      if (o.attrs.find(OI_ATTR) == o.attrs.end()) {//不含OI_ATTR
 	o.nlinks = 0;
 	continue;
       }
@@ -3868,7 +3896,7 @@ void PG::_scan_snaps(ScrubMap &smap)
  * build a scrub map over a chunk without releasing the lock
  * only used by chunky scrub
  */
-int PG::build_scrub_map_chunk(
+int PG::build_scrub_map_chunk(//算的上清洗中最重要两个函数之一.构造清洗map
   ScrubMap &map,
   hobject_t start, hobject_t end, bool deep, uint32_t seed,
   ThreadPool::TPHandle &handle)
@@ -3886,15 +3914,15 @@ int PG::build_scrub_map_chunk(
     end,
     0,
     &ls,
-    &rollback_obs);
+    &rollback_obs);//列出start,end之间所有对象,如果是gen对象,置在rollback_obs中
   if (ret < 0) {
     dout(5) << "objects_list_range error: " << ret << dendl;
     return ret;
   }
 
 
-  get_pgbackend()->be_scan_list(map, ls, deep, seed, handle);
-  _scan_rollback_obs(rollback_obs, handle);
+  get_pgbackend()->be_scan_list(map, ls, deep, seed, handle);//填充对象map,普通对像的attr,size +深层次的crc
+  _scan_rollback_obs(rollback_obs, handle);//清楚rollback的对象,问题:为什么会产生这种对象? 暂不明确.
   _scan_snaps(map);
 
   dout(20) << __func__ << " done" << dendl;
@@ -3969,7 +3997,7 @@ void PG::replica_scrub(
   assert(!scrubber.active_rep_scrub);
   dout(7) << "replica_scrub" << dendl;
 
-  if (msg->map_epoch < info.history.same_interval_since) {
+  if (msg->map_epoch < info.history.same_interval_since) {//非相同间隔,不理会
     dout(10) << "replica_scrub discarding old replica_scrub from "
 	     << msg->map_epoch << " < " << info.history.same_interval_since 
 	     << dendl;
@@ -4017,7 +4045,7 @@ void PG::replica_scrub(
     msg->map_epoch,
     osd->get_tid(),
     v);
-  ::encode(map, subop->get_data());
+  ::encode(map, subop->get_data());//将构造好的map加入到MOSDSubOp消息中,发送
   subop->ops = scrub;
 
   osd->send_message_osd_cluster(subop, msg->get_connection());
@@ -4033,7 +4061,7 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
 {
   if (g_conf->osd_scrub_sleep > 0 &&
       (scrubber.state == PG::Scrubber::NEW_CHUNK ||
-       scrubber.state == PG::Scrubber::INACTIVE)) {
+       scrubber.state == PG::Scrubber::INACTIVE)) {//是否需要等
     dout(20) << __func__ << " state is INACTIVE|NEW_CHUNK, sleeping" << dendl;
     unlock();
     utime_t t;
@@ -4044,13 +4072,13 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
     lock();
     dout(20) << __func__ << " slept for " << t << dendl;
   }
-  if (pg_has_reset_since(queued)) {
+  if (pg_has_reset_since(queued)) {//入队时的epoch是否已发生了reset过程
     return;
   }
   assert(scrub_queued);
   scrub_queued = false;
 
-  if (!is_primary() || !is_active() || !is_clean() || !is_scrubbing()) {
+  if (!is_primary() || !is_active() || !is_clean() || !is_scrubbing()) {//状态检测
     dout(10) << "scrub -- not primary or active or not clean" << dendl;
     state_clear(PG_STATE_SCRUBBING);
     state_clear(PG_STATE_REPAIR);
@@ -4148,11 +4176,11 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
  * scrubber.state encodes the current state of the scrub (refer to state diagram
  * for details).
  */
-void PG::chunky_scrub(ThreadPool::TPHandle &handle)
+void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被启动,只有在等待对方时,会离开本函数,否则继续运行.
 {
   // check for map changes
-  if (scrubber.is_chunky_scrub_active()) {
-    if (scrubber.epoch_start != info.history.same_interval_since) {
+  if (scrubber.is_chunky_scrub_active()) {//非active
+    if (scrubber.epoch_start != info.history.same_interval_since) {//如果间隔发生变化,重做(没有注册advmap,actmap事件,而采用手工检测的方式)
       dout(10) << "scrub  pg changed, aborting" << dendl;
       scrub_clear_state();
       scrub_unreserve_replicas();
@@ -4191,8 +4219,8 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
 	}
 
         // Don't include temporary objects when scrubbing
-        scrubber.start = info.pgid.pgid.get_hobj_start();
-        scrubber.state = PG::Scrubber::NEW_CHUNK;
+        scrubber.start = info.pgid.pgid.get_hobj_start();//起始点
+        scrubber.state = PG::Scrubber::NEW_CHUNK;//转new_chunk
 
 	{
 	  bool repair = state_test(PG_STATE_REPAIR);
@@ -4207,7 +4235,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
 
         break;
 
-      case PG::Scrubber::NEW_CHUNK:
+      case PG::Scrubber::NEW_CHUNK://在这个阶段主要是完成一个任务块的定义.
         scrubber.primary_scrubmap = ScrubMap();
         scrubber.received_maps.clear();
 
@@ -4309,7 +4337,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
           _request_scrub_map(*i, scrubber.subset_last_update,
                              scrubber.start, scrubber.end, scrubber.deep,
 			     scrubber.seed);
-          scrubber.waiting_on_whom.insert(*i);
+          scrubber.waiting_on_whom.insert(*i);//其它副本需要构造map
           ++scrubber.waiting_on;
         }
 
@@ -4322,29 +4350,29 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
           scrubber.state = PG::Scrubber::WAIT_LAST_UPDATE;
         } else {
           dout(15) << "wait for pushes to apply" << dendl;
-          done = true;
+          done = true;//我们在等待别人,退出循环.
         }
         break;
 
       case PG::Scrubber::WAIT_LAST_UPDATE:
-        if (last_update_applied >= scrubber.subset_last_update) {
+        if (last_update_applied >= scrubber.subset_last_update) {//如果版本比这个大,则可以处理,否则不能处理,得等(如果达到这个版本了,同时又没有写)
           scrubber.state = PG::Scrubber::BUILD_MAP;
         } else {
           // will be requeued by op_applied
           dout(15) << "wait for writes to flush" << dendl;
-          done = true;
+          done = true;//等待达到时,会再次入队
         }
         break;
 
-      case PG::Scrubber::BUILD_MAP:
+      case PG::Scrubber::BUILD_MAP://此状态负责计算自已的map
         assert(last_update_applied >= scrubber.subset_last_update);
 
         // build my own scrub map
-        ret = build_scrub_map_chunk(scrubber.primary_scrubmap,
+        ret = build_scrub_map_chunk(scrubber.primary_scrubmap,//我们是主,我们填充的map在此变量里
                                     scrubber.start, scrubber.end,
                                     scrubber.deep, scrubber.seed,
 				    handle);
-        if (ret < 0) {
+        if (ret < 0) {//构造出错时处理(取消预订,中止本次清洗.)
           dout(5) << "error building scrub map: " << ret << ", aborting" << dendl;
           scrub_clear_state();
           scrub_unreserve_replicas();
@@ -4357,13 +4385,13 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
         scrubber.state = PG::Scrubber::WAIT_REPLICAS;
         break;
 
-      case PG::Scrubber::WAIT_REPLICAS:
+      case PG::Scrubber::WAIT_REPLICAS://此状态等待其它副本计算自已的map
         if (scrubber.waiting_on > 0) {
           // will be requeued by sub_op_scrub_map
           dout(10) << "wait for replicas to build scrub map" << dendl;
           done = true;
         } else {
-          scrubber.state = PG::Scrubber::COMPARE_MAPS;
+          scrubber.state = PG::Scrubber::COMPARE_MAPS;//副本已回复,准备比对.
         }
         break;
 
@@ -4371,12 +4399,12 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
         assert(last_update_applied >= scrubber.subset_last_update);
         assert(scrubber.waiting_on == 0);
 
-        scrub_compare_maps();
-	scrubber.start = scrubber.end;
-	scrubber.run_callbacks();
+        scrub_compare_maps();//scrub中最重要的一个函数,进行比对.
+	scrubber.start = scrubber.end;//重新开始下一组.
+	scrubber.run_callbacks();//运行scrubber上的回调
 
         // requeue the writes from the chunk that just finished
-        requeue_ops(waiting_for_active);
+        requeue_ops(waiting_for_active);//将等待active的入队.
 
 	scrubber.state = PG::Scrubber::WAIT_DIGEST_UPDATES;
 
@@ -4402,7 +4430,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
 	break;
 
       case PG::Scrubber::FINISH:
-        scrub_finish();
+        scrub_finish();//如果此pg均已完成清洗.则调用(进行修复)
         scrubber.state = PG::Scrubber::INACTIVE;
         done = true;
 
@@ -4439,7 +4467,7 @@ void PG::scrub_clear_state()
   _scrub_clear_state();
 }
 
-void PG::scrub_compare_maps() 
+void PG::scrub_compare_maps() //清洗的第二重要函数(2/2)比对各家发送过来的map信息.
 {
   dout(10) << __func__ << " has maps, analyzing" << dendl;
 
@@ -4454,8 +4482,9 @@ void PG::scrub_compare_maps()
 
     // Map from object with errors to good peer
     map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator> authoritative;
-    map<pg_shard_t, ScrubMap *> maps;
+    map<pg_shard_t, ScrubMap *> maps;//将所有数据放入此集合.
 
+    //首先把收到的信息,都整合到一个maps中
     dout(2) << __func__ << "   osd." << acting[0] << " has "
 	    << scrubber.primary_scrubmap.objects.size() << " items" << dendl;
     maps[pg_whoami] = &scrubber.primary_scrubmap;
@@ -4473,9 +4502,9 @@ void PG::scrub_compare_maps()
     get_pgbackend()->be_compare_scrubmaps(
       maps,
       state_test(PG_STATE_REPAIR),
-      scrubber.missing,
-      scrubber.inconsistent,
-      authoritative,
+      scrubber.missing,//缺失的
+      scrubber.inconsistent,//不一致的
+      authoritative,//权威
       missing_digest,
       scrubber.shallow_errors,
       scrubber.deep_errors,
@@ -4484,10 +4513,11 @@ void PG::scrub_compare_maps()
       ss);
     dout(2) << ss.str() << dendl;
 
-    if (!ss.str().empty()) {
+    if (!ss.str().empty()) {//如果有错误信息.
       osd->clog->error(ss);
     }
 
+    //设置权威的
     for (map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator>::iterator i = authoritative.begin();
 	 i != authoritative.end();
 	 ++i) {
@@ -4500,9 +4530,10 @@ void PG::scrub_compare_maps()
       scrubber.authoritative.insert(
 	make_pair(
 	  i->first,
-	  good_peers));
+	  good_peers));//将分析出的权威的,加入authoritative
     }
 
+    //扩充authmap上的objects
     for (map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator>::iterator i = authoritative.begin();
 	 i != authoritative.end();
 	 ++i) {
@@ -4547,7 +4578,7 @@ void PG::scrub_compare_maps()
   }
 }
 
-bool PG::scrub_process_inconsistent()
+bool PG::scrub_process_inconsistent()//尝试修复对象
 {
   dout(10) << __func__ << ": checking authoritative" << dendl;
   bool repair = state_test(PG_STATE_REPAIR);
@@ -4599,7 +4630,7 @@ bool PG::scrub_process_inconsistent()
 }
 
 // the part that actually finalizes a scrub
-void PG::scrub_finish() 
+void PG::scrub_finish() //清洗完成,促使其恢复.
 {
   bool repair = state_test(PG_STATE_REPAIR);
   // if the repair request comes from auto-repair and large number of errors,
@@ -4615,7 +4646,7 @@ void PG::scrub_finish()
   // type-specific finish (can tally more errors)
   _scrub_finish();
 
-  bool has_error = scrub_process_inconsistent();
+  bool has_error = scrub_process_inconsistent();//添加这些对象至missing,触发DoRecovery
 
   {
     stringstream oss;
@@ -4689,7 +4720,7 @@ void PG::scrub_finish()
 	std::make_shared<CephPeeringEvt>(
 	  get_osdmap()->get_epoch(),
 	  get_osdmap()->get_epoch(),
-	  DoRecovery())));
+	  DoRecovery())));//发送走DoRecovery.
   }
 
   scrub_clear_state();
@@ -4878,7 +4909,7 @@ bool PG::may_need_replay(const OSDMapRef osdmap) const
     const pg_interval_t &interval = p->second;
     dout(10) << "may_need_replay " << interval << dendl;
 
-    if (interval.last < info.history.last_epoch_started)
+    if (interval.last < info.history.last_epoch_started)//间隔小于最后一次进入started
       break;  // we don't care
 
     if (interval.acting.empty())
@@ -4963,11 +4994,12 @@ void PG::check_full_transition(OSDMapRef lastmap, OSDMapRef osdmap)
     }
   }
   if (changed) {
-    info.history.last_epoch_marked_full = osdmap->get_epoch();
+    info.history.last_epoch_marked_full = osdmap->get_epoch();//记录pg为满
     dirty_info = true;
   }
 }
 
+//如果出现新的间隔就返回true
 bool PG::should_restart_peering(
   int newupprimary,
   int newactingprimary,
@@ -5017,18 +5049,19 @@ void PG::set_last_peering_reset()
   }
 }
 
-struct FlushState {
-  PGRef pg;
-  epoch_t epoch;
+struct FlushState {//定义了此对象在销毁时,执行Flushed事件将被入队
+  PGRef pg;//pg
+  epoch_t epoch;//osdmap对应的epoch
   FlushState(PG *pg, epoch_t epoch) : pg(pg), epoch(epoch) {}
   ~FlushState() {
     pg->lock();
-    if (!pg->pg_has_reset_since(epoch))
+    if (!pg->pg_has_reset_since(epoch))//如果没有删除或者进行了peering reset
       pg->queue_flushed(epoch);
     pg->unlock();
   }
 };
 typedef ceph::shared_ptr<FlushState> FlushStateRef;
+
 
 void PG::start_flush(ObjectStore::Transaction *t,
 		     list<Context *> *on_applied,
@@ -5039,6 +5072,10 @@ void PG::start_flush(ObjectStore::Transaction *t,
                                this, get_osdmap()->get_epoch()));
   t->nop();
   flushes_in_progress++;
+  //ContainerContext类是一个比较扯的类,作者估计为了显示自已对析构函数的理解,此类
+  //的finish函数为空,当ContainerContext对象销毁时,flush_trigger的析构函数将被
+  //调用,此调用将触发flush事件入队.{不过此处仅是将其加入队列,备用}
+  //写这段代码的作者是个垃圾.
   on_applied->push_back(new ContainerContext<FlushStateRef>(flush_trigger));
   on_safe->push_back(new ContainerContext<FlushStateRef>(flush_trigger));
 }
@@ -5642,9 +5679,9 @@ void PG::take_waiters()
   take_op_map_waiters();
   for (list<CephPeeringEvtRef>::iterator i = peering_waiters.begin();
        i != peering_waiters.end();
-       ++i) osd->queue_for_peering(this);
+       ++i) osd->queue_for_peering(this);//加入当前pg
   peering_queue.splice(peering_queue.begin(), peering_waiters,
-		       peering_waiters.begin(), peering_waiters.end());
+		       peering_waiters.begin(), peering_waiters.end());//将peering_waiters中的内容全部加入到peering_queue中
 }
 
 //处理peeringevt事件,交给状态机去处理
@@ -5661,6 +5698,9 @@ void PG::handle_peering_event(CephPeeringEvtRef evt, RecoveryCtx *rctx)
   recovery_state.handle_event(evt, rctx);//处理evt事件
 }
 
+//事件入队时,先把事件加入到peering_queue中,然后再将此pg加入到peering_wq中
+//从peering_wq中出队,然后从pg对应的peering_queue中拿出来一个事件,进行处理
+//事件被处理后,会进行事务提交.
 void PG::queue_peering_event(CephPeeringEvtRef evt)
 {
   if (old_peering_evt(evt))
@@ -5678,6 +5718,7 @@ void PG::queue_null(epoch_t msg_epoch,
 					 NullEvt())));
 }
 
+//触发flushdEvt事件
 void PG::queue_flushed(epoch_t e)
 {
   dout(10) << "flushed" << dendl;
@@ -5880,7 +5921,7 @@ boost::statechart::result PG::RecoveryState::Started::react(const AdvMap& advmap
   dout(10) << "Started advmap" << dendl;
   PG *pg = context< RecoveryMachine >().pg;
   pg->check_full_transition(advmap.lastmap, advmap.osdmap);
-  if (pg->should_restart_peering(
+  if (pg->should_restart_peering(//如果出现新的间隔就走Reset
 	advmap.up_primary,
 	advmap.acting_primary,
 	advmap.newup,
@@ -5891,7 +5932,7 @@ boost::statechart::result PG::RecoveryState::Started::react(const AdvMap& advmap
     post_event(advmap);
     return transit< Reset >();
   }
-  pg->remove_down_peer_info(advmap.osdmap);
+  pg->remove_down_peer_info(advmap.osdmap);//移除osd的info
   return discard_event();
 }
 
@@ -5960,13 +6001,13 @@ boost::statechart::result PG::RecoveryState::Reset::react(const AdvMap& advmap)
 	advmap.osdmap)) {
     dout(10) << "should restart peering, calling start_peering_interval again"
 	     << dendl;
-    pg->start_peering_interval(
+    pg->start_peering_interval(//重新处理
       advmap.lastmap,
       advmap.newup, advmap.up_primary,
       advmap.newacting, advmap.acting_primary,
       context< RecoveryMachine >().get_cur_transaction());
   }
-  pg->remove_down_peer_info(advmap.osdmap);
+  pg->remove_down_peer_info(advmap.osdmap);//移除down掉的osd
   return discard_event();
 }
 
@@ -6061,6 +6102,7 @@ PG::RecoveryState::Primary::Primary(my_context ctx)
   }
 }
 
+//合入其info信息
 boost::statechart::result PG::RecoveryState::Primary::react(const MNotifyRec& notevt)
 {
   dout(7) << "handle_pg_notify from osd." << notevt.from << dendl;
@@ -7205,7 +7247,7 @@ boost::statechart::result PG::RecoveryState::Stray::react(const MLogRec& logevt)
   dout(10) << "got info+log from osd." << logevt.from << " " << msg->info << " " << msg->log << dendl;
 
   ObjectStore::Transaction* t = context<RecoveryMachine>().get_cur_transaction();
-  if (msg->info.last_backfill == hobject_t()) {
+  if (msg->info.last_backfill == hobject_t()) {//如果主发送过来的消息last_backfill是hobject_t(),则执行backfill;
     // restart backfill
     pg->unreg_next_scrub();
     pg->info = msg->info;
@@ -7295,6 +7337,7 @@ void PG::RecoveryState::Stray::exit()
 }
 
 /*--------GetInfo---------*/ //getinfo状态入口(进入peering状态后立即进入此处)
+//这个函数与actmap配合,一起,搞清楚自上一次clean到现在,都有哪些osd上存在本pg信息,不论它是up,还是down
 PG::RecoveryState::GetInfo::GetInfo(my_context ctx)
   : my_base(ctx),
     NamedState(context< RecoveryMachine >().pg->cct, "Started/Primary/Peering/GetInfo")
@@ -7308,7 +7351,7 @@ PG::RecoveryState::GetInfo::GetInfo(my_context ctx)
   assert(pg->blocked_by.empty());
 
   if (!prior_set.get())
-    pg->build_prior(prior_set);//构造了osd集合,这些集合,用于说明此pg在哪个osd上都可能存在
+    pg->build_prior(prior_set);//构造了osd集合,这些集合,用于说明此pg在哪个osd上都可能存在{当前up的,且在past_intervals中及当前存在的osd}
 
   pg->reset_min_peer_features();
   get_infos();//向prior_set索要info信息
@@ -7392,7 +7435,7 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
     }
     dout(20) << "Adding osd: " << infoevt.from.osd << " peer features: "
       << hex << infoevt.features << dec << dendl;
-    pg->apply_peer_features(infoevt.features);
+    pg->apply_peer_features(infoevt.features);//更新对端的功能列表
 
     // are we done getting everything?
     //检查是否所有人都返回了
@@ -7445,15 +7488,15 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
 	      any_down_now = true;//down状态(只要这个集合中有一个进入即为true)
 	    }
 	  }
-	  //不能边一个up,complete的osd都没有且不能有down{如果没有down的可以认定是完全的,如果有down的,则无法认定是完全的}
-	  //这里是善意推测,由于没有人是完成的,且存在osd是down的,所以我们认为down的可能是完整的.赌一把,扔掉消息等.
-	  if (!any_up_complete_now && any_down_now) {//没有一个是up及complete的并且不存在down的.
+
+	  //这里是善意推测,由于没有一个osd是完整的,且至少有一个osd是down的,所以我们认为down的可能是完整的.赌一把,扔掉消息等.
+	  if (!any_up_complete_now && any_down_now) {//没有一个是up及complete的并且存在down的.
 	    dout(10) << " no osds up+complete from interval " << interval << dendl;
 	    pg->state_set(PG_STATE_DOWN);
             pg->publish_stats_to_osd();
 	    return discard_event();
 	  }
-	  break;//只有一个有效.
+	  break;
 	}
       }
       dout(20) << "Common peer features: " << hex << pg->get_min_peer_features() << dec << dendl;
@@ -7514,11 +7557,11 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
 
   // adjust acting?
   if (!pg->choose_acting(auth_log_shard,
-      &context< Peering >().history_les_bound)) {//acting没有选择出来,比如需要3个osd,但当前只有1个,就可能选不出来
+      &context< Peering >().history_les_bound)) {//无法选出权威日志,或者无法借现在的osd完成恢复
     if (!pg->want_acting.empty()) {
-      post_event(NeedActingChange());
+      post_event(NeedActingChange());//有pgtemp的情况
     } else {
-      post_event(IsIncomplete());
+      post_event(IsIncomplete());//暂时无法恢复
     }
     return;
   }
@@ -7539,6 +7582,8 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
   }
 
   // how much log to request?
+  //搞清楚向权威日志请求从哪个时间段开始的日志,开始位置是集群中最小的last_update值
+
   //录找peer_info中最小的last_update,找到整体集群的最小下限,然后从这个位置开始恢复
   eversion_t request_log_from = pg->info.last_update;
   assert(!pg->actingbackfill.empty());
@@ -7776,6 +7821,7 @@ PG::RecoveryState::GetMissing::GetMissing(my_context ctx)
       continue;                                // no pg data, nothing divergent
 
     if (pi.last_update < pg->pg_log.get_tail()) {//这一类peer,它的last_update比pg_pg_log的tail还要小,需要restart
+    	//说明它和pg之间没有交集,无法记算pg->peer_missing.置为空
       dout(10) << " osd." << *i << " is not contiguous, will restart backfill" << dendl;
       pg->peer_missing[*i];//这个语句太难懂了,是加入key,还是就是一个左值,创建一个空的pg_missing_t
       continue;
@@ -8043,13 +8089,15 @@ PG::PriorSet::PriorSet(bool ec_pool,
     const pg_interval_t &interval = p->second;
     dout(10) << "build_prior " << interval << dendl;
 
-    if (interval.last < info.history.last_epoch_started)//比上一次的started状态要小,则不关心
+    //为什么,我们不关心这种?
+    //这种interval里的数据已被放在log中了,也就是说,现在已在missing集中,后面在missing集中我们会算出来其缺少的.
+    if (interval.last < info.history.last_epoch_started)
       break;  // we don't care
 
     if (interval.acting.empty())
       continue;
 
-    if (!interval.maybe_went_rw)
+    if (!interval.maybe_went_rw)//没有进入到读写,说明无变化,不考虑
       continue;
 
     // look at candidate osds during this interval.  each falls into
@@ -8066,19 +8114,19 @@ PG::PriorSet::PriorSet(bool ec_pool,
       pg_shard_t so(o, ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD);
 
       const osd_info_t *pinfo = 0;
-      if (osdmap.exists(o))//o对应的osd存在
+      if (osdmap.exists(o))//o对应的osd存在{在当前的osd中要exists}
 	pinfo = &osdmap.get_info(o);
 
-      if (osdmap.is_up(o)) {
+      if (osdmap.is_up(o)) {//当前他们是up的,加入probe,及up_now
 	// include past acting osds if they are up.
 	probe.insert(so);
 	up_now.insert(so);
-      } else if (!pinfo) {
+      } else if (!pinfo) {//当前是down的,也没有拿到pinfo,加入down集合
 	dout(10) << "build_prior  prior osd." << o << " no longer exists" << dendl;
 	down.insert(o);
       } else if (pinfo->lost_at > interval.first) {
 	dout(10) << "build_prior  prior osd." << o << " is down, but lost_at " << pinfo->lost_at << dendl;
-	up_now.insert(so);
+	up_now.insert(so);//??
 	down.insert(o);
       } else {
 	dout(10) << "build_prior  prior osd." << o << " is down" << dendl;
@@ -8099,7 +8147,7 @@ PG::PriorSet::PriorSet(bool ec_pool,
 	   ++i) {
 	if (osdmap.exists(*i) &&   // if it doesn't exist, we already consider it lost.
 	    osdmap.is_down(*i)) {
-	  pg_down = true;
+	  pg_down = true; //注意:pg将被置为down
 
 	  // make note of when any down osd in the cur set was lost, so that
 	  // we can notice changes in prior_set_affected.
@@ -8117,6 +8165,7 @@ PG::PriorSet::PriorSet(bool ec_pool,
 }
 
 // true if the given map affects the prior set
+//查看probe集是否受osdmap影响,如果影响,就返回True
 bool PG::PriorSet::affected_by_map(const OSDMapRef osdmap, const PG *debug_pg) const
 {
   for (set<pg_shard_t>::iterator p = probe.begin();

@@ -41,6 +41,7 @@ static int set_version(const char *path, uint32_t version) {
     bl.length());
 }
 
+//读取path的cephos.collection_version版本
 static int get_version(const char *path, uint32_t *version) {
   bufferptr bp(PATH_MAX);
   int r = chain_getxattr(path, "user.cephos.collection_version",

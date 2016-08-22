@@ -757,9 +757,10 @@ void ReplicatedBackend::be_deep_scrub(
 
   uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL | CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
 
+  //读对象
   while (true) {
     handle.reset_tp_timeout();
-    r = store->read(
+    r = store->read(//一次读512k
 	  ch,
 	  ghobject_t(
 	    poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
@@ -769,21 +770,21 @@ void ReplicatedBackend::be_deep_scrub(
     if (r <= 0)
       break;
 
-    h << bl;
+    h << bl;//生成crc
     pos += bl.length();
     bl.clear();
   }
-  if (r == -EIO) {
+  if (r == -EIO) {//读错.
     dout(25) << __func__ << "  " << poid << " got "
 	     << r << " on read, read_error" << dendl;
     o.read_error = true;
     return;
   }
-  o.digest = h.digest();
-  o.digest_present = true;
+  o.digest = h.digest();//填充crc
+  o.digest_present = true;//标记crc有效
 
-  bl.clear();
-  r = store->omap_get_header(
+  bl.clear();//刚才读的对象那些数据,丢掉了.
+  r = store->omap_get_header(//读取omap头
     coll,
     ghobject_t(
       poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
@@ -799,7 +800,7 @@ void ReplicatedBackend::be_deep_scrub(
       ::encode(hdrbl, bl);
       oh << bl;
     } else {
-      oh << hdrbl;
+      oh << hdrbl;//对omap执行crc运算{重载成<<运算符,真的很好吗?}
     }
   } else if (r == -EIO) {
     dout(25) << __func__ << "  " << poid << " got "
@@ -823,7 +824,7 @@ void ReplicatedBackend::be_deep_scrub(
     ++keys_scanned;
 
     dout(25) << "CRC key " << iter->key() << " value:\n";
-    iter->value().hexdump(*_dout);
+    iter->value().hexdump(*_dout);//每一个属性
     *_dout << dendl;
 
     ::encode(iter->key(), bl);
@@ -841,7 +842,7 @@ void ReplicatedBackend::be_deep_scrub(
 
   //Store final calculated CRC32 of omap header & key/values
   o.omap_digest = oh.digest();
-  o.omap_digest_present = true;
+  o.omap_digest_present = true;//标记crc的有效.
   dout(20) << __func__ << "  " << poid << " omap_digest "
 	   << std::hex << o.omap_digest << std::dec << dendl;
 }

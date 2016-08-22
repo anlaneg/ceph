@@ -911,7 +911,7 @@ int MonClient::wait_auth_rotating(double timeout)
 
 // ---------
 
-void MonClient::_send_command(MonCommand *r)
+void MonClient::_send_command(MonCommand *r)//发送此命令
 {
   if (r->target_rank >= 0 &&
       r->target_rank != monmap.get_rank(cur_mon)) {
@@ -1004,6 +1004,7 @@ int MonClient::_cancel_mon_command(uint64_t tid, int r)
   return 0;
 }
 
+//将返回的信息串传给prs,并将onfinish入队,准备触发.
 void MonClient::_finish_command(MonCommand *r, int ret, string rs)
 {
   ldout(cct, 10) << "_finish_command " << r->tid << " = " << ret << " " << rs << dendl;
@@ -1069,7 +1070,7 @@ int MonClient::start_mon_command(const string &mon_name,
   return 0;
 }
 
-int MonClient::start_mon_command(int rank,
+int MonClient::start_mon_command(int rank,//向moniotr发送命令
 				 const vector<string>& cmd,
 				 const bufferlist& inbl,
 				 bufferlist *outbl, string *outs,

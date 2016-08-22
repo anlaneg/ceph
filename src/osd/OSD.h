@@ -455,7 +455,7 @@ private:
   // -- map epoch lower bound --
   Mutex pg_epoch_lock;
   multiset<epoch_t> pg_epochs;
-  map<spg_t,epoch_t> pg_epoch;
+  map<spg_t,epoch_t> pg_epoch;//每个pg当前处于哪个版本
 
 public:
   void pg_add_epoch(spg_t pgid, epoch_t epoch) {
@@ -630,8 +630,8 @@ public:
 private:
   // -- scrub scheduling --
   Mutex sched_scrub_lock;
-  int scrubs_pending;
-  int scrubs_active;
+  int scrubs_pending;//未绝清洗
+  int scrubs_active;//活跃的清洗数
 
 public:
   struct ScrubJob {
@@ -649,9 +649,10 @@ public:
     /// order the jobs by sched_time
     bool operator<(const ScrubJob& rhs) const;
   };
-  set<ScrubJob> sched_scrub_pg;
+  set<ScrubJob> sched_scrub_pg;//清洗任务注册点
 
   /// @returns the scrub_reg_stamp used for unregister the scrub job
+  //注册下一次清洗
   utime_t reg_pg_scrub(spg_t pgid, utime_t t, double pool_scrub_min_interval,
 		       double pool_scrub_max_interval, bool must) {
     ScrubJob scrub(pgid, t, pool_scrub_min_interval, pool_scrub_max_interval,
@@ -660,11 +661,13 @@ public:
     sched_scrub_pg.insert(scrub);
     return scrub.sched_time;
   }
+  //删除注册
   void unreg_pg_scrub(spg_t pgid, utime_t t) {
     Mutex::Locker l(sched_scrub_lock);
     size_t removed = sched_scrub_pg.erase(ScrubJob(pgid, t));
     assert(removed);
   }
+  //获取首个注册的job
   bool first_scrub_stamp(ScrubJob *out) {
     Mutex::Locker l(sched_scrub_lock);
     if (sched_scrub_pg.empty())
@@ -673,6 +676,7 @@ public:
     *out = *iter;
     return true;
   }
+  //获取下个注册的job
   bool next_scrub_stamp(const ScrubJob& next,
 			ScrubJob *out) {
     Mutex::Locker l(sched_scrub_lock);
@@ -1449,7 +1453,7 @@ private:
   void dispatch_session_waiting(Session *session, OSDMapRef osdmap);
 
   Mutex session_waiting_lock;
-  set<Session*> session_waiting_for_map;
+  set<Session*> session_waiting_for_map;//等待map的session
   map<spg_t, set<Session*> > session_waiting_for_pg;//指出在哪些pg上有session在等待{session里有这个pg上等待的请求}
 
   void clear_waiting_sessions() {
@@ -1494,6 +1498,7 @@ private:
       session_waiting_for_map.erase(i);
     }
   }
+  //处理等待osdmap的op
   void dispatch_sessions_waiting_on_map() {
     set<Session*> sessions_to_check;
     get_sessions_waiting_for_map(&sessions_to_check);
@@ -1502,7 +1507,7 @@ private:
 	 sessions_to_check.erase(i++)) {
       (*i)->session_dispatch_lock.Lock();
       update_waiting_for_pg(*i, osdmap);
-      dispatch_session_waiting(*i, osdmap);
+      dispatch_session_waiting(*i, osdmap);//从此处进入,处理这些op
       (*i)->session_dispatch_lock.Unlock();
       (*i)->put();
     }

@@ -35,22 +35,22 @@ namespace ceph {
 #endif
 
 struct hobject_t {
-  object_t oid;
+  object_t oid;//对象
   snapid_t snap;
 private:
-  uint32_t hash;
-  bool max;
-  uint32_t nibblewise_key_cache;
-  uint32_t hash_reverse_bits;
+  uint32_t hash;//对象的hash值
+  bool max;//默认为false,除非指向的是class hobject_t_max类型的对象
+  uint32_t nibblewise_key_cache;//按4位互换hash值后,得到的值
+  uint32_t hash_reverse_bits;//按位逆转hash值后,得到的值
   static const int64_t POOL_META = -1;
   static const int64_t POOL_TEMP_START = -2; // and then negative
   friend class spg_t;  // for POOL_TEMP_START
 public:
-  int64_t pool;
-  string nspace;
+  int64_t pool;//对象的pool
+  string nspace;//对象的nanmespace
 
 private:
-  string key;
+  string key;//不知道什么意思?和oid.name有关
 
   class hobject_t_max {};
 
@@ -198,27 +198,29 @@ public:
 	   pool == INT64_MIN;
   }
 
+  //实现按比特反转v,返回反转后的值(本函数转_reverse_nibbles计算量大一些)
   static uint32_t _reverse_bits(uint32_t v) {
     if (v == 0)
       return v;
     // reverse bits
     // swap odd and even bits
-    v = ((v >> 1) & 0x55555555) | ((v & 0x55555555) << 1);
+    v = ((v >> 1) & 0x55555555) | ((v & 0x55555555) << 1);// 5=0x101,实现奇偶互换
     // swap consecutive pairs
-    v = ((v >> 2) & 0x33333333) | ((v & 0x33333333) << 2);
+    v = ((v >> 2) & 0x33333333) | ((v & 0x33333333) << 2);//每2位互换
     // swap nibbles ...
-    v = ((v >> 4) & 0x0F0F0F0F) | ((v & 0x0F0F0F0F) << 4);
+    v = ((v >> 4) & 0x0F0F0F0F) | ((v & 0x0F0F0F0F) << 4);//每4位互换
     // swap bytes
-    v = ((v >> 8) & 0x00FF00FF) | ((v & 0x00FF00FF) << 8);
+    v = ((v >> 8) & 0x00FF00FF) | ((v & 0x00FF00FF) << 8);//每8位互换
     // swap 2-byte long pairs
-    v = ( v >> 16             ) | ( v               << 16);
+    v = ( v >> 16             ) | ( v               << 16);//每16位互换
     return v;
   }
+  //实现按4bit反转retval的原值,返回反转后的值
   static uint32_t _reverse_nibbles(uint32_t retval) {
     // reverse nibbles
-    retval = ((retval & 0x0f0f0f0f) << 4) | ((retval & 0xf0f0f0f0) >> 4);
-    retval = ((retval & 0x00ff00ff) << 8) | ((retval & 0xff00ff00) >> 8);
-    retval = ((retval & 0x0000ffff) << 16) | ((retval & 0xffff0000) >> 16);
+    retval = ((retval & 0x0f0f0f0f) << 4) | ((retval & 0xf0f0f0f0) >> 4);//每4位互换    {1,2,3,4,5,6,7,8}->{2,1,4,3,6,5,8,7}
+    retval = ((retval & 0x00ff00ff) << 8) | ((retval & 0xff00ff00) >> 8);//每8位互换    {2,1,4,3,6,5,8,7}->{4,3,2,1,8,7,6,5}
+    retval = ((retval & 0x0000ffff) << 16) | ((retval & 0xffff0000) >> 16);//每16位互换 {4,3,2,1,8,7,6,5}->{8,7,6,5,4,3,2,1}
     return retval;
   }
 
@@ -239,7 +241,7 @@ public:
     assert(!max);
     return nibblewise_key_cache;
   }
-  uint64_t get_nibblewise_key() const {
+  uint64_t get_nibblewise_key() const {//与get_bitwise_key在max!=0时是相同的.如果max=0,则采用nibblewise_key_cache
     return max ? 0x100000000ull : nibblewise_key_cache;
   }
 
@@ -255,8 +257,8 @@ public:
   // please remember to update set_bitwise_key_u32() also
   // once you change build_hash_cache()
   void build_hash_cache() {
-    nibblewise_key_cache = _reverse_nibbles(hash);
-    hash_reverse_bits = _reverse_bits(hash);
+    nibblewise_key_cache = _reverse_nibbles(hash);//4位互换
+    hash_reverse_bits = _reverse_bits(hash);//位互换
   }
   void set_bitwise_key_u32(uint32_t value) {
     hash = _reverse_bits(value);
@@ -376,7 +378,7 @@ inline bool operator!=(const T&, const hobject_t &rhs) {
 
 extern int cmp_nibblewise(const hobject_t& l, const hobject_t& r);
 extern int cmp_bitwise(const hobject_t& l, const hobject_t& r);
-static inline int cmp(const hobject_t& l, const hobject_t& r, bool sort_bitwise) {
+static inline int cmp(const hobject_t& l, const hobject_t& r, bool sort_bitwise) {//hobject比较,两者比对用的函数不同,false时工作量小一些.
   if (sort_bitwise)
     return cmp_bitwise(l, r);
   else

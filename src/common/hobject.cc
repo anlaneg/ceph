@@ -345,7 +345,7 @@ int cmp_nibblewise(const hobject_t& l, const hobject_t& r)
   return 0;
 }
 
-//小于返回-1,大于返回1,否则返回0
+//小于返回-1,大于返回1,否则返回0(与cmp_nibblewise不同的是,在比对时,用get_bitwise_key)
 int cmp_bitwise(const hobject_t& l, const hobject_t& r)
 {
   if (l.max < r.max)

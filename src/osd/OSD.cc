@@ -167,7 +167,7 @@ void PGQueueable::RunVis::operator()(const PGSnapTrim &op) {
   return pg->snap_trimmer(op.epoch_queued);
 }
 
-void PGQueueable::RunVis::operator()(const PGScrub &op) {
+void PGQueueable::RunVis::operator()(const PGScrub &op) {//清洗入口
   return pg->scrub(op.epoch_queued, handle);
 }
 
@@ -1055,7 +1055,7 @@ void OSDService::share_map_peer(int peer, Connection *con, OSDMapRef map)
   }
 }
 
-bool OSDService::can_inc_scrubs_pending()
+bool OSDService::can_inc_scrubs_pending()//检查未绝清洗与正在处理的清洗数量是否少于系统参数,如果小于,则可以继续增加未绝的.
 {
   bool can_inc = false;
   Mutex::Locker l(sched_scrub_lock);
@@ -1071,7 +1071,7 @@ bool OSDService::can_inc_scrubs_pending()
   return can_inc;
 }
 
-bool OSDService::inc_scrubs_pending()
+bool OSDService::inc_scrubs_pending()//增加未绝
 {
   bool result = false;
 
@@ -1460,6 +1460,7 @@ void OSDService::dequeue_pg(PG *pg, list<OpRequestRef> *dequeued)
     osd->op_shardedwq.dequeue(pg);
 }
 
+//peering_wq入队
 void OSDService::queue_for_peering(PG *pg)
 {
   peering_wq.queue(pg);//入队至peering_wq
@@ -6421,7 +6422,7 @@ void OSD::_dispatch(Message *m)
     // -- don't need OSDMap --
 
     // map and replication
-  case CEPH_MSG_OSD_MAP:
+  case CEPH_MSG_OSD_MAP://处理osdmap消息
     handle_osd_map(static_cast<MOSDMap*>(m));//处理osdmap消息
     break;
 
@@ -6549,7 +6550,7 @@ bool OSDService::ScrubJob::ScrubJob::operator<(const OSDService::ScrubJob& rhs) 
   return pgid < rhs.pgid;
 }
 
-bool OSD::scrub_time_permit(utime_t now)
+bool OSD::scrub_time_permit(utime_t now)//检查时间上是否容许
 {
   struct tm bdt;
   time_t tt = now.sec();
@@ -6576,7 +6577,7 @@ bool OSD::scrub_time_permit(utime_t now)
   return time_permit;
 }
 
-bool OSD::scrub_load_below_threshold()
+bool OSD::scrub_load_below_threshold()//检查负载
 {
   double loadavgs[3];
   if (getloadavg(loadavgs, 3) != 3) {
@@ -6609,10 +6610,11 @@ bool OSD::scrub_load_below_threshold()
   return false;
 }
 
+//清洗调度(由tick负责处理)
 void OSD::sched_scrub()
 {
   // if not permitted, fail fast
-  if (!service.can_inc_scrubs_pending()) {
+  if (!service.can_inc_scrubs_pending()) {//如果超限,则不开始
     return;
   }
 
@@ -6622,11 +6624,11 @@ void OSD::sched_scrub()
   dout(20) << "sched_scrub load_is_low=" << (int)load_is_low << dendl;
 
   OSDService::ScrubJob scrub;
-  if (service.first_scrub_stamp(&scrub)) {
+  if (service.first_scrub_stamp(&scrub)) {//找第一Job
     do {
       dout(30) << "sched_scrub examine " << scrub.pgid << " at " << scrub.sched_time << dendl;
 
-      if (scrub.sched_time > now) {
+      if (scrub.sched_time > now) {//调度时间比现在还要大,说明现在不用处理
 	// save ourselves some effort
 	dout(10) << "sched_scrub " << scrub.pgid << " scheduled at " << scrub.sched_time
 		 << " > " << now << dendl;
@@ -6638,7 +6640,8 @@ void OSD::sched_scrub()
         break;
       }
 
-      PG *pg = _lookup_lock_pg(scrub.pgid);
+      //只有将pg锁住才能保证在清洗时,不会出现对象被删除修改的情况.
+      PG *pg = _lookup_lock_pg(scrub.pgid);//pg不存在,不处理(需要注意的是,这里pg被锁住了)
       if (!pg)
 	continue;
       if (pg->get_pgbackend()->scrub_supported() && pg->is_active() &&
@@ -6647,13 +6650,13 @@ void OSD::sched_scrub()
 		 << (pg->scrubber.must_scrub ? ", explicitly requested" :
 		     (load_is_low ? ", load_is_low" : " deadline < now"))
 		 << dendl;
-	if (pg->sched_scrub()) {
+	if (pg->sched_scrub()) {//pg清洗
 	  pg->unlock();
 	  break;
 	}
       }
       pg->unlock();
-    } while (service.next_scrub_stamp(scrub, &scrub));
+    } while (service.next_scrub_stamp(scrub, &scrub));//获取下一个时间
   }
   dout(20) << "sched_scrub done" << dendl;
 }
@@ -6991,8 +6994,8 @@ void OSD::handle_osd_map(MOSDMap *m)
   store->queue_transaction(
     service.meta_osr.get(),
     std::move(t),
-    new C_OnMapApply(&service, pinned_maps, last),
-    new C_OnMapCommit(this, start, last, m), 0);//osdmap写入后回调
+    new C_OnMapApply(&service, pinned_maps, last),//清空pinned集合
+    new C_OnMapCommit(this, start, last, m), 0);//osdmap写入后回调,做一些配置变更的事
   service.publish_superblock(superblock);
 }
 
@@ -7000,7 +7003,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
 {
   dout(10) << __func__ << " " << first << ".." << last << dendl;
-  if (is_stopping()) {
+  if (is_stopping()) {//停机不理
     dout(10) << __func__ << " bailing, we are shutting down" << dendl;
     return;
   }
@@ -7022,7 +7025,7 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
     assert(newmap);  // we just cached it above!
 
     // start blacklisting messages sent to peers that go down.
-    service.pre_publish_map(newmap);
+    service.pre_publish_map(newmap);//设置next_map
 
     // kill connections to newly down osds
     bool waited_for_reservations = false;
@@ -7211,14 +7214,14 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
   check_osdmap_features(store);
 
   // yay!
-  consume_map();
+  consume_map();//处理等待的事件,更新session,加入提升系统中所有pg的事件
 
   if (is_active() || is_waiting_for_healthy())
     maybe_update_heartbeat_peers();
 
   if (!is_active()) {
     dout(10) << " not yet active; waiting for peering wq to drain" << dendl;
-    peering_wq.drain();
+    peering_wq.drain();//等待处理完成{说明生效}
   } else {
     activate_map();
   }
@@ -7321,9 +7324,10 @@ bool OSD::advance_pg(
   set<boost::intrusive_ptr<PG> > *new_pgs)//new_pgs为出参
 {
   assert(pg->is_locked());
-  epoch_t next_epoch = pg->get_osdmap()->get_epoch() + 1;
+  epoch_t next_epoch = pg->get_osdmap()->get_epoch() + 1;//pg中的osdmap
   OSDMapRef lastmap = pg->get_osdmap();
 
+  //由于pg中的osdmap中的epoch与osd中的epoch相等,则没有必要再对其进行提升.
   if (lastmap->get_epoch() == osd_epoch)//如果已达到osd_epoch,则不处理
     return true;
   assert(lastmap->get_epoch() < osd_epoch);
@@ -7350,6 +7354,7 @@ bool OSD::advance_pg(
 
     vector<int> newup, newacting;
     int up_primary, acting_primary;
+    //计算这个版本的up,primary,acting,acting_primary集
     nextmap->pg_to_up_acting_osds(//计算newup,up_primary,newacting,acting_primary
       pg->info.pgid.pgid,
       &newup, &up_primary,
@@ -7436,15 +7441,16 @@ void OSD::consume_map()
   service.await_reserved_maps();
   service.publish_map(osdmap);
 
-  dispatch_sessions_waiting_on_map();
+  dispatch_sessions_waiting_on_map();//处理处理等待状态的op
 
   // remove any PGs which we no longer host from the session waiting_for_pg lists
+  //更新session里的信息
   set<spg_t> pgs_to_check;
   get_pgs_with_waiting_sessions(&pgs_to_check);
   for (set<spg_t>::iterator p = pgs_to_check.begin();
        p != pgs_to_check.end();
        ++p) {
-    if (!(osdmap->is_acting_osd_shard(p->pgid, whoami, p->shard))) {
+    if (!(osdmap->is_acting_osd_shard(p->pgid, whoami, p->shard))) {//拿出pg对应的session
       set<Session*> concerned_sessions;
       get_sessions_possibly_interested_in_pg(*p, &concerned_sessions);
       for (set<Session*>::iterator i = concerned_sessions.begin();
@@ -7460,6 +7466,7 @@ void OSD::consume_map()
   }
 
   // scan pg's
+  //向osd中添加null事件,触发pg进行提升
   {
     RWLock::RLocker l(pg_map_lock);
     for (ceph::unordered_map<spg_t,PG*>::iterator it = pg_map.begin();
@@ -8144,6 +8151,7 @@ void OSD::handle_pg_trim(OpRequestRef op)
   pg->unlock();
 }
 
+//实现requestbackfill 的reserve
 void OSD::handle_pg_backfill_reserve(OpRequestRef op)
 {
   MBackfillReserve *m = static_cast<MBackfillReserve*>(op->get_req());
@@ -8967,7 +8975,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb ) 
   delete f;
   *_dout << dendl;
 
-  op->run(osd, item.first, tp_handle);//执行op的处理
+  op->run(osd, item.first, tp_handle);//执行op的处理(已加锁)
 
   {
 #ifdef WITH_LTTNG
@@ -9147,14 +9155,15 @@ void OSD::process_peering_events(
     PG *pg = *i;
     pg->lock_suspend_timeout(handle);
     curmap = service.get_osdmap();
-    if (pg->deleting) {
+    if (pg->deleting) {//如果正在删除,则不再处理
       pg->unlock();
       continue;
     }
+    //1.先检查是否需要提升版本,提升pg版本至curmap->get_epoch()
     if (!advance_pg(curmap->get_epoch(), pg, handle, &rctx, &split_pgs)) {
       // we need to requeue the PG explicitly since we didn't actually
       // handle an event
-      peering_wq.queue(pg);
+      peering_wq.queue(pg);//重新入队,需要继续提升
     } else {
       //事件处理.
       assert(!pg->peering_queue.empty());
@@ -9165,7 +9174,7 @@ void OSD::process_peering_events(
     need_up_thru = pg->need_up_thru || need_up_thru;
     same_interval_since = MAX(pg->info.history.same_interval_since,
 			      same_interval_since);
-    pg->write_if_dirty(*rctx.transaction);
+    pg->write_if_dirty(*rctx.transaction);//写日志
     if (!split_pgs.empty()) {
       rctx.on_applied->add(new C_CompleteSplits(this, split_pgs));//设置split完成后,执行回调
       split_pgs.clear();
@@ -9346,7 +9355,7 @@ void OSD::get_latest_osdmap()
 // --------------------------------
 
 //一个osd消息体内可能包含多个操作,针对每个操作
-//设置op的标记.
+//设置op的标记.用于指出本次操作都有哪方面的处理
 int OSD::init_op_flags(OpRequestRef& op)
 {
   MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
@@ -9408,7 +9417,7 @@ int OSD::init_op_flags(OpRequestRef& op)
     }
 
     switch (iter->op.op) {
-    case CEPH_OSD_OP_CALL:
+    case CEPH_OSD_OP_CALL://class标记
       {
 	bufferlist::iterator bp = iter->indata.begin();
 	int is_write, is_read;

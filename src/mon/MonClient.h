@@ -388,13 +388,13 @@ private:
   struct MonCommand {
     string target_name;
     int target_rank;
-    uint64_t tid;
-    vector<string> cmd;
-    bufferlist inbl;
-    bufferlist *poutbl;
+    uint64_t tid;//事务id
+    vector<string> cmd;//cmd
+    bufferlist inbl;//输入缓冲区
+    bufferlist *poutbl;//输出缓冲区?
     string *prs;
     int *prval;
-    Context *onfinish, *ontimeout;
+    Context *onfinish, *ontimeout;//onfinish时回调,ontimeout回调
 
     explicit MonCommand(uint64_t t)
       : target_rank(-1),
@@ -402,7 +402,7 @@ private:
 	poutbl(NULL), prs(NULL), prval(NULL), onfinish(NULL), ontimeout(NULL)
     {}
   };
-  map<uint64_t,MonCommand*> mon_commands;
+  map<uint64_t,MonCommand*> mon_commands;//用来指定未决命令
 
   void _send_command(MonCommand *r);
   void _resend_mon_commands();

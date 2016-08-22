@@ -2680,10 +2680,10 @@ void FileStore::_do_transaction(
       {
         coll_t cid = i.get_cid(op->cid);
         ghobject_t oid = i.get_oid(op->oid);
-	_kludge_temp_object_collection(cid, oid);
+	_kludge_temp_object_collection(cid, oid);//防temp
         ghobject_t noid = i.get_oid(op->dest_oid);
         tracepoint(objectstore, clone_enter, osr_name);
-        r = _clone(cid, oid, noid, spos);
+        r = _clone(cid, oid, noid, spos);//collect,object-id,dest-object-id,spos是位置
         tracepoint(objectstore, clone_exit, r);
       }
       break;
@@ -4307,7 +4307,8 @@ int FileStore::getattr(const coll_t& _cid, const ghobject_t& oid, const char *na
   }
 }
 
-int FileStore::getattrs(const coll_t& _cid, const ghobject_t& oid, map<string,bufferptr>& aset)
+//细节是,如果有对象被spill到omap中,则连omap中的也一并读取.
+int FileStore::getattrs(const coll_t& _cid, const ghobject_t& oid, map<string,bufferptr>& aset)//取一个对象的所有属性
 {
   tracepoint(objectstore, getattrs_enter, _cid.c_str());
   const coll_t& cid = !_need_temp_object_collection(_cid, oid) ? _cid : _cid.get_temp();
@@ -4340,6 +4341,7 @@ int FileStore::getattrs(const coll_t& _cid, const ghobject_t& oid, map<string,bu
     goto out;
   }
 
+  //如果有一些属性被存储在omap中,则在这里把它们读出来,并合并到asert中去
   r = get_index(cid, &index);
   if (r < 0) {
     dout(10) << __func__ << " could not get index r = " << r << dendl;
@@ -4771,7 +4773,7 @@ int FileStore::collection_list(const coll_t& c, ghobject_t start, ghobject_t end
   shard_id_t shard;
   {
     spg_t pgid;
-    if (c.is_temp(&pgid)) {
+    if (c.is_temp(&pgid)) {//检查c是否为temp,且返回pgid
       pool = -2 - pgid.pool();
       shard = pgid.shard;
     } else if (c.is_pg(&pgid)) {
@@ -4780,7 +4782,7 @@ int FileStore::collection_list(const coll_t& c, ghobject_t start, ghobject_t end
     } else if (c.is_meta()) {
       pool = -1;
       shard = shard_id_t::NO_SHARD;
-    } else {
+    } else {//zero pool id被预留
       // hrm, the caller is test code!  we should get kill it off.  for now,
       // tolerate it.
       pool = 0;
@@ -4796,7 +4798,7 @@ int FileStore::collection_list(const coll_t& c, ghobject_t start, ghobject_t end
     if (cmp_bitwise(start, sep) < 0) { // bitwise vs nibble doesn't matter here
       dout(10) << __func__ << " first checking temp pool" << dendl;
       coll_t temp = c.get_temp();
-      int r = collection_list(temp, start, end, sort_bitwise, max, ls, next);
+      int r = collection_list(temp, start, end, sort_bitwise, max, ls, next);//先从temp中拿,换coll_t,递归
       if (r < 0)
 	return r;
       if (*next != ghobject_t::get_max())
@@ -4817,7 +4819,7 @@ int FileStore::collection_list(const coll_t& c, ghobject_t start, ghobject_t end
   assert(NULL != index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
-  r = index->collection_list_partial(start, end, sort_bitwise, max, ls, next);
+  r = index->collection_list_partial(start, end, sort_bitwise, max, ls, next);//列出start,end之间所有的对象,最多max个.ls是返回的对象,next是下次遍历时需要起点
 
   if (r < 0) {
     assert(!m_filestore_fail_eio || r != -EIO);

@@ -490,7 +490,7 @@ private:
     ); ///< @return Generated object name.
 
   /// Generate object name
-  string lfn_generate_object_name(
+  string lfn_generate_object_name(//生成对象的名称
     const ghobject_t &oid ///< [in] Object for which to generate.
     ) {
     if (index_version == HASH_INDEX_TAG)

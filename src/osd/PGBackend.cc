@@ -185,6 +185,7 @@ void PGBackend::on_change_cleanup(ObjectStore::Transaction *t)
   temp_contents.clear();
 }
 
+//列出所有对象,pgtemp的,meta的不要.
 int PGBackend::objects_list_partial(
   const hobject_t &begin,
   int min,
@@ -209,8 +210,8 @@ int PGBackend::objects_list_partial(
     vector<ghobject_t> objects;
     r = store->collection_list(
       ch,
-      _next,
-      ghobject_t::get_max(),
+      _next,//起始
+      ghobject_t::get_max(),//终止
       parent->sort_bitwise(),
       max - ls->size(),
       &objects,
@@ -222,20 +223,20 @@ int PGBackend::objects_list_partial(
     for (vector<ghobject_t>::iterator i = objects.begin();
 	 i != objects.end();
 	 ++i) {
-      if (i->is_pgmeta() || i->hobj.is_temp()) {
+      if (i->is_pgmeta() || i->hobj.is_temp()) {//排除pgmeta,temp对象
 	continue;
       }
-      if (i->is_no_gen()) {
+      if (i->is_no_gen()) {//非生成对象?
 	ls->push_back(i->hobj);
       }
     }
   }
   if (r == 0)
-    *next = _next.hobj;
+    *next = _next.hobj;//设置下一次的对象
   return r;
 }
 
-int PGBackend::objects_list_range(
+int PGBackend::objects_list_range(//返回start,end之间所有的对象
   const hobject_t &start,
   const hobject_t &end,
   snapid_t seq,
@@ -260,9 +261,9 @@ int PGBackend::objects_list_range(
       continue;
     }
     if (i->is_no_gen()) {
-      ls->push_back(i->hobj);
+      ls->push_back(i->hobj);//非gen,加入ls
     } else if (gen_obs) {
-      gen_obs->push_back(*i);
+      gen_obs->push_back(*i);//gen,加入gen_obs
     }
   }
   return r;
@@ -455,29 +456,29 @@ void PGBackend::be_scan_list(
       true);
     if (r == 0) {
       ScrubMap::object &o = map.objects[poid];
-      o.size = st.st_size;
+      o.size = st.st_size;//填充对象大小到size
       assert(!o.negative);
       store->getattrs(
 	ch,
 	ghobject_t(
 	  poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-	o.attrs);
+	o.attrs);//填充属性到o.attrs中
 
       // calculate the CRC32 on deep scrubs
       if (deep) {
-	be_deep_scrub(*p, seed, o, handle);
+	be_deep_scrub(*p, seed, o, handle);//处理深层次清洗(读出队像算出crc,读出omap 算出crc {head+attrs})
       }
 
       dout(25) << __func__ << "  " << poid << dendl;
     } else if (r == -ENOENT) {
       dout(25) << __func__ << "  " << poid << " got " << r
-	       << ", skipping" << dendl;
+	       << ", skipping" << dendl;//如果对象不存在,则跳过,对于对象不存在的,由恢复机制保证,清洗不能考虑这个问题.
     } else if (r == -EIO) {
       dout(25) << __func__ << "  " << poid << " got " << r
 	       << ", stat_error" << dendl;
-      ScrubMap::object &o = map.objects[poid];
+      ScrubMap::object &o = map.objects[poid];//在map.objects中置入.
       o.stat_error = true;
-    } else {
+    } else {//未知错误,挂
       derr << __func__ << " got: " << cpp_strerror(r) << dendl;
       ceph_abort();
     }
@@ -503,18 +504,18 @@ bool PGBackend::be_compare_scrub_objects(
     error = FOUND_ERROR;
     errorstream << "candidate had a read error";
   }
-  if (auth.digest_present && candidate.digest_present) {
-    if (auth.digest != candidate.digest) {
+  if (auth.digest_present && candidate.digest_present) {//权威和非权威都指明自已的crc是有效的
+    if (auth.digest != candidate.digest) {//但crc不相等
       if (error != CLEAN)
         errorstream << ", ";
       error = FOUND_ERROR;
       errorstream << "data_digest 0x" << std::hex << candidate.digest
 		  << " != data_digest 0x" << auth.digest << std::dec
 		  << " from shard " << auth_shard;
-      obj_result.set_data_digest_mismatch();
+      obj_result.set_data_digest_mismatch();//设置数据crc不正确
     }
   }
-  if (auth.omap_digest_present && candidate.omap_digest_present) {
+  if (auth.omap_digest_present && candidate.omap_digest_present) {//权威和非权威都指明自已的omap crc有效
     if (auth.omap_digest != candidate.omap_digest) {
       if (error != CLEAN)
         errorstream << ", ";
@@ -714,13 +715,13 @@ out:
   return auth;
 }
 
-void PGBackend::be_compare_scrubmaps(
+void PGBackend::be_compare_scrubmaps(//这个函数写的非常的乱,向作者致敬.
   const map<pg_shard_t,ScrubMap*> &maps,
   bool repair,
-  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &missing,
-  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &inconsistent,
-  map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator> &authoritative,
-  map<hobject_t, pair<uint32_t,uint32_t>, hobject_t::BitwiseComparator> &missing_digest,
+  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &missing,//缺
+  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &inconsistent,//不一致
+  map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator> &authoritative,//权威
+  map<hobject_t, pair<uint32_t,uint32_t>, hobject_t::BitwiseComparator> &missing_digest,//缺crc
   int &shallow_errors, int &deep_errors,
   Scrub::Store *store,
   const spg_t& pgid,
@@ -740,6 +741,8 @@ void PGBackend::be_compare_scrubmaps(
   }
 
   // Check maps against master set and each other
+  //遍历合集中的每一个对象,针对每个对象在maps中找出来一个权威信息,它必须是自完整的.
+  //如果没有找到,则这个对象明显是不一致的,而且各osd均不一致,此对象加入object_error
   for (set<hobject_t, hobject_t::BitwiseComparator>::const_iterator k = master_set.begin();
        k != master_set.end();
        ++k) {
@@ -752,7 +755,7 @@ void PGBackend::be_compare_scrubmaps(
       be_select_auth_object(*k, maps, &auth_oi, shard_map, object_error);
 
     list<pg_shard_t> auth_list;
-    if (auth == maps.end()) {
+    if (auth == maps.end()) {//没有选出来.说明没有一个是一致的.
       object_error.set_version(0);
       object_error.set_auth_missing(*k, maps, shard_map, shallow_errors, deep_errors);
       if (object_error.has_deep_errors())
@@ -839,7 +842,7 @@ void PGBackend::be_compare_scrubmaps(
       if (auth_object.digest_present && auth_object.omap_digest_present &&
 	  g_conf->osd_debug_scrub_chance_rewrite_digest &&
 	  (((unsigned)rand() % 100) >
-	   g_conf->osd_debug_scrub_chance_rewrite_digest)) {
+	   g_conf->osd_debug_scrub_chance_rewrite_digest)) {//闲着没事的选项,这个置认不会进来,不考虑.
 	dout(20) << __func__ << " randomly updating digest on " << *k << dendl;
 	update = MAYBE;
       }
@@ -872,7 +875,7 @@ void PGBackend::be_compare_scrubmaps(
 	    age > g_conf->osd_deep_scrub_update_digest_min_age) {
 	  dout(20) << __func__ << " will update digest on " << *k << dendl;
 	  missing_digest[*k] = make_pair(auth_object.digest,
-					 auth_object.omap_digest);
+					 auth_object.omap_digest);//指明缺crc的.--上面不是指出可能缺crc,这里分辨.
 	} else {
 	  dout(20) << __func__ << " missing digest but age " << age
 		   << " < " << g_conf->osd_deep_scrub_update_digest_min_age

@@ -950,6 +950,7 @@ int OSDMap::calc_num_osds()
   return num_osd;
 }
 
+//找出这个版本所有的osd
 void OSDMap::get_all_osds(set<int32_t>& ls) const
 {
   for (int i=0; i<max_osd; i++)

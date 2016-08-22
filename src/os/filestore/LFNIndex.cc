@@ -420,7 +420,7 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
   bool end = true;
   while ((de = ::readdir(dir))) {
     end = false;
-    if (max_objs > 0 && listed >= max_objs) {
+    if (max_objs > 0 && listed >= max_objs) {//如果max_objs<=0,则不对最大对象数进行限制
       break;
     }
     if (de->d_name[0] == '.')
@@ -435,20 +435,20 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
 	goto cleanup;
       } else {
 	string long_name = lfn_generate_object_name(obj);
-	if (!lfn_must_hash(long_name)) {
+	if (!lfn_must_hash(long_name)) {//如果不是hash的,则要求short_name与long_name相同
 	  assert(long_name == short_name);
 	}
 	if (index_version == HASH_INDEX_TAG)
 	  get_hobject_from_oinfo(to_list_path.c_str(), short_name.c_str(), &obj);
 
-	out->insert(pair<string, ghobject_t>(short_name, obj));
-	++listed;
+	out->insert(pair<string, ghobject_t>(short_name, obj));//将名称及对象放入out
+	++listed;//增加计数
       }
     }
   }
 
   if (handle && !end) {
-    *handle = telldir(dir);
+    *handle = telldir(dir);//返回handle,指出下一次dir的位置
   }
 
   r = 0;
@@ -457,6 +457,7 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
   return r;
 }
 
+//列出所有子目录
 int LFNIndex::list_subdirs(const vector<string> &to_list,
 			   vector<string> *out)
 {
@@ -613,6 +614,7 @@ static void append_escaped(string::const_iterator begin,
   }
 }
 
+//重新将oid转换为字符串
 string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
 {
   string full_name;
@@ -624,9 +626,9 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
     full_name.append("\\.");
     ++i;
   }
-  append_escaped(i, oid.hobj.oid.name.end(), &full_name);
+  append_escaped(i, oid.hobj.oid.name.end(), &full_name);//放入对象名
   full_name.append("_");
-  append_escaped(oid.hobj.get_key().begin(), oid.hobj.get_key().end(), &full_name);
+  append_escaped(oid.hobj.get_key().begin(), oid.hobj.get_key().end(), &full_name);//放入key
   full_name.append("_");
 
   char buf[PATH_MAX];
@@ -637,12 +639,12 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
   else if (oid.hobj.snap == CEPH_SNAPDIR)
     t += snprintf(t, end - t, "snapdir");
   else
-    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);
-  snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());
+    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);//放入snap
+  snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());//放入对象hash
   full_name += string(buf);
   full_name.append("_");
 
-  append_escaped(oid.hobj.nspace.begin(), oid.hobj.nspace.end(), &full_name);
+  append_escaped(oid.hobj.nspace.begin(), oid.hobj.nspace.end(), &full_name);//放入ns
   full_name.append("_");
 
   t = buf;
@@ -650,7 +652,7 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
   if (oid.hobj.pool == -1)
     t += snprintf(t, end - t, "none");
   else
-    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);
+    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);//放入pool
   full_name += string(buf);
 
   if (oid.generation != ghobject_t::NO_GEN ||
@@ -662,12 +664,12 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
     t += snprintf(t, end - t, "%llx", (long long unsigned)oid.generation);
     full_name += string(buf);
 
-    full_name.append("_");
+    full_name.append("_");//放入gen
 
     t = buf;
     end = t + sizeof(buf);
     t += snprintf(t, end - t, "%x", (int)oid.shard_id);
-    full_name += string(buf);
+    full_name += string(buf);//放入shard
   }
 
   return full_name;
@@ -930,11 +932,12 @@ int LFNIndex::lfn_unlink(const vector<string> &path,
   return r;
 }
 
+//按名称构造成对象
 int LFNIndex::lfn_translate(const vector<string> &path,
 			    const string &short_name,
 			    ghobject_t *out)
 {
-  if (!lfn_is_hashed_filename(short_name)) {
+  if (!lfn_is_hashed_filename(short_name)) {//如果非hashed文件名,则以此种方式解析
     return lfn_parse_object_name(short_name, out);
   }
   string full_path = get_full_path(path, short_name);
@@ -953,6 +956,7 @@ int LFNIndex::lfn_translate(const vector<string> &path,
   }
 
   // Get lfn_attr
+  //这种情况下,名称存储在attr中
   bp = bufferptr();
   r = chain_getxattr_buf(
     full_path.c_str(),
@@ -967,11 +971,13 @@ int LFNIndex::lfn_translate(const vector<string> &path,
   return lfn_parse_object_name(long_name, out);
 }
 
+//如果是hashed的文件名,或者不是目录,就说明是对象
 bool LFNIndex::lfn_is_object(const string &short_name)
 {
   return lfn_is_hashed_filename(short_name) || !lfn_is_subdir(short_name, 0);
 }
 
+//名称以"DIR_"开头的是子目录,demangled用于返回目录的"DIR_"后面的值
 bool LFNIndex::lfn_is_subdir(const string &name, string *demangled)
 {
   if (name.substr(0, SUBDIR_PREFIX.size()) == SUBDIR_PREFIX) {
@@ -1048,6 +1054,8 @@ int LFNIndex::lfn_parse_object_name_keyless(const string &long_name, ghobject_t 
   return r ? 0 : -EINVAL;
 }
 
+//对begin到end之间的字符串进行转义,对于"\\","\s","\n","\u"分别换议为"\","/","n","_"
+//其它字符串原样输出,并将转义后结果输出入out
 static bool append_unescaped(string::const_iterator begin,
 			     string::const_iterator end,
 			     string *out)
@@ -1066,7 +1074,7 @@ static bool append_unescaped(string::const_iterator begin,
       else
 	return false;
     } else {
-      out->append(i, i+1);
+      out->append(i, i+1);//如果不是'\',不转义,直接加入
     }
   }
   return true;
@@ -1172,56 +1180,59 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
     }
   }
 
+  //<name>_<key>_<snap>_<hash>_<ns>_<pool>[_<genstring>_<shardstring>] //是一个6或8分组的名称
   string::const_iterator end = current;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第一个'_',这之前的是name
   if (end == long_name.end())
     return -EINVAL;
   if (!append_unescaped(current, end, &name))
     return -EINVAL;
 
   current = ++end;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第二个'_',这之间的是key
   if (end == long_name.end())
     return -EINVAL;
   if (!append_unescaped(current, end, &key))
     return -EINVAL;
 
   current = ++end;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第三个'_',这之间的是snap
   if (end == long_name.end())
     return -EINVAL;
-  string snap_str(current, end);
+  string snap_str(current, end);//head,snapdir,快照编号
 
   current = ++end;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第四个'_',之间的是hash_str
   if (end == long_name.end())
     return -EINVAL;
-  string hash_str(current, end);
+  string hash_str(current, end);//16进制的hash,对象的hash
 
   current = ++end;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第5个'_',之间的是ns
   if (end == long_name.end())
     return -EINVAL;
   if (!append_unescaped(current, end, &ns))
     return -EINVAL;
 
   current = ++end;
-  for ( ; end != long_name.end() && *end != '_'; ++end) ;
-  string pstring(current, end);
+  for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第6个'_',之间的是ps
+  string pstring(current, end);//这个实际上是pool的id号.如果为none,则id为-1表示meta
 
   // Optional generation/shard_id
+  //这两个值是可选的,故如果名称中只有5个'_'是合法的.例如
+  //rbd\udata.36695f7738f8d7.0000000000002d3f__head_67360655__7
   string genstring, shardstring;
   if (end != long_name.end()) {
     current = ++end;
-    for ( ; end != long_name.end() && *end != '_'; ++end) ;
+    for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第7个'_',之间的是gen
     if (end == long_name.end())
       return -EINVAL;
     genstring = string(current, end);
 
-    generation = (gen_t)strtoull(genstring.c_str(), NULL, 16);
+    generation = (gen_t)strtoull(genstring.c_str(), NULL, 16);//gen是16进制
 
     current = ++end;
-    for ( ; end != long_name.end() && *end != '_'; ++end) ;
+    for ( ; end != long_name.end() && *end != '_'; ++end) ;//跳到第8个'_',之间的是shardstring,是16进制
     if (end != long_name.end())
       return -EINVAL;
     shardstring = string(current, end);
@@ -1230,14 +1241,14 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
   }
 
   if (snap_str == "head")
-    snap = CEPH_NOSNAP;
-  else if (snap_str == "snapdir")
+    snap = CEPH_NOSNAP;//非快照
+  else if (snap_str == "snapdir")//快照目录
     snap = CEPH_SNAPDIR;
   else
-    snap = strtoull(snap_str.c_str(), NULL, 16);
-  sscanf(hash_str.c_str(), "%X", &hash);
+    snap = strtoull(snap_str.c_str(), NULL, 16);//快照编号
+  sscanf(hash_str.c_str(), "%X", &hash);//hash
 
-  if (pstring == "none")
+  if (pstring == "none")//pool id
     pool = (uint64_t)-1;
   else
     pool = strtoull(pstring.c_str(), NULL, 16);
@@ -1246,13 +1257,14 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
   return 0;
 }
 
+//哈希过的文件名至少255字节,且以"long"字符串做后缀.
 bool LFNIndex::lfn_is_hashed_filename(const string &name)
 {
-  if (name.size() < (unsigned)FILENAME_SHORT_LEN) {
+  if (name.size() < (unsigned)FILENAME_SHORT_LEN) {//文件名至少255
     return 0;
   }
   if (name.substr(name.size() - FILENAME_COOKIE.size(), FILENAME_COOKIE.size())
-      == FILENAME_COOKIE) {
+      == FILENAME_COOKIE) {//如果是以long结尾的,则是hashed文件名,否则不是.
     return 1;
   } else {
     return 0;
@@ -1350,6 +1362,7 @@ const string &LFNIndex::get_base_path()
   return base_path;
 }
 
+//生成$(base_path)/DIR_XX/...
 string LFNIndex::get_full_path_subdir(const vector<string> &rel)
 {
   string retval = get_base_path();
@@ -1367,6 +1380,7 @@ string LFNIndex::get_full_path(const vector<string> &rel, const string &name)
   return get_full_path_subdir(rel) + "/" + name;
 }
 
+//生成DIR_XX
 string LFNIndex::mangle_path_component(const string &component)
 {
   return SUBDIR_PREFIX + component;

@@ -517,12 +517,13 @@ PerfCounters *ReplicatedPG::get_logger()
 // ====================
 // missing objects
 
-bool ReplicatedPG::is_missing_object(const hobject_t& soid) const
+bool ReplicatedPG::is_missing_object(const hobject_t& soid) const//missing表中存在这个对象,表明这个对象缺失
 {
   return pg_log.get_missing().get_items().count(soid);
 }
 
-void ReplicatedPG::maybe_kick_recovery(
+//读写流程触发,产生优先恢复某object的需求
+void ReplicatedPG::maybe_kick_recovery(//尝试优先恢复soid
   const hobject_t &soid)
 {
   eversion_t v;
@@ -530,11 +531,12 @@ void ReplicatedPG::maybe_kick_recovery(
     return;
 
   map<hobject_t, ObjectContextRef, hobject_t::BitwiseComparator>::const_iterator p = recovering.find(soid);
-  if (p != recovering.end()) {
+  if (p != recovering.end()) {//已经在恢复了
     dout(7) << "object " << soid << " v " << v << ", already recovering." << dendl;
   } else if (missing_loc.is_unfound(soid)) {
     dout(7) << "object " << soid << " v " << v << ", is unfound." << dendl;
   } else {
+	//主动触发,优先恢复
     dout(7) << "object " << soid << " v " << v << ", recovering." << dendl;
     PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
     if (is_missing_object(soid)) {
@@ -546,7 +548,7 @@ void ReplicatedPG::maybe_kick_recovery(
   }
 }
 
-void ReplicatedPG::wait_for_unreadable_object(
+void ReplicatedPG::wait_for_unreadable_object(//触发soid恢复,并将此操作加入等待可读object列表
   const hobject_t& soid, OpRequestRef op)
 {
   assert(is_unreadable_object(soid));
@@ -570,17 +572,17 @@ bool ReplicatedPG::is_degraded_or_backfilling_object(const hobject_t& soid)
    */
   if (waiting_for_degraded_object.count(soid))
     return true;
-  if (pg_log.get_missing().get_items().count(soid))
+  if (pg_log.get_missing().get_items().count(soid))//missing中有这个对象
     return true;
   assert(!actingbackfill.empty());
   for (set<pg_shard_t>::iterator i = actingbackfill.begin();
        i != actingbackfill.end();
        ++i) {
-    if (*i == get_primary()) continue;
+    if (*i == get_primary()) continue;//skip主
     pg_shard_t peer = *i;
     auto peer_missing_entry = peer_missing.find(peer);
     if (peer_missing_entry != peer_missing.end() &&
-	peer_missing_entry->second.get_items().count(soid))
+	peer_missing_entry->second.get_items().count(soid))//幅本里缺少这个对象
       return true;
 
     // Object is degraded if after last_backfill AND
@@ -594,6 +596,7 @@ bool ReplicatedPG::is_degraded_or_backfilling_object(const hobject_t& soid)
   return false;
 }
 
+//主动触发要求恢复,并将操作加入到等待降级
 void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef op)
 {
   assert(is_degraded_or_backfilling_object(soid));
@@ -603,6 +606,7 @@ void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef 
   op->mark_delayed("waiting for degraded object");
 }
 
+//阻塞写在full cache情况下.
 void ReplicatedPG::block_write_on_full_cache(
   const hobject_t& _oid, OpRequestRef op)
 {
@@ -1016,12 +1020,12 @@ int ReplicatedPG::do_command(
 
 bool ReplicatedPG::pg_op_must_wait(MOSDOp *op)
 {
-  if (pg_log.get_missing().get_items().empty())
+  if (pg_log.get_missing().get_items().empty())//pglog中missing集为空,则不需要等,否则需要等恢复
     return false;
   for (vector<OSDOp>::iterator p = op->ops.begin(); p != op->ops.end(); ++p) {
     if (p->op.op == CEPH_OSD_OP_PGLS || p->op.op == CEPH_OSD_OP_PGNLS ||
 	p->op.op == CEPH_OSD_OP_PGLS_FILTER || p->op.op == CEPH_OSD_OP_PGNLS_FILTER) {
-      if (op->get_snapid() != CEPH_NOSNAP) {
+      if (op->get_snapid() != CEPH_NOSNAP) {//这些操作必须完成snap
 	return true;
       }
     }
@@ -1029,7 +1033,7 @@ bool ReplicatedPG::pg_op_must_wait(MOSDOp *op)
   return false;
 }
 
-void ReplicatedPG::do_pg_op(OpRequestRef op)
+void ReplicatedPG::do_pg_op(OpRequestRef op)//处理pg的操作
 {
   MOSDOp *m = static_cast<MOSDOp *>(op->get_req());
   assert(m->get_type() == CEPH_MSG_OSD_OP);
@@ -1584,9 +1588,10 @@ ReplicatedPG::ReplicatedPG(OSDService *o, OSDMapRef curmap,
   temp_seq(0),
   snap_trimmer_machine(this)
 { 
+  //设置missing_loc对象的,检查回调
   missing_loc.set_backend_predicates(
-    pgbackend->get_is_readable_predicate(),
-    pgbackend->get_is_recoverable_predicate());
+    pgbackend->get_is_readable_predicate(),//pg后端的可读性回调(如果主存在,则可读)
+    pgbackend->get_is_recoverable_predicate());//pg后端的可恢复回调(如果存在任一主或者幅本,则可恢复)
   snap_trimmer_machine.initiate();
 }
 
@@ -1675,7 +1680,7 @@ void ReplicatedPG::do_request(
     do_backfill(op);
     break;
 
-  case MSG_OSD_REP_SCRUB:
+  case MSG_OSD_REP_SCRUB://主发给从的清洗消息
     replica_scrub(op, handle);
     break;
 
@@ -1770,14 +1775,15 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   if ((m->get_flags() & (CEPH_OSD_FLAG_BALANCE_READS |
 			 CEPH_OSD_FLAG_LOCALIZE_READS)) &&
       op->may_read() &&
-      !(op->may_write() || op->may_cache())) {
+      !(op->may_write() || op->may_cache())) {//消息有平衡读和本地读标记,且操作集中有读操作,并没有写操作及cache操作.
     // balanced reads; any replica will do
-    if (!(is_primary() || is_replica())) {
+    if (!(is_primary() || is_replica())) {//非备,非主时,才报错(防止不负责)
       osd->handle_misdirected_op(this, op);
       return;
     }
   } else {
     // normal case; must be primary
+	//普通情况下,不是主,就报错.
     if (!is_primary()) {
       osd->handle_misdirected_op(this, op);//报错
       return;
@@ -1787,7 +1793,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   //如果有pg自身的操作,则做pg操作
   if (op->includes_pg_op()) {
     if (pg_op_must_wait(m)) {
-      wait_for_all_missing(op);
+      wait_for_all_missing(op);//将op加入到missing等待中
       return;
     }
     return do_pg_op(op);
@@ -1803,7 +1809,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 		 info.pgid.pool(), m->get_object_locator().nspace);
 
   // object name too long?
-  //对象名字长不长
+  //name不能超过osd_max_object_name_len
   if (m->get_oid().name.size() > g_conf->osd_max_object_name_len) {
     dout(4) << "do_op name is longer than "
             << g_conf->osd_max_object_name_len
@@ -1811,6 +1817,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     osd->reply_op_error(op, -ENAMETOOLONG);
     return;
   }
+  //key不能超过osd_max_object_name_len
   if (m->get_object_locator().key.size() > g_conf->osd_max_object_name_len) {
     dout(4) << "do_op locator is longer than "
             << g_conf->osd_max_object_name_len
@@ -1818,6 +1825,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     osd->reply_op_error(op, -ENAMETOOLONG);
     return;
   }
+  //namespace不能超过osd_max_object_namespace_len
   if (m->get_object_locator().nspace.size() >
       g_conf->osd_max_object_namespace_len) {
     dout(4) << "do_op namespace is longer than "
@@ -1827,6 +1835,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  //交给后端store进行检查
   if (int r = osd->store->validate_hobject_key(head)) {
     dout(4) << "do_op object " << head << " invalid for backing store: "
 	    << r << dendl;
@@ -1835,6 +1844,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   // blacklisted?
+  //源ip是否在黑名单中
   if (get_osdmap()->is_blacklisted(m->get_source_addr())) {
     dout(10) << "do_op " << m->get_source_addr() << " is blacklisted" << dendl;
     osd->reply_op_error(op, -EBLACKLISTED);
@@ -1842,6 +1852,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   // order this op as a write?
+  //如果操作中有写及cache操作或者客户端指明了要写有序,则write_ordered置为true
   bool write_ordered =
     op->may_write() ||
     op->may_cache() ||
@@ -1856,12 +1867,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // If this op isn't write or read-ordered, we skip
   // FIXME: we exclude mds writes for now.
   if (write_ordered && !( m->get_source().is_mds() || m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
-      info.history.last_epoch_marked_full > m->get_map_epoch()) {
+      info.history.last_epoch_marked_full > m->get_map_epoch()) {//full标记检查,这个东西的目的是什么,没有搞清楚?
     dout(10) << __func__ << " discarding op sent before full " << m << " "
 	     << *m << dendl;
     return;
   }
-  if (!(m->get_source().is_mds()) && osd->check_failsafe_full() && write_ordered) {
+  if (!(m->get_source().is_mds()) && osd->check_failsafe_full() && write_ordered) {//原因不明
     dout(10) << __func__ << " fail-safe full check failed, dropping request"
 	     << dendl;
     return;
@@ -1870,19 +1881,20 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   if (op->may_write()) {
 
     const pg_pool_t *pi = get_osdmap()->get_pg_pool(poolid);
-    if (!pi) {
+    if (!pi) {//写操作,但pool不需在.op不再处理
       return;
     }
 
     // invalid?
-    if (m->get_snapid() != CEPH_NOSNAP) {
+    if (m->get_snapid() != CEPH_NOSNAP) {//写操作时,不能指定snapid,不能对快照执行写操作.
       osd->reply_op_error(op, -EINVAL);
       return;
     }
 
     // too big?
     if (cct->_conf->osd_max_write_size &&
-        m->get_data_len() > cct->_conf->osd_max_write_size << 20) {
+        m->get_data_len() > cct->_conf->osd_max_write_size << 20) {//配置了写最大数,现在写的对象超过了此数据,拒绝.
+    	//这个和journal配合,防止用户写入的数据量超过了journal大小.这样journal就不能处理了.
       // journal can't hold commit!
       derr << "do_op msg data len " << m->get_data_len()
            << " > osd_max_write_size " << (cct->_conf->osd_max_write_size << 20)
@@ -1901,7 +1913,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 	   << dendl;
 
   if (write_ordered &&
-      scrubber.write_blocked_by_scrub(head, get_sort_bitwise())) {
+      scrubber.write_blocked_by_scrub(head, get_sort_bitwise())) {//如果要操作的对象在清洗范围内,则挂起.
     dout(20) << __func__ << ": waiting for scrub" << dendl;
     waiting_for_active.push_back(op);
     op->mark_delayed("waiting for scrub");
@@ -1909,13 +1921,13 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   // missing object?
-  if (is_unreadable_object(head)) {
-    wait_for_unreadable_object(head, op);
+  if (is_unreadable_object(head)) {//检查此对象是否missing
+    wait_for_unreadable_object(head, op);//加入对列
     return;
   }
 
   // degraded object?
-  if (write_ordered && is_degraded_or_backfilling_object(head)) {
+  if (write_ordered && is_degraded_or_backfilling_object(head)) {//这个对象有osd缺少时,加入.
     wait_for_degraded_object(head, op);
     return;
   }
@@ -1923,7 +1935,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // blocked on snap?
   map<hobject_t, snapid_t>::iterator blocked_iter =
     objects_blocked_on_degraded_snap.find(head);
-  if (write_ordered && blocked_iter != objects_blocked_on_degraded_snap.end()) {
+  if (write_ordered && blocked_iter != objects_blocked_on_degraded_snap.end()) {//暂不明确?
     hobject_t to_wait_on(head);
     to_wait_on.snap = blocked_iter->second;
     wait_for_degraded_object(to_wait_on, op);
@@ -1938,39 +1950,41 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       op);
     return;
   }
-  if (write_ordered && objects_blocked_on_cache_full.count(head)) {
+  if (write_ordered && objects_blocked_on_cache_full.count(head)) {//如果此对象已阻塞在cache刷新位置,则直接加入
     block_write_on_full_cache(head, op);
     return;
   }
 
   // missing snapdir?
-  hobject_t snapdir = head.get_snapdir();
+  hobject_t snapdir = head.get_snapdir();//返回目录
 
-  if (is_unreadable_object(snapdir)) {
+  if (is_unreadable_object(snapdir)) {//如果快照目录不可读,则阻塞在等待队列中
     wait_for_unreadable_object(snapdir, op);
     return;
   }
 
   // degraded object?
-  if (write_ordered && is_degraded_or_backfilling_object(snapdir)) {
+  if (write_ordered && is_degraded_or_backfilling_object(snapdir)) {//检查快照目录
     wait_for_degraded_object(snapdir, op);
     return;
   }
  
   // asking for SNAPDIR is only ok for reads
-  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {
+  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {//快照目录仅可读.
     osd->reply_op_error(op, -EINVAL);
     return;
   }
 
   // dup/replay?
-  if (op->may_write() || op->may_cache()) {
+  //防客户端重复
+  if (op->may_write() || op->may_cache()) {//对wirte操作,cache操作
     // warning: we will get back *a* request for this reqid, but not
     // necessarily the most recent.  this happens with flush and
     // promote ops, but we can't possible have both in our log where
     // the original request is still not stable on disk, so for our
     // purposes here it doesn't matter which one we get.
-    eversion_t replay_version;
+    //检查是否为重复发送.(例如中间有一个osd挂掉了)
+    eversion_t replay_version;//pglog中的版本号
     version_t user_version;
     int return_code = 0;
     bool got = check_in_progress_op(
@@ -1979,22 +1993,23 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       dout(3) << __func__ << " dup " << m->get_reqid()
 	      << " was " << replay_version << dendl;
       if (return_code < 0 || already_complete(replay_version)) {
+      //返回值<0或者之前已回应过已完成,现重复回应.{commit已处理}
 	osd->reply_op_error(op, return_code, replay_version, user_version);
       } else {
 	if (m->wants_ack()) {
-	  if (already_ack(replay_version)) {
+	  if (already_ack(replay_version)) {//检查是否已ack{applied已处理},发送reply
 	    MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, false);
 	    reply->add_flags(CEPH_OSD_FLAG_ACK);
 	    reply->set_reply_versions(replay_version, user_version);
 	    osd->send_message_osd_client(reply, m->get_connection());
-	  } else {
+	  } else {//添加等待ack,防止已发送
 	    dout(10) << " waiting for " << replay_version << " to ack" << dendl;
 	    waiting_for_ack[replay_version].push_back(make_pair(op, user_version));
 	  }
 	}
 	dout(10) << " waiting for " << replay_version << " to commit" << dendl;
         // always queue ondisk waiters, so that we can requeue if needed
-	waiting_for_ondisk[replay_version].push_back(make_pair(op, user_version));
+	waiting_for_ondisk[replay_version].push_back(make_pair(op, user_version));//防止commit已发送
 	op->mark_delayed("waiting for ondisk");
       }
       return;
@@ -2006,17 +2021,18 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   hobject_t missing_oid;
   hobject_t oid(m->get_oid(),
 		m->get_object_locator().key,
-		m->get_snapid(),
+		m->get_snapid(),//快照id
 		m->get_pg().ps(),
 		m->get_object_locator().get_pool(),
 		m->get_object_locator().nspace);
 
   // io blocked on obc?
   if (!m->has_flag(CEPH_OSD_FLAG_FLUSH) &&
-      maybe_await_blocked_snapset(oid, op)) {
+      maybe_await_blocked_snapset(oid, op)) {//目的不明白,暂不清楚?
     return;
   }
 
+  //暂不明确下面的几段代码
   int r = find_object_context(
     oid, &obc, can_create,
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
@@ -2140,11 +2156,11 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // src_oids
   map<hobject_t,ObjectContextRef, hobject_t::BitwiseComparator> src_obc;
   for (vector<OSDOp>::iterator p = m->ops.begin(); p != m->ops.end(); ++p) {
-    OSDOp& osd_op = *p;
+    OSDOp& osd_op = *p;//操作
 
     // make sure LIST_SNAPS is on CEPH_SNAPDIR and nothing else
     if (osd_op.op.op == CEPH_OSD_OP_LIST_SNAPS &&
-	m->get_snapid() != CEPH_SNAPDIR) {
+	m->get_snapid() != CEPH_SNAPDIR) {//要列出snap,却不给出snapdir
       dout(10) << "LIST_SNAPS with incorrect context" << dendl;
       osd->reply_op_error(op, -EINVAL);
       return;
@@ -2387,7 +2403,7 @@ ReplicatedPG::cache_result_t ReplicatedPG::maybe_handle_cache_detail(
     return cache_result_t::NOOP;
   }
   // return quickly if caching is not enabled
-  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) //如果pool被配置为NONE
+  if (pool.info.cache_mode == pg_pool_t::CACHEMODE_NONE) //如果pool的cache被配置为NONE
     return cache_result_t::NOOP;
 
   must_promote = must_promote || op->need_promote();//检查是否需要提升
@@ -3023,7 +3039,7 @@ void ReplicatedPG::promote_object(ObjectContextRef obc,
 {
   hobject_t hoid = obc ? obc->obs.oi.soid : missing_oid;
   assert(hoid != hobject_t());
-  if (scrubber.write_blocked_by_scrub(hoid, get_sort_bitwise())) {
+  if (scrubber.write_blocked_by_scrub(hoid, get_sort_bitwise())) {//清洗写
     dout(10) << __func__ << " " << hoid
 	     << " blocked by scrub" << dendl;
     if (op) {
@@ -3425,13 +3441,13 @@ void ReplicatedPG::do_sub_op(OpRequestRef op)
     case CEPH_OSD_OP_DELETE:
       sub_op_remove(op);
       return;
-    case CEPH_OSD_OP_SCRUB_RESERVE:
+    case CEPH_OSD_OP_SCRUB_RESERVE://主上发送过来的清洗预留
       sub_op_scrub_reserve(op);
       return;
     case CEPH_OSD_OP_SCRUB_UNRESERVE:
-      sub_op_scrub_unreserve(op);
+      sub_op_scrub_unreserve(op);//主上发送过来的,要求取消预订
       return;
-    case CEPH_OSD_OP_SCRUB_MAP:
+    case CEPH_OSD_OP_SCRUB_MAP://从上清洗的map响应
       sub_op_scrub_map(op);
       return;
     }
@@ -8476,7 +8492,7 @@ void ReplicatedPG::op_applied(const eversion_t &applied_version)
   if (is_primary()) {
     if (scrubber.active) {
       if (last_update_applied == scrubber.subset_last_update) {
-        requeue_scrub();
+        requeue_scrub();//我们选了一个范围,这个范围中有一个对象关联了subset_last_update,现在这个applied到达此版本,scrub可以运行了.使其入对.
       }
     } else {
       assert(scrubber.start == scrubber.end);
@@ -8588,10 +8604,10 @@ void ReplicatedPG::eval_repop(RepGather *repop)
     dout(10) << " removing " << *repop << dendl;
     assert(!repop_queue.empty());
     dout(20) << "   q front is " << *repop_queue.front() << dendl; 
-    if (repop_queue.front() != repop) {
+    if (repop_queue.front() != repop) {//异常情况{事务未按顺序提交}
       dout(0) << " removing " << *repop << dendl;
       dout(0) << "   q front is " << *repop_queue.front() << dendl; 
-      assert(repop_queue.front() == repop);
+      assert(repop_queue.front() == repop);//强挂
     }
     repop_queue.pop_front();
     remove_repop(repop);
@@ -9471,9 +9487,9 @@ void ReplicatedPG::kick_object_context_blocked(ObjectContextRef obc)
     objects_blocked_on_snap_promotion.erase(i);
   }
 
-  if (obc->requeue_scrub_on_unblock) {
+  if (obc->requeue_scrub_on_unblock) {//如果这个对象影响了清洗,则清洗操作入队
     obc->requeue_scrub_on_unblock = false;
-    requeue_scrub();
+    requeue_scrub();//这个是对象影响清洗过程,现在不影响了,重新入队
   }
 }
 
@@ -10498,7 +10514,7 @@ bool ReplicatedPG::start_recovery_ops(
   }
   if (!started) {
     // We still have missing objects that we should grab from replicas.
-    started += (max, handle);//恢复主
+    started += recover_primary(max, handle);//恢复主
   }
   if (!started && num_unfound != get_num_unfound()) {
     // second chance to recovery replicas
@@ -10531,7 +10547,7 @@ bool ReplicatedPG::start_recovery_ops(
 	    std::make_shared<CephPeeringEvt>(
 	      get_osdmap()->get_epoch(),
 	      get_osdmap()->get_epoch(),
-	      RequestBackfill())));
+	      RequestBackfill())));//如果没走backfill流程,走backfill
       }
       deferred_backfill = true;
     } else {
@@ -10602,7 +10618,7 @@ bool ReplicatedPG::start_recovery_ops(
         std::make_shared<CephPeeringEvt>(
           get_osdmap()->get_epoch(),
           get_osdmap()->get_epoch(),
-          Backfilled())));
+          Backfilled())));//触发Backfilled事件,backfill恢复完成
   }
 
   return false;
@@ -10978,6 +10994,7 @@ bool ReplicatedPG::all_peer_done() const
  * io created objects since the last scan.  For this reason, we call
  * update_range() again before continuing backfill.
  */
+//backfill恢复
 uint64_t ReplicatedPG::recover_backfill(
   uint64_t max,
   ThreadPool::TPHandle &handle, bool *work_started)
@@ -12773,6 +12790,7 @@ void ReplicatedPG::scrub_snapshot_metadata(
 
   bufferlist last_data;
 
+  //遍历权威object
   for (map<hobject_t,ScrubMap::object, hobject_t::BitwiseComparator>::reverse_iterator
        p = scrubmap.objects.rbegin(); p != scrubmap.objects.rend(); ++p) {
     const hobject_t& soid = p->first;
@@ -12792,13 +12810,13 @@ void ReplicatedPG::scrub_snapshot_metadata(
     }
 
     // basic checks.
-    if (p->second.attrs.count(OI_ATTR) == 0) {
+    if (p->second.attrs.count(OI_ATTR) == 0) {//无oi_attr
       oi = boost::none;
       osd->clog->error() << mode << " " << info.pgid << " " << soid
 			<< " no '" << OI_ATTR << "' attr";
       ++scrubber.shallow_errors;
       soid_error.set_oi_attr_missing();
-    } else {
+    } else {//有object_info_t
       bufferlist bv;
       bv.push_back(p->second.attrs[OI_ATTR]);
       try {

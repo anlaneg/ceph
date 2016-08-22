@@ -81,7 +81,7 @@ public:
   struct IndexedLog : public pg_log_t {
 	//通过不同的key索引pg_log_entry_t,三类索引
     mutable ceph::unordered_map<hobject_t,pg_log_entry_t*> objects;  // ptrs into log.  be careful!
-    mutable ceph::unordered_map<osd_reqid_t,pg_log_entry_t*> caller_ops;
+    mutable ceph::unordered_map<osd_reqid_t,pg_log_entry_t*> caller_ops;//记录osd请求id与pg_log_entry_t之间的关系
     mutable ceph::unordered_multimap<osd_reqid_t,pg_log_entry_t*> extra_caller_ops;
 
     // recovery pointers
@@ -260,6 +260,7 @@ public:
       return true;
     }
 
+    //通过请求id查找pglog中记录
     bool get_request(
       const osd_reqid_t &r,
       eversion_t *replay_version,
@@ -269,11 +270,11 @@ public:
       assert(user_version);
       assert(return_code);
       ceph::unordered_map<osd_reqid_t,pg_log_entry_t*>::const_iterator p;
-      if (!(indexed_data & PGLOG_INDEXED_CALLER_OPS)) {
-        index_caller_ops();
+      if (!(indexed_data & PGLOG_INDEXED_CALLER_OPS)) {//如果未建立caller_ops索引
+        index_caller_ops();//建立索引
       }
       p = caller_ops.find(r);
-      if (p != caller_ops.end()) {
+      if (p != caller_ops.end()) {//如果有过这个请求id
 	*replay_version = p->second->version;
 	*user_version = p->second->user_version;
 	*return_code = p->second->return_code;
@@ -282,11 +283,11 @@ public:
 
       // warning: we will return *a* request for this reqid, but not
       // necessarily the most recent.
-      if (!(indexed_data & PGLOG_INDEXED_EXTRA_CALLER_OPS)) {
-        index_extra_caller_ops();
+      if (!(indexed_data & PGLOG_INDEXED_EXTRA_CALLER_OPS)) {//如果未建立extra call_ops
+        index_extra_caller_ops();//建立索引
       }
       p = extra_caller_ops.find(r);
-      if (p != extra_caller_ops.end()) {
+      if (p != extra_caller_ops.end()) {//自extra_caller_ops中查找,感觉为支持一次发送多事务{指批量事务?}
 	for (vector<pair<osd_reqid_t, version_t> >::const_iterator i =
 	       p->second->extra_reqids.begin();
 	     i != p->second->extra_reqids.end();
@@ -771,12 +772,15 @@ protected:
     ldpp_dout(dpp, 20) << __func__ << ": merging hoid " << hoid
 		       << " entries: " << entries << dendl;
 
+    //这个对象比info.last_backfill大,一会通过log建立missing时,
+    //即可实现,故直接扔了这个日志即可.所以函数直接返回.
     if (cmp(hoid, info.last_backfill, info.last_backfill_bitwise) > 0) {
       ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid << " after last_backfill"
 			 << dendl;
       return;
     }
 
+    //也就是说,走到这里时,info.last_backfill != max()
     // entries is non-empty
     assert(!entries.empty());
     eversion_t last;
@@ -795,9 +799,9 @@ protected:
     }
 
     const eversion_t prior_version = entries.begin()->prior_version;
-    const eversion_t first_divergent_update = entries.begin()->version;
+    const eversion_t first_divergent_update = entries.begin()->version;//不一致的首个版本
     const eversion_t last_divergent_update = entries.rbegin()->version;
-    const bool object_not_in_store =
+    const bool object_not_in_store = //如果missing集中无此对象,并且分歧日志的最后一个关于本对象的操作是delete,则为true
       !missing.is_missing(hoid) &&
       entries.rbegin()->is_delete();
     ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
@@ -894,6 +898,8 @@ protected:
       return;
     }
 
+    //这种对象在missing表中不存在,说明整个集群里,我们在错误的路上走的更远
+    //如果可以回退,我们直接回退,就不需要加入missing集了{4}情况,否则加入missing集,要旧的对象回退.
     ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 		       << " must be rolled back or recovered,"
 		       << " attempting to rollback"

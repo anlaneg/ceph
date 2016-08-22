@@ -72,25 +72,27 @@ public:
   void clear_recovery_state();
   void on_flushed();
 
+  //可恢复性检测类
   class RPCRecPred : public IsPGRecoverablePredicate {
   public:
-    bool operator()(const set<pg_shard_t> &have) const {
+    bool operator()(const set<pg_shard_t> &have) const {//只要集合不为空,就可以恢复
       return !have.empty();
     }
   };
-  IsPGRecoverablePredicate *get_is_recoverable_predicate() {
+  IsPGRecoverablePredicate *get_is_recoverable_predicate() {//幅本可恢复性检查.
     return new RPCRecPred;
   }
 
+  //可读性检测类
   class RPCReadPred : public IsPGReadablePredicate {
     pg_shard_t whoami;
   public:
     explicit RPCReadPred(pg_shard_t whoami) : whoami(whoami) {}
-    bool operator()(const set<pg_shard_t> &have) const {
+    bool operator()(const set<pg_shard_t> &have) const {//如果have集合中有主,就可以读
       return have.count(whoami);
     }
   };
-  IsPGReadablePredicate *get_is_readable_predicate() {
+  IsPGReadablePredicate *get_is_readable_predicate() {//幅本可读性检测回调
     return new RPCReadPred(get_parent()->whoami_shard());
   }
 

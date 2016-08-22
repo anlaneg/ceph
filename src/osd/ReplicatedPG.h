@@ -817,7 +817,7 @@ protected:
 
   // replica ops
   // [primary|tail]
-  xlist<RepGather*> repop_queue;
+  xlist<RepGather*> repop_queue;//记录正在执行的op操作{new_repop时加,eval_repop时删除}
 
   friend class C_OSD_RepopApplied;
   friend class C_OSD_RepopCommit;
@@ -909,6 +909,7 @@ protected:
   void agent_choose_mode_restart() override;
 
   /// true if we can send an ondisk/commit for v
+  /// 检查v版本是否已完成{ondisk&&commit},检查方法是通过repop_queue来进行检查.
   bool already_complete(eversion_t v) {
     for (xlist<RepGather*>::iterator i = repop_queue.begin();
 	 !i.end();
@@ -918,8 +919,8 @@ protected:
 	continue;
       if ((*i)->v > v)
         break;
-      if (!(*i)->all_committed)
-	return false;
+      if (!(*i)->all_committed)//commit操作
+	return false;//如果repop_queue中恰好有一个版本比它小,恰没有全部完成,说明这个v是没有做过完的,它还在排队.
     }
     return true;
   }
@@ -933,14 +934,14 @@ protected:
 	continue;
       if ((*i)->v > v)
         break;
-      if (!(*i)->all_applied)
+      if (!(*i)->all_applied)//applied操作
 	return false;
     }
     return true;
   }
 
   // projected object info
-  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;
+  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;//会缓存一些object,缓存目的未知!
   // map from oid.snapdir() to SnapSetContext *
   map<hobject_t, SnapSetContext*, hobject_t::BitwiseComparator> snapset_contexts;
   Mutex snapset_contexts_lock;
@@ -1581,7 +1582,7 @@ private:
   int _rollback_to(OpContext *ctx, ceph_osd_op& op);
 public:
   bool is_missing_object(const hobject_t& oid) const;
-  bool is_unreadable_object(const hobject_t &oid) const {
+  bool is_unreadable_object(const hobject_t &oid) const {//检查是否不能读
     return is_missing_object(oid) ||
       !missing_loc.readable_with_acting(oid, actingset);
   }

@@ -3000,7 +3000,7 @@ void Monitor::handle_command(MonOpRequestRef op)
     << "entity='" << session->entity_name << "' "
     << "cmd=" << m->cmd << ": dispatch";
 
-  if (module == "mds" || module == "fs") {
+  if (module == "mds" || module == "fs") {//按模块进行命令分发.
     mdsmon()->dispatch(op);
     return;
   }

@@ -1245,7 +1245,7 @@ public:
   // Note that write wins for read+write ops
   int64_t read_tier;       ///< pool/tier for objecter to direct reads to
   int64_t write_tier;      ///< pool/tier for objecter to direct writes to
-  cache_mode_t cache_mode;  ///< cache pool mode
+  cache_mode_t cache_mode;  ///< cache pool mode //cache模式
 
   bool is_tier() const { return tier_of >= 0; }
   bool has_tiers() const { return !tiers.empty(); }
@@ -2816,7 +2816,7 @@ struct pg_log_entry_t {
   ObjectModDesc mod_desc;
   bufferlist snaps;   // only for clone entries
   hobject_t  soid;
-  osd_reqid_t reqid;  // caller+tid to uniquely identify request
+  osd_reqid_t reqid;  // caller+tid to uniquely identify request//唯一标记一个请求{一个客户一个编号,由monitor来分?}
   vector<pair<osd_reqid_t, version_t> > extra_reqids;
   //当前版本，此对象的前一个版本，？
   eversion_t version, prior_version, reverting_to;
@@ -3240,32 +3240,34 @@ public:
    * this needs to be called in log order as we extend the log.  it
    * assumes missing is accurate up through the previous log entry.
    */
+  //将缺失的日志一条一条添加进来,以此来修改missing表及其查询关系表.
   void add_next_event(const pg_log_entry_t& e) {
     if (e.is_update()) {
       map<hobject_t, item, hobject_t::ComparatorWithDefault>::iterator missing_it;
       missing_it = missing.find(e.soid);
-      bool is_missing_divergent_item = missing_it != missing.end();
-      if (e.prior_version == eversion_t() || e.is_clone()) {
+      bool is_missing_divergent_item = missing_it != missing.end();//现有的missing中有没有?
+
+      if (e.prior_version == eversion_t() || e.is_clone()) {//新对象
 	// new object.
-	if (is_missing_divergent_item) {  // use iterator
-	  rmissing.erase((missing_it->second).need.version);
+	if (is_missing_divergent_item) {  // use iterator ,新对象,但旧的里有和它一样名称的.
+	  rmissing.erase((missing_it->second).need.version);//删除掉,加这个版本的.
 	  missing_it->second = item(e.version, eversion_t());  // .have = nil
 	} else  // create new element in missing map
-	  missing[e.soid] = item(e.version, eversion_t());     // .have = nil
-      } else if (is_missing_divergent_item) {
+	  missing[e.soid] = item(e.version, eversion_t());     // .have = nil,加入即可
+      } else if (is_missing_divergent_item) {//不是新创建的对象,但旧的missing表里有
 	// already missing (prior).
 	rmissing.erase((missing_it->second).need.version);
-	(missing_it->second).need = e.version;  // leave .have unchanged.
-      } else if (e.is_backlog()) {
+	(missing_it->second).need = e.version;  // leave .have unchanged.//更新它需要的版本至e.version
+      } else if (e.is_backlog()) {//不理解pglog中此操作
 	// May not have prior version
 	assert(0 == "these don't exist anymore");
       } else {
-	// not missing, we must have prior_version (if any)
+	// not missing, we must have prior_version (if any) //在现有missing表里没有,加入即可.
 	assert(!is_missing_divergent_item);
 	missing[e.soid] = item(e.version, e.prior_version);
       }
       rmissing[e.version.version] = e.soid;
-    } else if (e.is_delete()) {
+    } else if (e.is_delete()) {//删除操作,没有必要恢复它了.
       rm(e.soid, e.version);
     }
 
@@ -4709,17 +4711,17 @@ ostream& operator<<(ostream& out, const PushOp &op);
  */
 struct ScrubMap {
   struct object {
-    map<string,bufferptr> attrs;
+    map<string,bufferptr> attrs;//填充的对象的属性
     set<snapid_t> snapcolls;
-    uint64_t size;
-    __u32 omap_digest;         ///< omap crc32c
-    __u32 digest;              ///< data crc32c
-    uint32_t nlinks;
+    uint64_t size;//对象的size
+    __u32 omap_digest;         ///< omap crc32c//omap的crc
+    __u32 digest;              ///< data crc32c//对象的crc
+    uint32_t nlinks;//连接数
     bool negative:1;
-    bool digest_present:1;
-    bool omap_digest_present:1;
-    bool read_error:1;
-    bool stat_error:1;
+    bool digest_present:1;//标记对象crc有效
+    bool omap_digest_present:1;//标记omap crc有效
+    bool read_error:1;//读对象时发现错误,eio
+    bool stat_error:1;//读对象状态时发现有错误
     bool ec_hash_mismatch:1;
     bool ec_size_mismatch:1;
 

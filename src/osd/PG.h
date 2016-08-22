@@ -334,20 +334,20 @@ public:
     PG *pg;
     set<pg_shard_t> empty_set;
   public:
-    boost::scoped_ptr<IsPGReadablePredicate> is_readable;
+    boost::scoped_ptr<IsPGReadablePredicate> is_readable;//回调,检查对象是否可读取
     boost::scoped_ptr<IsPGRecoverablePredicate> is_recoverable;//回调,确定对象是否可恢复
     explicit MissingLoc(PG *pg)
       : pg(pg) {}
-    //设置回调
-    void set_backend_predicates(
+
+    void set_backend_predicates(//设置可读,可恢复检查回调
       IsPGReadablePredicate *_is_readable,
       IsPGRecoverablePredicate *_is_recoverable) {
       is_readable.reset(_is_readable);
       is_recoverable.reset(_is_recoverable);
     }
     string gen_prefix() const { return pg->gen_prefix(); }
-    //是否需要恢复,需要哪个版本
-    bool needs_recovery(
+
+    bool needs_recovery(//是否需要恢复,需要哪个版本
       const hobject_t &hoid,
       eversion_t *v = 0) const {
       map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i =
@@ -519,7 +519,7 @@ public:
   /* You should not use these items without taking their respective queue locks
    * (if they have one) */
   xlist<PG*>::item stat_queue_item;
-  bool scrub_queued;
+  bool scrub_queued;//如果已入scrub队列,则置为true
   bool recovery_queued;//指明此pg是否已加入恢复队列
 
   int recovery_ops_active;//等处理的恢复操作数
@@ -539,7 +539,7 @@ protected:
 public:
   eversion_t  last_update_ondisk;    // last_update that has committed; ONLY DEFINED WHEN is_active()
   eversion_t  last_complete_ondisk;  // last_complete that has committed.//本地最后一次完成落盘
-  eversion_t  last_update_applied;
+  eversion_t  last_update_applied;//本地最近一次已固化至硬盘的版本
 
 
   struct C_UpdateLastRollbackInfoTrimmedToApplied : Context {
@@ -715,7 +715,7 @@ protected:
   // primary-only, recovery-only state
   set<pg_shard_t> might_have_unfound;  // These osds might have objects on them
                                        // which are unfound on the primary
-  epoch_t last_peering_reset;
+  epoch_t last_peering_reset;//每当我们从reset状态准备前往peer时,此状态均被赋值为当前osdmap的取值
 
 
   /* heartbeat peers */
@@ -845,15 +845,15 @@ protected:
   // ops waiting on active (require peered as well)
   list<OpRequestRef>            waiting_for_active;//等待达到active状态后执行
 
-  list<OpRequestRef>            waiting_for_cache_not_full;
+  list<OpRequestRef>            waiting_for_cache_not_full;//等待cache full后刷新的操作列表.
   list<OpRequestRef>            waiting_for_all_missing;
-  map<hobject_t, list<OpRequestRef>, hobject_t::BitwiseComparator> waiting_for_unreadable_object,
-			     waiting_for_degraded_object,
+  map<hobject_t, list<OpRequestRef>, hobject_t::BitwiseComparator> waiting_for_unreadable_object,//等待对象可读的操作列表
+			     waiting_for_degraded_object,//等待降级的对象
 			     waiting_for_blocked_object;
 
   set<
     hobject_t,
-    hobject_t::BitwiseComparator> objects_blocked_on_cache_full;
+    hobject_t::BitwiseComparator> objects_blocked_on_cache_full;//等待cache full后刷新的object列表
   map<
     hobject_t,
     snapid_t,
@@ -1108,7 +1108,7 @@ public:
 
     // metadata
     set<pg_shard_t> reserved_peers;
-    bool reserved, reserve_failed;
+    bool reserved, reserve_failed;//是否发送过预订邀约,是否至少有一个osd拒绝了预订邀约.
     epoch_t epoch_start;
 
     // common to both scrubs
@@ -1119,8 +1119,8 @@ public:
     int shallow_errors;
     int deep_errors;
     int fixed;
-    ScrubMap primary_scrubmap;
-    map<pg_shard_t, ScrubMap> received_maps;
+    ScrubMap primary_scrubmap;//主的map
+    map<pg_shard_t, ScrubMap> received_maps;//从的map
     OpRequestRef active_rep_scrub;
     utime_t scrub_reg_stamp;  // stamp we registered for
 
@@ -1144,8 +1144,8 @@ public:
     int num_digest_updates_pending;
 
     // chunky scrub
-    hobject_t start, end;
-    eversion_t subset_last_update;
+    hobject_t start, end;//上一次对象清洗的位置.
+    eversion_t subset_last_update;//这一组对象,必须要在subset_last_update序号达到时才能读取.
 
     // chunky scrub state
     enum State {
@@ -1158,7 +1158,7 @@ public:
       COMPARE_MAPS,
       WAIT_DIGEST_UPDATES,
       FINISH,
-    } state;
+    } state;//各状态
 
     std::unique_ptr<Scrub::Store> store;
     // deep scrub
@@ -1169,7 +1169,7 @@ public:
     void add_callback(Context *context) {
       callbacks.push_back(context);
     }
-    void run_callbacks() {
+    void run_callbacks() {//运行回调
       list<Context*> to_run;
       to_run.swap(callbacks);
       for (list<Context*>::iterator i = to_run.begin();
@@ -1355,8 +1355,8 @@ public:
     string get_desc() { return desc; }
   };
   typedef ceph::shared_ptr<CephPeeringEvt> CephPeeringEvtRef;
-  list<CephPeeringEvtRef> peering_queue;  // op queue
-  list<CephPeeringEvtRef> peering_waiters;
+  list<CephPeeringEvtRef> peering_queue;  // op queue //pg的事件对列
+  list<CephPeeringEvtRef> peering_waiters;//在处理事件时,如果事件要求的osdmap版本现在达不到,则加入到此队列.
 
   struct QueryState : boost::statechart::event< QueryState > {
     Formatter *f;
@@ -1412,7 +1412,8 @@ public:
     }
   };
 
-  struct AdvMap : boost::statechart::event< AdvMap > {
+  struct AdvMap : boost::statechart::event< AdvMap > {//osdmap一开始被放在osd中,每个pg有自已的osdmap,当系统检测到本次变化会影响某pg时,pg收到此事件
+	  //出于osdmap在处理时,可能是向上达到多个版本,故每个引起变化的版本需要触发一次
     OSDMapRef osdmap;
     OSDMapRef lastmap;
     vector<int> newup, newacting;
@@ -1431,7 +1432,7 @@ public:
     }
   };
 
-  struct ActMap : boost::statechart::event< ActMap > {
+  struct ActMap : boost::statechart::event< ActMap > {//osdmap会被提升,提升完成后,系统会统一进行一次触发actmap操作
     ActMap() : boost::statechart::event< ActMap >() {}
     void print(std::ostream *out) const {
       *out << "ActMap";
@@ -2099,13 +2100,13 @@ public:
   uint64_t acting_features;
   uint64_t upacting_features;
 
-  bool do_sort_bitwise;
+  bool do_sort_bitwise;//定义hash比对时的方式,由osdmap配置决定.{感觉没什么用?}
   epoch_t last_epoch;
 
  public:
   const spg_t&      get_pgid() const { return pg_id; }
 
-  void reset_min_peer_features() {
+  void reset_min_peer_features() {//将功能置为默认
     peer_features = CEPH_FEATURES_SUPPORTED_DEFAULT;
   }
   uint64_t get_min_peer_features() const { return peer_features; }
@@ -2316,7 +2317,7 @@ public:
 		   list<Context *> *on_applied,
 		   list<Context *> *on_safe);
   void set_last_peering_reset();
-  bool pg_has_reset_since(epoch_t e) {
+  bool pg_has_reset_since(epoch_t e) {//是否已经过过peering_reset
     assert(is_locked());
     return deleting || e < get_last_peering_reset();
   }

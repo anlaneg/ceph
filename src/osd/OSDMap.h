@@ -65,7 +65,7 @@ struct osd_info_t {
   epoch_t last_clean_begin;  // last interval that ended with a clean osd shutdown
   epoch_t last_clean_end;
   epoch_t up_from;   // epoch osd marked up
-  epoch_t up_thru;   // lower bound on actual osd death (if > up_from)
+  epoch_t up_thru;   // lower bound on actual osd death (if > up_from) //暂不明确
   epoch_t down_at;   // upper bound on actual osd death (if > up_from)
   epoch_t lost_at;   // last epoch we decided data was "lost"
   
@@ -735,6 +735,7 @@ public:
       return &i->second;
     return NULL;
   }
+  //需要多少个osd来分散这些pg
   unsigned get_pg_size(pg_t pg) const {
     map<int64_t,pg_pool_t>::const_iterator p = pools.find(pg.pool());
     assert(p != pools.end());

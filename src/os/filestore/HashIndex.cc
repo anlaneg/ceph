@@ -436,7 +436,7 @@ int HashIndex::_lookup(const ghobject_t &oid,
   }
   return get_mangled_name(*path, oid, mangled_name, hardlink);
 }
-
+//同下层函数一个功能,不过加入对next不为空的支持.列出当前coll的所有对象.
 int HashIndex::_collection_list_partial(const ghobject_t &start,
 					const ghobject_t &end,
 					bool sort_bitwise,
@@ -888,7 +888,9 @@ uint32_t HashIndex::hash_prefix_to_hash(string prefix) {
   return hash;
 }
 
-int HashIndex::get_path_contents_by_hash_bitwise(
+//hash_prefixes填充了所有的hash值,含目录,对象
+//objects中仅包含了对象的hash及object.也就是说,如果objects中没有某个hash,则其为目录.
+int HashIndex::get_path_contents_by_hash_bitwise(//返回path路径下,所有比next_object大的对象及目录
   const vector<string> &path,
   const ghobject_t *next_object,
   set<string, CmpHexdigitStringBitwise> *hash_prefixes,
@@ -896,21 +898,21 @@ int HashIndex::get_path_contents_by_hash_bitwise(
 {
   map<string, ghobject_t> rev_objects;
   int r;
-  r = list_objects(path, 0, 0, &rev_objects);
+  r = list_objects(path, 0, 0, &rev_objects);//返回此path下所有对象.
   if (r < 0)
     return r;
   // bitwise sort
   for (map<string, ghobject_t>::iterator i = rev_objects.begin();
        i != rev_objects.end();
        ++i) {
-    if (next_object && cmp_bitwise(i->second, *next_object) < 0)
+    if (next_object && cmp_bitwise(i->second, *next_object) < 0)//排除掉比next_object小的对象
       continue;
     string hash_prefix = get_path_str(i->second);
-    hash_prefixes->insert(hash_prefix);
-    objects->insert(pair<string, ghobject_t>(hash_prefix, i->second));
+    hash_prefixes->insert(hash_prefix);//加入其hash值
+    objects->insert(pair<string, ghobject_t>(hash_prefix, i->second));//加入其hash与对象的映射
   }
   vector<string> subdirs;
-  r = list_subdirs(path, &subdirs);
+  r = list_subdirs(path, &subdirs);//列出所有目录
   if (r < 0)
     return r;
 
@@ -937,11 +939,11 @@ int HashIndex::get_path_contents_by_hash_bitwise(
     if (next_object) {
       if (next_object->is_max())
 	continue;
-      if (candidate < next_object_string.substr(0, candidate.size()))
+      if (candidate < next_object_string.substr(0, candidate.size()))//字符串比对,比后者的字典序要小,排除
 	continue;
     }
     // re-reverse the hex digit nibbles for the caller
-    hash_prefixes->insert(reverse_hexdigit_bits_string(candidate));
+    hash_prefixes->insert(reverse_hexdigit_bits_string(candidate));//将目录也看待成对象
   }
   return 0;
 }
@@ -1001,6 +1003,7 @@ int HashIndex::get_path_contents_by_hash_nibblewise(
   return 0;
 }
 
+//列出对象,不同的比对方式,采用的回调不同
 int HashIndex::list_by_hash(const vector<string> &path,
 			    const ghobject_t &end,
 			    bool sort_bitwise,
@@ -1015,6 +1018,7 @@ int HashIndex::list_by_hash(const vector<string> &path,
     return list_by_hash_nibblewise(path, end, max_count, next, out);
 }
 
+//递归目录查找path从next到end之间所有的对象,将找到的对象置入out中,对象总数受max_count控制
 int HashIndex::list_by_hash_bitwise(
   const vector<string> &path,
   const ghobject_t& end,
@@ -1038,7 +1042,7 @@ int HashIndex::list_by_hash_bitwise(
     dout(20) << __func__ << " prefix " << *i << dendl;
     set<pair<string, ghobject_t>, CmpPairBitwise>::iterator j = objects.lower_bound(
       make_pair(*i, ghobject_t()));
-    if (j == objects.end() || j->first != *i) {
+    if (j == objects.end() || j->first != *i) {//目录
       *(next_path.rbegin()) = *(i->rbegin());
       ghobject_t next_recurse;
       if (next)
@@ -1047,7 +1051,7 @@ int HashIndex::list_by_hash_bitwise(
 			       end,
 			       max_count,
 			       &next_recurse,
-			       out);
+			       out);//递归其中一个子目录
 
       if (r < 0)
 	return r;
@@ -1060,15 +1064,15 @@ int HashIndex::list_by_hash_bitwise(
       while (j != objects.end() && j->first == *i) {
 	if (max_count > 0 && out->size() == (unsigned)max_count) {
 	  if (next)
-	    *next = j->second;
+	    *next = j->second;//设置next返回.
 	  return 0;
 	}
-	if (cmp_bitwise(j->second, end) >= 0) {
+	if (cmp_bitwise(j->second, end) >= 0) {//如果到达指定结尾,返回结束
 	  if (next)
 	    *next = j->second;
 	  return 0;
 	}
-	if (!next || cmp_bitwise(j->second, *next) >= 0) {
+	if (!next || cmp_bitwise(j->second, *next) >= 0) {//不关心next或者比next还要大,则向out中加入,
 	  dout(20) << __func__ << " prefix " << *i << " ob " << j->second << dendl;
 	  out->push_back(j->second);
 	}

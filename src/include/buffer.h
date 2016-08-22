@@ -932,7 +932,7 @@ std::ostream& operator<<(std::ostream& out, const buffer::list& bl);
 
 std::ostream& operator<<(std::ostream& out, const buffer::error& e);
 
-inline bufferhash& operator<<(bufferhash& l, bufferlist &r) {
+inline bufferhash& operator<<(bufferhash& l, bufferlist &r) {//update将被调用
   l.update(r);
   return l;
 }
