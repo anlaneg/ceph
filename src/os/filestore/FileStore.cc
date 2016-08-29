@@ -163,8 +163,7 @@ int FileStore::get_cdir(const coll_t& cid, char *s, int len)
   return snprintf(s, len, "%s/current/%s", basedir.c_str(), cid_str.c_str());
 }
 
-//获取index
-int FileStore::get_index(const coll_t& cid, Index *index)
+int FileStore::get_index(const coll_t& cid, Index *index)//获取index
 {
   int r = index_manager.get_index(cid, basedir, index);
   assert(!m_filestore_fail_eio || r != -EIO);
@@ -235,7 +234,7 @@ int FileStore::lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *b
   return r;
 }
 
-int FileStore::lfn_open(const coll_t& cid,
+int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获取其index
 			const ghobject_t& oid,
 			bool create,
 			FDRef *outfd,
@@ -256,7 +255,7 @@ int FileStore::lfn_open(const coll_t& cid,
   if (!index) {
     index = &index2;
   }
-  if (!((*index).index)) {
+  if (!((*index).index)) {//填充index.index
     r = get_index(cid, index);
     if (r < 0) {
       dout(10) << __func__ << " could not get index r = " << r << dendl;
@@ -285,14 +284,14 @@ int FileStore::lfn_open(const coll_t& cid,
   IndexedPath path2;
   IndexedPath *path = &path2;
 
-  r = (*index)->lookup(oid, path, &exist);
+  r = (*index)->lookup(oid, path, &exist);//全路径,及链接数
   if (r < 0) {
     derr << "could not find " << oid << " in index: "
       << cpp_strerror(-r) << dendl;
     goto fail;
   }
 
-  r = ::open((*path)->path(), flags, 0644);
+  r = ::open((*path)->path(), flags, 0644);//打开对象(返回值为fd)
   if (r < 0) {
     r = -errno;
     dout(10) << "error opening file " << (*path)->path() << " with flags="
@@ -3503,25 +3502,25 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
     if (r < 0) {
       goto out;
     }
-    r = ::ftruncate(**n, 0);
+    r = ::ftruncate(**n, 0);//防止文件已存在.
     if (r < 0) {
       r = -errno;
       goto out3;
     }
     struct stat st;
-    r = ::fstat(**o, &st);
+    r = ::fstat(**o, &st);//下一步,需要知道文件有多大,这里在获取.
     if (r < 0) {
       r = -errno;
       goto out3;
     }
 
-    r = _do_clone_range(**o, **n, 0, st.st_size, 0);
+    r = _do_clone_range(**o, **n, 0, st.st_size, 0);//做clone,简单copy
     if (r < 0) {
       goto out3;
     }
 
     dout(20) << "objectmap clone" << dendl;
-    r = object_map->clone(oldoid, newoid, &spos);
+    r = object_map->clone(oldoid, newoid, &spos);//object_map做copy(object_map时用spos)
     if (r < 0 && r != -ENOENT)
       goto out3;
   }
@@ -3562,7 +3561,7 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
   return r;
 }
 
-int FileStore::_do_clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)
+int FileStore::_do_clone_range(int from, int to, uint64_t srcoff, uint64_t len, uint64_t dstoff)//从哪个fd到哪个fd,从哪个offset到哪个offset,copy多大.
 {
   dout(20) << "_do_clone_range copy " << srcoff << "~" << len << " to " << dstoff << dendl;
   return backend->clone_range(from, to, srcoff, len, dstoff);

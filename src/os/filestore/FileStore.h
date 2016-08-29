@@ -373,7 +373,7 @@ private:
 
   friend ostream& operator<<(ostream& out, const OpSequencer& s);
 
-  FDCache fdcache;
+  FDCache fdcache;//fd缓存
   WBThrottle wbthrottle;
 
   atomic_t next_osr_id;

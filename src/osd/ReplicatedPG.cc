@@ -6515,8 +6515,8 @@ void ReplicatedPG::make_writeable(OpContext *ctx)
       !ctx->cache_evict &&
       snapc.snaps[0] > ctx->new_snapset.seq) {  // existing object is old
     // clone
-    hobject_t coid = soid;
-    coid.snap = snapc.seq;
+    hobject_t coid = soid;//coid是soid的目标,也就是soid将clone生成coid
+    coid.snap = snapc.seq;//snap值与soid不同.
     
     unsigned l;
     for (l=1; l<snapc.snaps.size() && snapc.snaps[l] > ctx->new_snapset.seq; l++) ;
@@ -6816,7 +6816,7 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
   }
 
   // clone, if necessary
-  if (soid.snap == CEPH_NOSNAP)
+  if (soid.snap == CEPH_NOSNAP)//源对象是非快照对象.
     make_writeable(ctx);
 
   finish_ctx(ctx,

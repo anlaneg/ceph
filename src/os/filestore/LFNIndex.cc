@@ -132,7 +132,7 @@ int LFNIndex::unlink(const ghobject_t &oid)
   );
 }
 
-int LFNIndex::lookup(const ghobject_t &oid,
+int LFNIndex::lookup(const ghobject_t &oid,//获取全路径及硬链接数目
 		     IndexedPath *out_path,
 		     int *hardlink)
 {
@@ -501,7 +501,7 @@ int LFNIndex::remove_path(const vector<string> &to_remove)
     return 0;
 }
 
-int LFNIndex::path_exists(const vector<string> &to_check, int *exists)
+int LFNIndex::path_exists(const vector<string> &to_check, int *exists)//检查to_check指定的路径是否存在
 {
   string full_path = get_full_path_subdir(to_check);
   struct stat buf;
@@ -714,14 +714,14 @@ int LFNIndex::lfn_get_name(const vector<string> &path,
 			   string *mangled_name, string *out_path,
 			   int *hardlink)
 {
-  string full_name = lfn_generate_object_name(oid);
+  string full_name = lfn_generate_object_name(oid);//生成对象全名
   int r;
 
   if (!lfn_must_hash(full_name)) {
     if (mangled_name)
-      *mangled_name = full_name;
+      *mangled_name = full_name;//对象全名
     if (out_path)
-      *out_path = get_full_path(path, full_name);
+      *out_path = get_full_path(path, full_name);//路径名
     if (hardlink) {
       struct stat buf;
       string full_path = get_full_path(path, full_name);
@@ -733,12 +733,12 @@ int LFNIndex::lfn_get_name(const vector<string> &path,
 	else
 	  return -errno;
       } else {
-	*hardlink = buf.st_nlink;
+	*hardlink = buf.st_nlink;//返回链接数(hardlink)
       }
     }
     return 0;
   }
-
+  //不常走到,暂不关心.
   int i = 0;
   string candidate;
   string candidate_path;

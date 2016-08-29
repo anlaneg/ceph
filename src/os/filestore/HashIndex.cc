@@ -417,7 +417,7 @@ int HashIndex::_lookup(const ghobject_t &oid,
 		       string *mangled_name,
 		       int *hardlink) {
   vector<string> path_comp;
-  get_path_components(oid, &path_comp);
+  get_path_components(oid, &path_comp);//16进制,每个字节占一个vector位置
   vector<string>::iterator next = path_comp.begin();
   int exists;
   while (1) {
@@ -432,9 +432,10 @@ int HashIndex::_lookup(const ghobject_t &oid,
     }
     if (next == path_comp.end())
       break;
-    path->push_back(*(next++));
+    path->push_back(*(next++));//一层一层的向上加.
   }
-  return get_mangled_name(*path, oid, mangled_name, hardlink);
+  //走到这一步,我们找到了path
+  return get_mangled_name(*path, oid, mangled_name, hardlink);//path是当前分裂情况下的path(如果path不存在,说明还没有分裂到那一层,在上层目录里找)
 }
 //同下层函数一个功能,不过加入对next不为空的支持.列出当前coll的所有对象.
 int HashIndex::_collection_list_partial(const ghobject_t &start,
@@ -848,7 +849,7 @@ int HashIndex::complete_split(const vector<string> &path, subdir_info_s info) {
   return end_split_or_merge(path);
 }
 
-void HashIndex::get_path_components(const ghobject_t &oid,
+void HashIndex::get_path_components(const ghobject_t &oid,//将对象的hash按4位方式返回
 				    vector<string> *path) {
   char buf[MAX_HASH_LEVEL + 1];
   snprintf(buf, sizeof(buf), "%.*X", MAX_HASH_LEVEL, (uint32_t)oid.hobj.get_nibblewise_key());

@@ -4350,7 +4350,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被�
           scrubber.state = PG::Scrubber::WAIT_LAST_UPDATE;
         } else {
           dout(15) << "wait for pushes to apply" << dendl;
-          done = true;//我们在等待别人,退出循环.
+          done = true;//我们在等待别人,退出循环.(恢复及log_revert)
         }
         break;
 

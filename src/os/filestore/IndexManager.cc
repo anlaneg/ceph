@@ -86,7 +86,7 @@ int IndexManager::init_index(coll_t c, const char *path, uint32_t version) {
   return index.init();
 }
 
-int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **index) {
+int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **index) {//构造index
   if (upgrade) {
     // Need to check the collection generation
     int r;
@@ -128,8 +128,7 @@ bool IndexManager::get_index_optimistic(coll_t c, Index *index) {
   return true;
 }
 
-//获取,如果不存在,则创建
-int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {
+int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {//获取,如果不存在,则创建
   if (get_index_optimistic(c, index))
     return 0;
   RWLock::WLocker l(lock);
@@ -138,7 +137,7 @@ int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/current/%s", baseDir.c_str(), c.to_str().c_str());
     CollectionIndex* colIndex = NULL;
-    int r = build_index(c, path, &colIndex);
+    int r = build_index(c, path, &colIndex);//构造HashIndex类型
     if (r < 0)
       return r;
     col_indices[c] = colIndex;//加入缓存
