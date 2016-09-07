@@ -453,7 +453,7 @@ public:
    * Capture all object state associated with an in-progress read or write.
    */
   struct OpContext {
-    OpRequestRef op;
+    OpRequestRef op;//请求
     osd_reqid_t reqid;
     vector<OSDOp> &ops;
 
@@ -941,9 +941,9 @@ protected:
   }
 
   // projected object info
-  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;//会缓存一些object,缓存目的未知!
+  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;//缓存对象的上下文,目的未知
   // map from oid.snapdir() to SnapSetContext *
-  map<hobject_t, SnapSetContext*, hobject_t::BitwiseComparator> snapset_contexts;
+  map<hobject_t, SnapSetContext*, hobject_t::BitwiseComparator> snapset_contexts;//缓存snapset_contexts
   Mutex snapset_contexts_lock;
 
   // debug order that client ops are applied
@@ -1582,7 +1582,7 @@ private:
   int _rollback_to(OpContext *ctx, ceph_osd_op& op);
 public:
   bool is_missing_object(const hobject_t& oid) const;
-  bool is_unreadable_object(const hobject_t &oid) const {//检查是否不能读
+  bool is_unreadable_object(const hobject_t &oid) const {//对象在missing中或者不在missing中,但暂时无法读取到.
     return is_missing_object(oid) ||
       !missing_loc.readable_with_acting(oid, actingset);
   }

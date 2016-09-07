@@ -47,7 +47,7 @@ private:
   // a temp object holding mappings from seq-id to inconsistencies found in
   // scrubbing
   OSDriver driver;
-  MapCacher::MapCacher<std::string, bufferlist> backend;
+  MapCacher::MapCacher<std::string, bufferlist> backend;//记录错误信息
   map<string, bufferlist> results;
 };
 }

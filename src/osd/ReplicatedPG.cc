@@ -596,8 +596,7 @@ bool ReplicatedPG::is_degraded_or_backfilling_object(const hobject_t& soid)
   return false;
 }
 
-//主动触发要求恢复,并将操作加入到等待降级
-void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef op)
+void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef op)//主动触发要求恢复,并将操作加入到等待降级
 {
   assert(is_degraded_or_backfilling_object(soid));
 
@@ -630,7 +629,7 @@ void ReplicatedPG::block_write_on_snap_rollback(
   wait_for_blocked_object(obc->obs.oi.soid, op);
 }
 
-void ReplicatedPG::block_write_on_degraded_snap(
+void ReplicatedPG::block_write_on_degraded_snap(//将此对象加入到等待队列,原因是snap对应的head不存在.
   const hobject_t& snap, OpRequestRef op)
 {
   dout(20) << __func__ << ": blocking object " << snap.get_head()
@@ -641,7 +640,7 @@ void ReplicatedPG::block_write_on_degraded_snap(
   wait_for_degraded_object(snap, op);
 }
 
-bool ReplicatedPG::maybe_await_blocked_snapset(
+bool ReplicatedPG::maybe_await_blocked_snapset(//如果此对象的head或者snapdir处于阻塞中,则返回true,否则返回false
   const hobject_t &hoid,
   OpRequestRef op)
 {
@@ -1258,7 +1257,7 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)//处理pg的操作
       }
       break;
 
-    case CEPH_OSD_OP_PGLS_FILTER:
+    case CEPH_OSD_OP_PGLS_FILTER://定义filter再显示
       try {
 	::decode(cname, bp);
 	::decode(mname, bp);
@@ -1280,7 +1279,7 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)//处理pg的操作
 
       // fall through
 
-    case CEPH_OSD_OP_PGLS:
+    case CEPH_OSD_OP_PGLS://显示pg中的object
       if (get_osdmap()->raw_pg_to_pg(m->get_pg()) != info.pgid.pgid) {
         dout(10) << " pgls pg=" << m->get_pg()
 		 << " " << get_osdmap()->raw_pg_to_pg(m->get_pg())
@@ -1474,7 +1473,7 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)//处理pg的操作
       result = do_scrub_ls(m, &osd_op);
       break;
 
-    default:
+    default://不支持的操作
       result = -EINVAL;
       break;
     }
@@ -1494,14 +1493,14 @@ void ReplicatedPG::do_pg_op(OpRequestRef op)//处理pg的操作
   delete filter;
 }
 
-int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
+int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)//显示snap错误信息
 {
-  if (m->get_pg() != info.pgid.pgid) {
+  if (m->get_pg() != info.pgid.pgid) {//检消息的pg_id是否与之相等,感觉多余
     dout(10) << " scrubls pg=" << m->get_pg() << " != " << info.pgid << dendl;
     return -EINVAL; // hmm?
   }
   auto bp = osd_op->indata.begin();
-  scrub_ls_arg_t arg;
+  scrub_ls_arg_t arg;//取参数
   try {
     arg.decode(bp);
   } catch (buffer::error&) {
@@ -1514,18 +1513,18 @@ int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
     r = -EAGAIN;
   } else if (!scrubber.store) {
     r = -ENOENT;
-  } else if (arg.get_snapsets) {
+  } else if (arg.get_snapsets) {//如果要求获取snapset的错误,则返回
     result.vals = scrubber.store->get_snap_errors(osd->store,
 						  get_pgid().pool(),
 						  arg.start_after,
 						  arg.max_return);
-  } else {
+  } else {//只返回object的错误
     result.vals = scrubber.store->get_object_errors(osd->store,
 						    get_pgid().pool(),
 						    arg.start_after,
 						    arg.max_return);
   }
-  ::encode(result, osd_op->outdata);
+  ::encode(result, osd_op->outdata);//放入outdata
   return r;
 }
 
@@ -1796,7 +1795,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       wait_for_all_missing(op);//将op加入到missing等待中
       return;
     }
-    return do_pg_op(op);
+    return do_pg_op(op);//做pg操作(内部信息的显示工作)
   }
 
   if (!op_has_sufficient_caps(op)) {
@@ -1804,9 +1803,11 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  //构造本次操作对应的head对象{极有可能就是本次操作的对象}
+  //看这个对象是否缺失,是否被阻塞,如果它被阻塞,则操作需要阻塞(需要依赖于它,快照,cache)
   hobject_t head(m->get_oid(), m->get_object_locator().key,
 		 CEPH_NOSNAP, m->get_pg().ps(),
-		 info.pgid.pool(), m->get_object_locator().nspace);
+		 info.pgid.pool(), m->get_object_locator().nspace);//构造这个object中的head
 
   // object name too long?
   //name不能超过osd_max_object_name_len
@@ -1878,10 +1879,10 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
   int64_t poolid = get_pgid().pool();
-  if (op->may_write()) {
+  if (op->may_write()) {//写操作检查
 
     const pg_pool_t *pi = get_osdmap()->get_pg_pool(poolid);
-    if (!pi) {//写操作,但pool不需在.op不再处理
+    if (!pi) {//写操作,但pool不存在.op不再处理
       return;
     }
 
@@ -1921,7 +1922,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   // missing object?
-  if (is_unreadable_object(head)) {//检查此对象是否missing
+  if (is_unreadable_object(head)) {//检查此对象是否missing,如果在,则挂起
     wait_for_unreadable_object(head, op);//加入对列
     return;
   }
@@ -1935,7 +1936,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // blocked on snap?
   map<hobject_t, snapid_t>::iterator blocked_iter =
     objects_blocked_on_degraded_snap.find(head);
-  if (write_ordered && blocked_iter != objects_blocked_on_degraded_snap.end()) {//暂不明确?
+  if (write_ordered && blocked_iter != objects_blocked_on_degraded_snap.end()) {//如果快照对象依赖的head正在被恢复,需要将此操作加入等待队列.
     hobject_t to_wait_on(head);
     to_wait_on.snap = blocked_iter->second;
     wait_for_degraded_object(to_wait_on, op);
@@ -1970,14 +1971,13 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
  
   // asking for SNAPDIR is only ok for reads
-  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {//快照目录仅可读.
+  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {//快照目录仅可读.当前是写操作,报错
     osd->reply_op_error(op, -EINVAL);
     return;
   }
 
   // dup/replay?
-  //防客户端重复
-  if (op->may_write() || op->may_cache()) {//对wirte操作,cache操作
+  if (op->may_write() || op->may_cache()) {//针对写及cache操作,防客户端重复请求
     // warning: we will get back *a* request for this reqid, but not
     // necessarily the most recent.  this happens with flush and
     // promote ops, but we can't possible have both in our log where
@@ -2017,28 +2017,30 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   ObjectContextRef obc;
-  bool can_create = op->may_write() || op->may_cache();
+  bool can_create = op->may_write() || op->may_cache();//针对写和cache是可以创建对象上下文缓存的.
   hobject_t missing_oid;
   hobject_t oid(m->get_oid(),
 		m->get_object_locator().key,
 		m->get_snapid(),//快照id
 		m->get_pg().ps(),
 		m->get_object_locator().get_pool(),
-		m->get_object_locator().nspace);
+		m->get_object_locator().nspace);//终于我们可以拿出m中要求的对象了.
 
   // io blocked on obc?
   if (!m->has_flag(CEPH_OSD_FLAG_FLUSH) &&
-      maybe_await_blocked_snapset(oid, op)) {//目的不明白,暂不清楚?
+      maybe_await_blocked_snapset(oid, op)) {//检查这个对象的上下文是否被阻塞
     return;
   }
 
-  //暂不明确下面的几段代码
+  //查找此对象是否在object上下文缓存中
   int r = find_object_context(
-    oid, &obc, can_create,
+    oid, &obc, can_create,//如果是写操作或者cache操作,则容许创建,否则不容许.
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
     &missing_oid);
 
   if (r == -EAGAIN) {
+	  //如果返回此值,说明对象在missing列表中,当前正处于恢复,需要等待
+	  //按作者下面的注释,说明只有"从"会返回此值.
     // If we're not the primary of this OSD, and we have
     // CEPH_OSD_FLAG_LOCALIZE_READS set, we just return -EAGAIN. Otherwise,
     // we have to wait for the object.
@@ -2051,7 +2053,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
       return;
     }
   } else if (r == 0) {
-    if (is_unreadable_object(obc->obs.oi.soid)) {
+    if (is_unreadable_object(obc->obs.oi.soid)) {//检查阻塞,则等待
       dout(10) << __func__ << ": clone " << obc->obs.oi.soid
 	       << " is unreadable, waiting" << dendl;
       wait_for_unreadable_object(obc->obs.oi.soid, op);
@@ -2061,7 +2063,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     // degraded object?  (the check above was for head; this could be a clone)
     if (write_ordered &&
 	obc->obs.oi.soid.snap != CEPH_NOSNAP &&
-	is_degraded_or_backfilling_object(obc->obs.oi.soid)) {
+	is_degraded_or_backfilling_object(obc->obs.oi.soid)) {//可能要做快照,但依赖的对象未在本地恢复.
       dout(10) << __func__ << ": clone " << obc->obs.oi.soid
 	       << " is degraded, waiting" << dendl;
       wait_for_degraded_object(obc->obs.oi.soid, op);
@@ -2074,12 +2076,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   if (hit_set) {
     if (obc.get()) {
       if (obc->obs.oi.soid != hobject_t() && hit_set->contains(obc->obs.oi.soid))
-	in_hit_set = true;
+	in_hit_set = true;//设置查找到.
     } else {
       if (missing_oid != hobject_t() && hit_set->contains(missing_oid))
         in_hit_set = true;
     }
-    if (!op->hitset_inserted) {//默认是false
+    if (!op->hitset_inserted) {//默认是false(未加入)
       hit_set->insert(oid);
       op->hitset_inserted = true;
       if (hit_set->is_full() ||
@@ -2090,12 +2092,12 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   }
 
   if (agent_state) {
-    if (agent_choose_mode(false, op))
+    if (agent_choose_mode(false, op))//暂未查看细节
       return;
   }
 
   //缓存处理
-  if (maybe_handle_cache(op,
+  if (maybe_handle_cache(op,//暂未查看细节
 			 write_ordered,
 			 obc,
 			 r,
@@ -2153,6 +2155,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
 
+  //针对每个ops进行检查
   // src_oids
   map<hobject_t,ObjectContextRef, hobject_t::BitwiseComparator> src_obc;
   for (vector<OSDOp>::iterator p = m->ops.begin(); p != m->ops.end(); ++p) {
@@ -2178,7 +2181,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 	hobject_t wait_oid;
 	int r;
 
-	if (src_oid.is_head() && is_missing_object(src_oid)) {
+	if (src_oid.is_head() && is_missing_object(src_oid)) {//处于missing
 	  wait_for_unreadable_object(src_oid, op);
 	} else if ((r = find_object_context(
 		      src_oid, &sobc, false, false,
@@ -3117,7 +3120,7 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
       ctx->snapc.snaps = m->get_snaps();
     }
     if ((m->has_flag(CEPH_OSD_FLAG_ORDERSNAP)) &&
-	ctx->snapc.seq < obc->ssc->snapset.seq) {
+	ctx->snapc.seq < obc->ssc->snapset.seq) {//obc中保存了对象的版本,现在客户端上传进来的版本号小于obc中的版本号,说明传输的数据有错.(快照处理的第4种情况)
       dout(10) << " ORDERSNAP flag set and snapc seq " << ctx->snapc.seq
 	       << " < snapset seq " << obc->ssc->snapset.seq
 	       << " on " << obc->obs.oi.soid << dendl;
@@ -5336,7 +5339,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       result = do_writesame(ctx, osd_op);
       break;
 
-    case CEPH_OSD_OP_ROLLBACK :
+    case CEPH_OSD_OP_ROLLBACK ://do_rollback
       ++ctx->num_write;
       tracepoint(osd, do_osd_op_pre_rollback, soid.oid.name.c_str(), soid.snap.val);
       result = _rollback_to(ctx, op);
@@ -6319,7 +6322,7 @@ int ReplicatedPG::_rollback_to(OpContext *ctx, ceph_osd_op& op)
     hobject_t(soid.oid, soid.get_key(), snapid, soid.get_hash(), info.pgid.pool(),
 	      soid.get_namespace()),
     &rollback_to, false, false, &missing_oid);
-  if (ret == -EAGAIN) {
+  if (ret == -EAGAIN) {//如果返回此值,表示对象在missing集中
     /* clone must be missing */
     assert(is_missing_object(missing_oid));
     dout(20) << "_rollback_to attempted to roll back to a missing object "
@@ -6454,7 +6457,7 @@ void ReplicatedPG::_make_clone(
   rmattr_maybe_cache(obc, ctx, t, SS_ATTR);
 }
 
-void ReplicatedPG::make_writeable(OpContext *ctx)
+void ReplicatedPG::make_writeable(OpContext *ctx)//本函数进行时,快照上下文比对象快照版本小的情况已排除
 {
   const hobject_t& soid = ctx->obs->oi.soid;
   SnapContext& snapc = ctx->snapc;
@@ -6514,6 +6517,8 @@ void ReplicatedPG::make_writeable(OpContext *ctx)
       snapc.snaps.size() &&                 // there are snaps
       !ctx->cache_evict &&
       snapc.snaps[0] > ctx->new_snapset.seq) {  // existing object is old
+	  //对象存在,有快照,并且快照上下文中的版本号比对象自身快照版本号要大.
+	  //此时需要将原对象copy一份,这个对象在上次打完快照后,一直没有变更过,这是最后一次快照后的,第一次变更.
     // clone
     hobject_t coid = soid;//coid是soid的目标,也就是soid将clone生成coid
     coid.snap = snapc.seq;//snap值与soid不同.
@@ -6586,6 +6591,7 @@ void ReplicatedPG::make_writeable(OpContext *ctx)
     ctx->at_version.version++;
   }
 
+  //正常情况,{或者前文已clone,或者快照与上下文版本号一致,则直接修改}
   // update most recent clone_overlap and usage stats
   if (ctx->new_snapset.clones.size() > 0) {
     /* we need to check whether the most recent clone exists, if it's been evicted,
@@ -6777,7 +6783,7 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
   }
 
   // prepare the actual mutation
-  int result = do_osd_ops(ctx, ctx->ops);
+  int result = do_osd_ops(ctx, ctx->ops);//这是一个异常复杂的函数
   if (result < 0) {
     if (ctx->op->may_write() &&
 	get_osdmap()->test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {
@@ -9078,7 +9084,7 @@ ObjectContextRef ReplicatedPG::create_object_context(const object_info_t& oi,
   return obc;
 }
 
-ObjectContextRef ReplicatedPG::get_object_context(const hobject_t& soid,
+ObjectContextRef ReplicatedPG::get_object_context(const hobject_t& soid,//获取soid对应的hobject
 						  bool can_create,
 						  map<string, bufferlist> *attrs)
 {
@@ -9088,36 +9094,40 @@ ObjectContextRef ReplicatedPG::get_object_context(const hobject_t& soid,
     (pg_log.get_log().objects.count(soid) &&
       pg_log.get_log().objects.find(soid)->second->op ==
       pg_log_entry_t::LOST_REVERT));
-  ObjectContextRef obc = object_contexts.lookup(soid);
+  ObjectContextRef obc = object_contexts.lookup(soid);//在表object_contexts中查找soid
   osd->logger->inc(l_osd_object_ctx_cache_total);
   if (obc) {
+	  //如果obc存在,则直接返回
     osd->logger->inc(l_osd_object_ctx_cache_hit);
     dout(10) << __func__ << ": found obc in cache: " << obc
 	     << dendl;
   } else {
+	//如果不存在,
     dout(10) << __func__ << ": obc NOT found in cache: " << soid << dendl;
     // check disk
     bufferlist bv;
-    if (attrs) {
+    if (attrs) {//如果入参指定的attr,则尝试指定的attr
       assert(attrs->count(OI_ATTR));
       bv = attrs->find(OI_ATTR)->second;
     } else {
+    	//入参没有指定attr,尝试着从后端读取此对象的attr.
       int r = pgbackend->objects_get_attr(soid, OI_ATTR, &bv);
       if (r < 0) {
-	if (!can_create) {
+	if (!can_create) {//说明对象不存在,打算创建,但不让创建,报错.
 	  dout(10) << __func__ << ": no obc for soid "
 		   << soid << " and !can_create"
 		   << dendl;
 	  return ObjectContextRef();   // -ENOENT!
 	}
 
+	//对象不存在,但可以创建
 	dout(10) << __func__ << ": no obc for soid "
 		 << soid << " but can_create"
 		 << dendl;
 	// new object.
 	object_info_t oi(soid);
-	SnapSetContext *ssc = get_snapset_context(
-	  soid, true, 0, false);
+	SnapSetContext *ssc = get_snapset_context(//拿到ssc
+	  soid, true, 0, false);//false指对象不存在
 	obc = create_object_context(oi, ssc);
 	dout(10) << __func__ << ": " << obc << " " << soid
 		 << " " << obc->rwstate
@@ -9202,14 +9212,14 @@ void ReplicatedPG::context_registry_on_change()
  * object does not exist.
  */
 int ReplicatedPG::find_object_context(const hobject_t& oid,
-				      ObjectContextRef *pobc,
-				      bool can_create,
+				      ObjectContextRef *pobc,//找到后,填充此值
+				      bool can_create,//是否可以创建
 				      bool map_snapid_to_clone,
-				      hobject_t *pmissing)
+				      hobject_t *pmissing)//如果没有找到,则填充此值
 {
   assert(oid.pool == static_cast<int64_t>(info.pgid.pool()));
   // want the head?
-  if (oid.snap == CEPH_NOSNAP) {
+  if (oid.snap == CEPH_NOSNAP) {//如果此对象是普通的head对象
     ObjectContextRef obc = get_object_context(oid, can_create);
     if (!obc) {
       if (pmissing)
@@ -9379,7 +9389,7 @@ int ReplicatedPG::find_object_context(const hobject_t& oid,
     if (pmissing)
       *pmissing = soid;
     put_snapset_context(ssc);
-    return -EAGAIN;
+    return -EAGAIN;//如果在missing中,则返回EAGAIN
   }
 
   ObjectContextRef obc = get_object_context(soid, false);
@@ -9493,7 +9503,7 @@ void ReplicatedPG::kick_object_context_blocked(ObjectContextRef obc)
   }
 }
 
-SnapSetContext *ReplicatedPG::get_snapset_context(
+SnapSetContext *ReplicatedPG::get_snapset_context(//如果ssc存在,返回ssc,如果ssc不存在,如果需要创建,则创建ssc,否则返回NULL
   const hobject_t& oid,
   bool can_create,
   map<string, bufferlist> *attrs,
@@ -9507,10 +9517,12 @@ SnapSetContext *ReplicatedPG::get_snapset_context(
     if (can_create || p->second->exists) {
       ssc = p->second;
     } else {
-      return NULL;
+      return NULL;//不存在,还不让创建,返回NULL
     }
   } else {
+	//snapset_contexts的确没有这个对象
     bufferlist bv;
+    //获取attrs
     if (!attrs) {
       int r = -ENOENT;
       if (!(oid.is_head() && !oid_existed))
@@ -9527,7 +9539,7 @@ SnapSetContext *ReplicatedPG::get_snapset_context(
       bv = attrs->find(SS_ATTR)->second;
     }
     ssc = new SnapSetContext(oid.get_snapdir());
-    _register_snapset_context(ssc);
+    _register_snapset_context(ssc);// 将ssc加入
     if (bv.length()) {
       bufferlist::iterator bvp = bv.begin();
       ssc->snapset.decode(bvp);

@@ -5181,6 +5181,16 @@ void RGWGetHealthCheck::execute()
   }
 }
 
+void RGWGetHealthCheck::execute()
+{
+  if (! g_conf->rgw_healthcheck_disabling_path.empty() &&
+      ::access(g_conf->rgw_healthcheck_disabling_path.c_str(), F_OK )) {
+    op_ret = -ERR_SERVICE_UNAVAILABLE;
+  } else {
+    op_ret = 0; /* 200 OK */
+  }
+}
+
 int RGWDeleteMultiObj::verify_permission()
 {
   if (!verify_bucket_permission(s, RGW_PERM_WRITE))

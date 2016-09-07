@@ -363,6 +363,20 @@ void AioImageRead<I>::send_image_cache_request() {
 }
 
 template <typename I>
+void AioImageRead<I>::send_image_cache_request() {
+  I &image_ctx = this->m_image_ctx;
+  assert(image_ctx.image_cache != nullptr);
+
+  AioCompletion *aio_comp = this->m_aio_comp;
+  aio_comp->set_request_count(1);
+  C_ImageCacheRead<I> *req_comp = new C_ImageCacheRead<I>(
+    aio_comp, this->m_image_extents);
+  image_ctx.image_cache->aio_read(std::move(this->m_image_extents),
+                                  &req_comp->get_data(), m_op_flags,
+                                  req_comp);
+}
+
+template <typename I>
 void AbstractAioImageWrite<I>::send_request() {
   I &image_ctx = this->m_image_ctx;
   CephContext *cct = image_ctx.cct;
