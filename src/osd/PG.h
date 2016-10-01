@@ -804,7 +804,7 @@ protected:
   friend class OSD;
 
 public:
-  set<pg_shard_t> backfill_targets;
+  set<pg_shard_t> backfill_targets;//需要执行backfill的
 
   bool is_backfill_targets(pg_shard_t osd) {
     return backfill_targets.count(osd);

@@ -291,6 +291,7 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   //  this is just filling in history.  it does not affect our
   //  missing set, as that should already be consistent with our
   //  current log.
+  //护展我们集合中tail
   if (olog.tail < log.tail) {
     dout(10) << "merge_log extending tail to " << olog.tail << dendl;
     list<pg_log_entry_t>::iterator from = olog.log.begin();
@@ -336,8 +337,8 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
       
     // find start point in olog
     list<pg_log_entry_t>::iterator to = olog.log.end();
-    list<pg_log_entry_t>::iterator from = olog.log.end();
-    eversion_t lower_bound = olog.tail;
+    list<pg_log_entry_t>::iterator from = olog.log.end();//从from开始我们有不一样的
+    eversion_t lower_bound = olog.tail;//从lower_bound我们和olog.head就是相等的
     while (1) {
       if (from == olog.log.begin())
 	break;

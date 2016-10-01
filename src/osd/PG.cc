@@ -993,15 +993,17 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
    * to make changes to this process.  Also, make sure to update it
    * when you find bugs! */
   eversion_t min_last_update_acceptable = eversion_t::max();
-  epoch_t max_last_epoch_started_found = 0;
+  epoch_t max_last_epoch_started_found = 0;//完整的strted版本（集群中它到达strted时间最晚）
   for (map<pg_shard_t, pg_info_t>::const_iterator i = infos.begin();
        i != infos.end();
        ++i) {
+	  //先考虑自前一次的last_epoch_started中选出一个最大版本，这些osd一定在此后又到到达了started
     if (!cct->_conf->osd_find_best_info_ignore_history_les &&
 	max_last_epoch_started_found < i->second.history.last_epoch_started) {
       *history_les_bound = true;
       max_last_epoch_started_found = i->second.history.last_epoch_started;
     }
+    //再考虑当前已完整的，则它们已恢复完，它们进入started的时间
     if (!i->second.is_incomplete() &&
 	max_last_epoch_started_found < i->second.last_epoch_started) {
       max_last_epoch_started_found = i->second.last_epoch_started;
@@ -1010,9 +1012,9 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
   for (map<pg_shard_t, pg_info_t>::const_iterator i = infos.begin();
        i != infos.end();
        ++i) {
-    if (max_last_epoch_started_found <= i->second.last_epoch_started) {
+    if (max_last_epoch_started_found <= i->second.last_epoch_started) {//比max_last_epoch_started_found还要少，则集群中均已有。
       if (min_last_update_acceptable > i->second.last_update)
-	min_last_update_acceptable = i->second.last_update;
+	min_last_update_acceptable = i->second.last_update;//这个就是最小的固化版本
     }
   }
   if (min_last_update_acceptable == eversion_t::max())
@@ -1027,15 +1029,15 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
        p != infos.end();
        ++p) {
     // Only consider peers with last_update >= min_last_update_acceptable
-    if (p->second.last_update < min_last_update_acceptable)
+    if (p->second.last_update < min_last_update_acceptable)//比这个还要少，就没有用了，不理会
       continue;
     // Disqualify anyone with a too old last_epoch_started
-    if (p->second.last_epoch_started < max_last_epoch_started_found)
+    if (p->second.last_epoch_started < max_last_epoch_started_found)//比这个还小，不理会
       continue;
     // Disqualify anyone who is incomplete (not fully backfilled)
-    if (p->second.is_incomplete())
+    if (p->second.is_incomplete())//已在恢复中，还没有完全。
       continue;
-    if (best == infos.end()) {
+    if (best == infos.end()) {//第一次
       best = p;
       continue;
     }
@@ -1044,14 +1046,14 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
       if (p->second.last_update > best->second.last_update)
 	continue;
       if (p->second.last_update < best->second.last_update) {
-	best = p;
+	best = p;//取最小的last_update
 	continue;
       }
     } else {
       if (p->second.last_update < best->second.last_update)
 	continue;
       if (p->second.last_update > best->second.last_update) {
-	best = p;
+	best = p;//取最大的last_update
 	continue;
       }
     }
@@ -1059,13 +1061,13 @@ map<pg_shard_t, pg_info_t>::const_iterator PG::find_best_info(
     // Prefer longer tail
     if (p->second.log_tail > best->second.log_tail) {
       continue;
-    } else if (p->second.log_tail < best->second.log_tail) {
+    } else if (p->second.log_tail < best->second.log_tail) {//取tail最小的
       best = p;
       continue;
     }
 
     // prefer current primary (usually the caller), all things being equal
-    if (p->first == pg_whoami) {
+    if (p->first == pg_whoami) {//主最大
       dout(10) << "calc_acting prefer osd." << p->first
 	       << " because it is current primary" << dendl;
       best = p;
@@ -1170,9 +1172,9 @@ void PG::calc_replicated_acting(
   pg_shard_t up_primary,
   const map<pg_shard_t, pg_info_t> &all_info,
   bool compat_mode,
-  vector<int> *want,
-  set<pg_shard_t> *backfill,
-  set<pg_shard_t> *acting_backfill,
+  vector<int> *want,//可以用的
+  set<pg_shard_t> *backfill,//需要执行backfill的
+  set<pg_shard_t> *acting_backfill,//可以帮助执行backfill
   pg_shard_t *want_primary,
   ostream &ss)
 {
@@ -1181,11 +1183,14 @@ void PG::calc_replicated_acting(
   pg_shard_t auth_log_shard_id = auth_log_shard->first;
   
   // select primary
+  //选择主，主要未在恢复中，且与权威日志有交集
+  //如果未选择出来，采用权威日志
+  //将选择结果置为primary,want_primary,加入到acting_backfill,want
   map<pg_shard_t,pg_info_t>::const_iterator primary;
   if (up.size() &&
       !all_info.find(up_primary)->second.is_incomplete() &&
       all_info.find(up_primary)->second.last_update >=
-        auth_log_shard->second.log_tail) {
+        auth_log_shard->second.log_tail) {//主没有在恢复，且与权威日志有交集
     ss << "up_primary: " << up_primary << ") selected as primary" << std::endl;
     primary = all_info.find(up_primary); // prefer up[0], all thing being equal
   } else {
@@ -1204,6 +1209,8 @@ void PG::calc_replicated_acting(
 
   // select replicas that have log contiguity with primary.
   // prefer up, then acting, then any peer_info osds 
+  //针对up集合中与正在恢复的或者与log不相交者，加入backfill,acting_backfill
+  //否则加入到acting_backfill,want
   for (vector<int>::const_iterator i = up.begin();
        i != up.end();
        ++i) {
@@ -1240,6 +1247,7 @@ void PG::calc_replicated_acting(
   }
 
   // This no longer has backfill OSDs, but they are covered above.
+  //针对acting集合，排除primary,排除存在up中的，排除恢复中的及无交集的，其它加入至want,acting_fillback
   for (vector<int>::const_iterator i = acting.begin();
        i != acting.end();
        ++i) {
@@ -1256,7 +1264,7 @@ void PG::calc_replicated_acting(
 
     const pg_info_t &cur_info = all_info.find(acting_cand)->second;
     if (cur_info.is_incomplete() ||
-	cur_info.last_update < primary->second.log_tail) {
+	cur_info.last_update < primary->second.log_tail) {//恢复中或者不重合，无法使用
       ss << " shard " << acting_cand << " (stray) REJECTED "
 	       << cur_info << std::endl;
     } else {
@@ -1268,6 +1276,8 @@ void PG::calc_replicated_acting(
     }
   }
 
+  //针对all_info集合，排除primary,排除up,排除acting,排除恢复中的，排除无相交的
+  //加入到acting_backfill,want 最多加入size个。
   for (map<pg_shard_t,pg_info_t>::const_iterator i = all_info.begin();
        i != all_info.end();
        ++i) {
@@ -1357,9 +1367,10 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id, bool *history_les_bound)
       compat_mode = false;
   }
 
+  //需要执行backfill,可以辅助执行backfill
   set<pg_shard_t> want_backfill, want_acting_backfill;
-  vector<int> want;
-  pg_shard_t want_primary;
+  vector<int> want;//哪些可以用
+  pg_shard_t want_primary;//主
   stringstream ss;
   if (!pool.info.ec_pool())
     calc_replicated_acting(
@@ -1408,6 +1419,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id, bool *history_les_bound)
   // We go incomplete if below min_size for ec_pools since backfill
   // does not currently maintain rollbackability
   // Otherwise, we will go "peered", but not "active"
+  //如果可参与的osd太少就没办法执行恢复
   if (num_want_acting < pool.info.min_size &&
       (pool.info.ec_pool() ||
        !cct->_conf->osd_allow_recovery_below_min_size)) {
@@ -1989,7 +2001,7 @@ void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
       get_osdmap()->get_epoch(),
       info);
 
-    i.info.history.last_epoch_started = activation_epoch;
+    i.info.history.last_epoch_started = activation_epoch;//更新last_epoch_started
     if (acting.size() >= pool.info.min_size) {
       state_set(PG_STATE_ACTIVE);
     } else {
@@ -7475,7 +7487,7 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
        ++p) {
     if (*p == pg->pg_whoami) continue;
     pg_info_t& ri = pg->peer_info[*p];
-    if (ri.last_update >= best.log_tail && ri.last_update < request_log_from)
+    if (ri.last_update >= best.log_tail && ri.last_update < request_log_from)//有重合的前提下找最小的last_update
       request_log_from = ri.last_update;
   }
 
@@ -7487,13 +7499,14 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
       pg_query_t::LOG,
       auth_log_shard.shard, pg->pg_whoami.shard,
       request_log_from, pg->info.history,
-      pg->get_osdmap()->get_epoch()));
+      pg->get_osdmap()->get_epoch()));//向权威日志要自request_log_from开始至head的日志
 
   assert(pg->blocked_by.empty());
   pg->blocked_by.insert(auth_log_shard.osd);
   pg->publish_stats_to_osd();
 }
 
+//osd发生变化，如果权威日志变为down,转reset
 boost::statechart::result PG::RecoveryState::GetLog::react(const AdvMap& advmap)
 {
   // make sure our log source didn't go down.  we need to check
@@ -7510,6 +7523,7 @@ boost::statechart::result PG::RecoveryState::GetLog::react(const AdvMap& advmap)
   return forward_event();
 }
 
+//权威日志进行了响应
 boost::statechart::result PG::RecoveryState::GetLog::react(const MLogRec& logevt)
 {
   assert(!msg);
