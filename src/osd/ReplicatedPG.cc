@@ -4605,7 +4605,11 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	    bufferlist t;
 	    uint64_t len = miter->first - last;
 	    r = pgbackend->objects_read_sync(soid, last, len, op.flags, &t);
-	    if (!t.is_zero()) {
+	    if (r < 0) {
+	      osd->clog->error() << coll << " " << soid
+				 << " sparse-read failed to read: "
+				 << r << "\n";
+	    } else if (!t.is_zero()) {
 	      osd->clog->error() << coll << " " << soid << " sparse-read found data in hole "
 				<< last << "~" << len << "\n";
 	    }
@@ -4636,7 +4640,11 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	    bufferlist t;
 	    uint64_t len = end - last;
 	    r = pgbackend->objects_read_sync(soid, last, len, op.flags, &t);
-	    if (!t.is_zero()) {
+	    if (r < 0) {
+	      osd->clog->error() << coll << " " << soid
+				 << " sparse-read failed to read: "
+				 << r << "\n";
+	    } else if (!t.is_zero()) {
 	      osd->clog->error() << coll << " " << soid << " sparse-read found data in hole "
 				<< last << "~" << len << "\n";
 	    }

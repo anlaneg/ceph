@@ -478,16 +478,16 @@ bool pg_t::is_split(unsigned old_pg_num, unsigned new_pg_num, set<pg_t> *childre
 
   bool split = false;
   if (true) {
-  //获得old_pg_num向上取2^n的那个数,或old_pg_num=2,则old_bits为2,old_pg_num=4,则old_pg_num=3
-    int old_bits = cbits(old_pg_num);
-    int old_mask = (1 << old_bits) - 1;//掩码
-    for (int n = 1; ; n++) {
+    //获得old_pg_num向上取2^n的那个数,或old_pg_num=2,则old_bits为2,old_pg_num=4,则old_pg_num=3
+    unsigned old_bits = cbits(old_pg_num);
+    unsigned old_mask = (1 << old_bits) - 1;//掩码
+    for (unsigned n = 1; ; n++) {
       //这两行代码是一个优化,简单处理,我们从old_pg_num到new_pg_num
       //遍历,如果s & old_mask == m_seed,我们即可向children里添加成员
       //但是直正能被加入的这些数据都有一个特点,其后(old_bits)位的数据,都应
       //是m_seed,所以我们可以直接构造这样的数据,这个for循环优化后的结果
       //并用下面这两行来构造这样的s.这个循环的次数就减少了.
-      int next_bit = (n << (old_bits-1));
+      unsigned next_bit = (n << (old_bits-1));
       unsigned s = next_bit | m_seed;
 
       //s小于old_pg_num表示已存在,不用考虑,而等于m_seed恰好是自已,也不用考虑
