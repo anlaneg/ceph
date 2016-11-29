@@ -4976,7 +4976,7 @@ bool PG::may_need_replay(const OSDMapRef osdmap) const
   return crashed;
 }
 
-void PG::check_full_transition(OSDMapRef lastmap, OSDMapRef osdmap)
+void PG::check_full_transition(OSDMapRef lastmap, OSDMapRef osdmap)//检查osdmap是否标记了full
 {
   bool changed = false;
   if (osdmap->test_flag(CEPH_OSDMAP_FULL) &&

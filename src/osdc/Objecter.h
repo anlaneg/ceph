@@ -2178,7 +2178,7 @@ public:
     op_submit(o, &tid);
     return tid;
   }
-  Op *prepare_read_op(
+  Op *prepare_read_op(//无offset的读取
     const object_t& oid, const object_locator_t& oloc,
     ObjectOperation& op,
     snapid_t snapid, bufferlist *pbl, int flags,
@@ -2197,14 +2197,14 @@ public:
     o->out_rval.swap(op.out_rval);
     return o;
   }
-  ceph_tid_t read(
+  ceph_tid_t read(//构造读操作
     const object_t& oid, const object_locator_t& oloc,
     ObjectOperation& op,
     snapid_t snapid, bufferlist *pbl, int flags,
     Context *onack, version_t *objver = NULL,
     int *data_offset = NULL,
     uint64_t features = 0) {
-    Op *o = prepare_read_op(oid, oloc, op, snapid, pbl, flags, onack, objver,
+    Op *o = prepare_read_op(oid, oloc, op, snapid, pbl, flags, onack, objver,//准备读操作（无offset)
 			    data_offset);
     if (features)
       o->features = features;
@@ -2323,7 +2323,7 @@ public:
     return tid;
   }
 
-  Op *prepare_read_op(
+  Op *prepare_read_op(//有offset的读取
     const object_t& oid, const object_locator_t& oloc,
     uint64_t off, uint64_t len, snapid_t snap, bufferlist *pbl,
     int flags, Context *onfinish, version_t *objver = NULL,

@@ -941,9 +941,10 @@ protected:
   }
 
   // projected object info
-  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;//缓存对象的上下文,目的未知
+  //这两个缓存是为了减小磁盘读写
+  SharedLRU<hobject_t, ObjectContext, hobject_t::ComparatorWithDefault> object_contexts;//缓存对象的上下文,加快处理速度（按head对象缓存)
   // map from oid.snapdir() to SnapSetContext *
-  map<hobject_t, SnapSetContext*, hobject_t::BitwiseComparator> snapset_contexts;//缓存snapset_contexts
+  map<hobject_t, SnapSetContext*, hobject_t::BitwiseComparator> snapset_contexts;//缓存snapset_contexts(按snapdir对象缓存）
   Mutex snapset_contexts_lock;
 
   // debug order that client ops are applied
@@ -1332,7 +1333,7 @@ protected:
   void cancel_proxy_ops(bool requeue);
 
   // -- proxyread --
-  map<ceph_tid_t, ProxyReadOpRef> proxyread_ops;
+  map<ceph_tid_t, ProxyReadOpRef> proxyread_ops;//这个队列的目的仅仅是为了可cancel
 
   void do_proxy_read(OpRequestRef op);
   void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);//代理读完成时会被调用

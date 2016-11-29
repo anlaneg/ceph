@@ -503,7 +503,7 @@ struct spg_t {
     DECODE_FINISH(bl);
   }
 
-  hobject_t make_temp_hobject(const string& name) const {
+  hobject_t make_temp_hobject(const string& name) const {//临时对象是pool < 0 但！=-1的对象
     return hobject_t(object_t(name), "", CEPH_NOSNAP,
 		     pgid.ps(),
 		     hobject_t::POOL_TEMP_START - pgid.pool(), "");
@@ -1553,7 +1553,7 @@ struct object_stat_sum_t {
   int64_t num_objects_dirty;
   int64_t num_whiteouts;
   int64_t num_objects_omap;
-  int64_t num_objects_hit_set_archive;
+  int64_t num_objects_hit_set_archive;//处于hit_set中的number数
   int64_t num_objects_misplaced;
   int64_t num_bytes_hit_set_archive;
   int64_t num_flush;
