@@ -6878,7 +6878,7 @@ int BlueStore::queue_transactions(
   ObjectStore::Transaction::collect_contexts(
     tls, &onreadable, &ondisk, &onreadable_sync);
 
-  if (g_conf->objectstore_blackhole) {
+  if (g_conf->objectstore_blackhole) {//测试用代码
     dout(0) << __func__ << " objectstore_blackhole = TRUE, dropping transaction"
 	    << dendl;
     delete ondisk;
@@ -6910,7 +6910,7 @@ int BlueStore::queue_transactions(
     (*p).set_osr(osr);
     txc->ops += (*p).get_num_ops();
     txc->bytes += (*p).get_num_bytes();
-    _txc_add_transaction(txc, &(*p));
+    _txc_add_transaction(txc, &(*p));//将多个事务加入到一个事务上下文中
   }
 
   _txc_write_nodes(txc, txc->t);
@@ -7084,7 +7084,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       r = _touch(txc, c, o);
       break;
 
-    case Transaction::OP_WRITE:
+    case Transaction::OP_WRITE://写操作
       {
         uint64_t off = op->off;
         uint64_t len = op->len;
