@@ -780,10 +780,10 @@ public:
   struct Onode {
     MEMPOOL_CLASS_HELPERS();
 
-    std::atomic_int nref;  ///< reference count
-    Collection *c;
+    std::atomic_int nref;  ///< reference count　//引用计数
+    Collection *c;//属于哪个目录
 
-    ghobject_t oid;
+    ghobject_t oid;//对象id
     string key;     ///< key under PREFIX_OBJ where we are stored
 
     OnodeSpace *space;    ///< containing OnodeSpace

@@ -2075,17 +2075,17 @@ BlueStore::extent_map_t::iterator BlueStore::ExtentMap::seek_lextent(
   uint64_t offset)
 {
   Extent dummy(offset);
-  auto fp = extent_map.lower_bound(dummy);
-  if (fp != extent_map.begin()) {
-    --fp;
-    if (fp->logical_end() <= offset) {
+  auto fp = extent_map.lower_bound(dummy);//找比offset第一小的
+  if (fp != extent_map.begin()) {//如果offset不是当前extent_map中最小的
+    --fp;//向后退一格，防止到达end()
+    if (fp->logical_end() <= offset) {//如果这个范围无法满足，则增加fp
       ++fp;
     }
   }
   return fp;
 }
 
-bool BlueStore::ExtentMap::has_any_lextents(uint64_t offset, uint64_t length)
+bool BlueStore::ExtentMap::has_any_lextents(uint64_t offset, uint64_t length)//检查这个范围是否已申请
 {
   auto fp = seek_lextent(offset);
   if (fp == extent_map.end() || fp->logical_offset >= offset + length) {
@@ -7471,23 +7471,23 @@ void BlueStore::_do_write_small(
   logger->inc(l_bluestore_write_small_bytes, length);
 
   bufferlist bl;
-  blp.copy(length, bl);
+  blp.copy(length, bl);//将blp内length长度copy到bl内
 
-  // look for an existing mutable blob we can use
+  // look for an existing mutable blob we can use //查找offset
   auto ep = o->extent_map.seek_lextent(offset);
-  if (ep != o->extent_map.extent_map.begin()) {
+  if (ep != o->extent_map.extent_map.begin()) {//防止end()
     --ep;
     if (ep->blob_end() <= offset) {
-      ++ep;
+      ++ep;//继续向后走
     }
   }
   BlobRef b;
-  while (ep != o->extent_map.extent_map.end()) {
+  while (ep != o->extent_map.extent_map.end()) {//查找end
     if (ep->blob_start() >= end) {
-      break;
+      break;//可能找到了（要么在这中间，要么与这重叠）
     }
     b = ep->blob;
-    if (!b->get_blob().is_mutable()) {
+    if (!b->get_blob().is_mutable()) {//不可变换
       dout(20) << __func__ << " ignoring immutable " << *b << dendl;
       ++ep;
       continue;
@@ -7504,36 +7504,36 @@ void BlueStore::_do_write_small(
 
     // can we pad our head/tail out with zeros?
     uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
-    uint64_t head_pad = P2PHASE(offset, chunk_size);
+    uint64_t head_pad = P2PHASE(offset, chunk_size);//offset前移数量（即head填充）
     if (head_pad &&
 	o->extent_map.has_any_lextents(offset - head_pad, chunk_size)) {
-      head_pad = 0;
+      head_pad = 0;//已申请不必再填充
     }
 
-    uint64_t tail_pad = P2NPHASE(end, chunk_size);
+    uint64_t tail_pad = P2NPHASE(end, chunk_size);//尾部要后移数量（即tail填充）
     if (tail_pad && o->extent_map.has_any_lextents(end, tail_pad)) {
-      tail_pad = 0;
+      tail_pad = 0;//尾部已存在，不必再填充，申请
     }
 
     bufferlist padded = bl;
     if (head_pad) {
       bufferlist z;
-      z.append_zero(head_pad);
-      z.claim_append(padded);
-      padded.claim(z);
+      z.append_zero(head_pad);//填充0
+      z.claim_append(padded);//并将其填充在bl前面
+      padded.claim(z);//将z交给padded
     }
     if (tail_pad) {
-      padded.append_zero(tail_pad);
+      padded.append_zero(tail_pad);//在padded中填充tail_pad
     }
-    if (head_pad || tail_pad) {
+    if (head_pad || tail_pad) {//对填充数据进行计数
       dout(20) << __func__ << "  can pad head 0x" << std::hex << head_pad
 	       << " tail 0x" << tail_pad << std::dec << dendl;
       logger->inc(l_bluestore_write_pad_bytes, head_pad + tail_pad);
     }
 
     // direct write into unused blocks of an existing mutable blob?
-    uint64_t b_off = offset - head_pad - bstart;
-    uint64_t b_len = length + head_pad + tail_pad;
+    uint64_t b_off = offset - head_pad - bstart;//左侧前移
+    uint64_t b_len = length + head_pad + tail_pad;//右侧前移
     if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&
 	b->get_blob().get_ondisk_length() >= b_off + b_len &&
 	b->get_blob().is_unused(b_off, b_len) &&
@@ -7575,7 +7575,7 @@ void BlueStore::_do_write_small(
       if (head_read) {
 	bufferlist head_bl;
 	int r = _do_read(c.get(), o, offset - head_pad - head_read, head_read,
-			 head_bl, 0);
+			 head_bl, 0);//写时读取问题（先把要多写的读出来，前向写前读）
 	assert(r >= 0 && r <= (int)head_read);
 	size_t zlen = head_read - r;
 	if (zlen) {
@@ -7591,7 +7591,7 @@ void BlueStore::_do_write_small(
       if (tail_read) {
 	bufferlist tail_bl;
 	int r = _do_read(c.get(), o, offset + length + tail_pad, tail_read,
-			 tail_bl, 0);
+			 tail_bl, 0);//后面写前读
 	assert(r >= 0 && r <= (int)tail_read);
 	b_len += tail_read;
 	padded.claim_append(tail_bl);
@@ -7657,7 +7657,7 @@ void BlueStore::_do_write_small(
   return;
 }
 
-void BlueStore::_do_write_big(
+void BlueStore::_do_write_big(//数据为对齐的读
     TransContext *txc,
     CollectionRef &c,
     OnodeRef o,
@@ -7683,7 +7683,7 @@ void BlueStore::_do_write_big(
     txc->statfs_delta.stored() += l;
     dout(20) << __func__ << "  lex " << *le << dendl;
     offset += l;
-    length -= l;
+    length -= l;//长度减少
     logger->inc(l_bluestore_write_big_blobs);
   }
 }
@@ -7961,7 +7961,7 @@ void BlueStore::_do_write_data(//做数据写
   bufferlist::iterator p = bl.begin();
 
   if (offset / min_alloc_size == (end - 1) / min_alloc_size &&
-      (length != min_alloc_size)) {
+      (length != min_alloc_size)) {//offset-end之间的距离不超过min_alloc_size
     // we fall within the same block
     _do_write_small(txc, c, o, offset, length, p, wctx);
   } else {
@@ -7970,20 +7970,20 @@ void BlueStore::_do_write_data(//做数据写
     uint64_t tail_offset, tail_length;
 
     head_offset = offset;
-    head_length = P2NPHASE(offset, min_alloc_size);
+    head_length = P2NPHASE(offset, min_alloc_size);//取对齐后，头部多出来的长度
 
-    tail_offset = P2ALIGN(end, min_alloc_size);
-    tail_length = P2PHASE(end, min_alloc_size);
+    tail_offset = P2ALIGN(end, min_alloc_size);//取规范的尾部长度
+    tail_length = P2PHASE(end, min_alloc_size);//取对齐后，尾部多出来的长度
 
-    middle_offset = head_offset + head_length;
-    middle_length = length - head_length - tail_length;
+    middle_offset = head_offset + head_length;//规范对齐后的offset
+    middle_length = length - head_length - tail_length;//规范后的长度
 
     if (head_length) {
       _do_write_small(txc, c, o, head_offset, head_length, p, wctx);
     }
 
     if (middle_length) {
-      _do_write_big(txc, c, o, middle_offset, middle_length, p, wctx);
+      _do_write_big(txc, c, o, middle_offset, middle_length, p, wctx);//对齐的大块读
     }
 
     if (tail_length) {

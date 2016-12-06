@@ -552,7 +552,7 @@ struct bluestore_blob_t {
     }
   }
 
-  uint32_t get_ondisk_length() const {
+  uint32_t get_ondisk_length() const {//磁盘实际占用大小
     uint32_t len = 0;
     for (auto &p : extents) {
       len += p.length;

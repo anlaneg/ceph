@@ -1090,16 +1090,16 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
       while (p_off > 0) {
 	if (p == ls->end())
 	  throw end_of_buffer();
-	if (p_off >= p->length()) {
+	if (p_off >= p->length()) {//长度比这个buffer要大，跳过这个buffer
 	  // skip this buffer
 	  p_off -= p->length();
 	  p++;
-	} else {
+	} else {//就是这个buffer了
 	  // somewhere in this buffer!
 	  break;
 	}
       }
-      off += o;
+      off += o;//定位成功
       return;
     }
     while (o < 0) {
@@ -1112,7 +1112,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
 	o += d;
       } else if (off > 0) {
 	assert(p != ls->begin());
-	p--;
+	p--;//向序退
 	p_off = p->length();
       } else {
 	throw end_of_buffer();
@@ -1208,10 +1208,10 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
   }
 
   template<bool is_const>
-  void buffer::list::iterator_impl<is_const>::copy(unsigned len, list &dest)
+  void buffer::list::iterator_impl<is_const>::copy(unsigned len, list &dest)//从当前off位置开始，将内部的长度为len的数据copy到dest内。
   {
     if (p == ls->end())
-      seek(off);
+      seek(off);//偏至off位置
     while (len > 0) {
       if (p == ls->end())
 	throw end_of_buffer();
@@ -1222,7 +1222,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
       dest.append(*p, p_off, howmuch);
 
       len -= howmuch;
-      advance(howmuch);
+      advance(howmuch);//增加off
     }
   }
 
@@ -1362,7 +1362,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
 
   void buffer::list::iterator::copy(unsigned len, list &dest)
   {
-    buffer::list::iterator_impl<false>::copy(len, dest);
+    buffer::list::iterator_impl<false>::copy(len, dest);//将内部数据从读写头位置copy len到dst内
   }
 
   void buffer::list::iterator::copy(unsigned len, std::string &dest)
