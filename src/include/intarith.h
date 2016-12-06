@@ -27,7 +27,7 @@
 #define DIV_ROUND_UP(n, d)  (((n) + (d) - 1) / (d))
 #endif
 
-#ifndef ROUND_UP_TO
+#ifndef ROUND_UP_TO //如果n是d的倍数，返回n,否则给n+(d-(n%d))
 #define ROUND_UP_TO(n, d) ((n)%(d) ? ((n)+(d)-(n)%(d)) : (n))
 #endif
 
@@ -38,7 +38,7 @@
 /*
  * Macro to determine if value is a power of 2
  */
-#define ISP2(x)		(((x) & ((x) - 1)) == 0)
+#define ISP2(x)		(((x) & ((x) - 1)) == 0) //检查是否2的n次方
 
 /*
  * Macros for various sorts of alignment and rounding.  The "align" must
@@ -115,6 +115,7 @@ static inline unsigned clzll(unsigned long long v) {
 
 // count bits (set + any 0's that follow)
 //采用__builtin_clz来获得前导0的数目,返回来被size(v)*8来减
+//占用的bits位数
 //于是用来表示v值最高位,占用的位序号.
 static inline unsigned cbits(unsigned v) {
   if (v == 0)

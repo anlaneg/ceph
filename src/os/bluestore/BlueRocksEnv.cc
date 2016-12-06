@@ -25,6 +25,7 @@ rocksdb::Status err_to_status(int r)
 }
 
 // A file abstraction for reading sequentially through a file
+//这个类负责将rocksdb与bluefs相互连接起来
 class BlueRocksSequentialFile : public rocksdb::SequentialFile {
   BlueFS *fs;
   BlueFS::FileReader *h;
@@ -433,6 +434,7 @@ rocksdb::Status BlueRocksEnv::DeleteFile(const std::string& fname)
   return rocksdb::Status::OK();
 }
 
+//通过fs创建目录
 rocksdb::Status BlueRocksEnv::CreateDir(const std::string& dirname)
 {
   int r = fs->mkdir(dirname);

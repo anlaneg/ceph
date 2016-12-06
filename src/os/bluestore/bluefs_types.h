@@ -9,7 +9,7 @@
 
 class bluefs_extent_t : public AllocExtent{
 public:
-  uint8_t bdev;
+  uint8_t bdev;//对应的块设备
 
   bluefs_extent_t(uint8_t b = 0, uint64_t o = 0, uint32_t l = 0)
     : AllocExtent(o, l), bdev(b) {}
@@ -25,15 +25,15 @@ ostream& operator<<(ostream& out, bluefs_extent_t e);
 
 
 struct bluefs_fnode_t {
-  uint64_t ino;
-  uint64_t size;
-  utime_t mtime;
-  uint8_t prefer_bdev;
-  mempool::bluefs::vector<bluefs_extent_t> extents;
+  uint64_t ino;//inode取值
+  uint64_t size;//大小
+  utime_t mtime;//修改时间
+  uint8_t prefer_bdev;//使用了哪类块设备（当前有三种）
+  mempool::bluefs::vector<bluefs_extent_t> extents;//已分配
 
   bluefs_fnode_t() : ino(0), size(0), prefer_bdev(0) {}
 
-  uint64_t get_allocated() const {
+  uint64_t get_allocated() const {//获取已申请的长度
     uint64_t r = 0;
     for (auto& p : extents)
       r += p.length;
@@ -59,7 +59,7 @@ struct bluefs_super_t {
   uint64_t version;
   uint32_t block_size;
 
-  bluefs_fnode_t log_fnode;
+  bluefs_fnode_t log_fnode;//log文件的node
 
   bluefs_super_t()
     : version(0),
@@ -79,6 +79,7 @@ WRITE_CLASS_ENCODER(bluefs_super_t)
 ostream& operator<<(ostream&, const bluefs_super_t& s);
 
 
+//提供了一组函数，将操作封装进op_bl缓冲中。
 struct bluefs_transaction_t {
   typedef enum {
     OP_NONE = 0,
@@ -95,14 +96,14 @@ struct bluefs_transaction_t {
     OP_JUMP_SEQ,    ///< jump the seq #
   } op_t;
 
-  uuid_d uuid;          ///< fs uuid
-  uint64_t seq;         ///< sequence number
+  uuid_d uuid;          ///< fs uuid //函数里没有用到，为什么要出现？
+  uint64_t seq;         ///< sequence number //函数里没有用到，为什么要出现？
   bufferlist op_bl;     ///< encoded transaction ops
 
   bluefs_transaction_t() : seq(0) {}
 
   void clear() {
-    *this = bluefs_transaction_t();
+    *this = bluefs_transaction_t();//从这句代码可以清楚的看到，c++隐含的传入this指针（python在这一点上像个实话实说的孩子）
   }
   bool empty() const {
     return op_bl.length() == 0;

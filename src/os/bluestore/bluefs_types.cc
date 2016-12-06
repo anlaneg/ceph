@@ -103,7 +103,7 @@ ostream& operator<<(ostream& out, const bluefs_super_t& s)
 // bluefs_fnode_t
 
 mempool::bluefs::vector<bluefs_extent_t>::iterator bluefs_fnode_t::seek(
-  uint64_t offset, uint64_t *x_off)
+  uint64_t offset, uint64_t *x_off)//给定offset，求出extents链中的起始块，及块内偏移
 {
   auto p = extents.begin();
   while (p != extents.end()) {

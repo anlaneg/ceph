@@ -223,12 +223,17 @@ class btree_interval_set {
     return p;
   }
 
+  //找一个合适的段
   typename map_t::iterator find_adj_m(T start) {
-    typename map_t::iterator p = m.lower_bound(start);
+    typename map_t::iterator p = m.lower_bound(start);//返回第一个大于start或者等于start的索引，如果不存在返回最后一个
     if (p != m.begin() &&
         (p == m.end() || p->first > start)) {
+    	//如果返回m.begin,说明我们不存在，直接返回即可
+    	//如果返回的不是m.end()并且p->first比我们小，也直接返回即可
+
+    	//否则进入此条件，先尝试向后退一个。"因为，担心和我们可以合并“
       p--;   // might touch?
-      if (p->first + p->second < start)
+      if (p->first + p->second < start)//后退后，如果>=start,则直接返回，说明和我们可以合并，否则p++，仍用之前的查询结果
         p++; // it doesn't.
     }
     return p;
@@ -341,26 +346,27 @@ class btree_interval_set {
     insert(val, 1);
   }
 
+  //插入采用的是在b树中查找start.查找方法是，找一个相等的，如果未找到，找一个恰少于的，如果未找到，找一个恰大于的
   void insert(T start, T len, T *pstart=0, T *plen=0) {
     //cout << "insert " << start << "~" << len << endl;
     assert(len > 0);
     _size += len;
     typename map_t::iterator p = find_adj_m(start);
-    if (p == m.end()) {
+    if (p == m.end()) {//没有找到start项，填接插入即可
       m[start] = len;                  // new interval
       if (pstart)
 	*pstart = start;
       if (plen)
 	*plen = len;
-    } else {
-      if (p->first < start) {
+    } else {//没有找到start
+      if (p->first < start) {//找到的比start小，说明start在其右侧
 
-        if (p->first + p->second != start) {
+        if (p->first + p->second != start) {//为什么一定是重叠的？（与查找有关，看find_adj_m函数）
           //cout << "p is " << p->first << "~" << p->second << ", start is " << start << ", len is " << len << endl;
           ceph_abort();
         }
 
-        p->second += len;               // append to end
+        p->second += len;               // append to end //由于是重叠，直接合并
 
         typename map_t::iterator n = p;
         n++;
@@ -376,16 +382,16 @@ class btree_interval_set {
 	  if (plen)
 	    *plen = p->second;
 	}
-      } else {
-        if (start+len == p->first) {
+      } else {//找到比start大，说明start在其左侧
+        if (start+len == p->first) {//检查是否有重叠
 	  if (pstart)
 	    *pstart = start;
 	  if (plen)
 	    *plen = len + p->second;
 	  T plen = p->second;
-          m.erase(p);
-          m[start] = len + plen;  // append to front
-        } else {
+          m.erase(p);//可以合并，删除掉原来的
+          m[start] = len + plen;  // append to front 合入自已
+        } else {//不能合并，重新创建个新的。
           assert(p->first > start+len);
 	  if (pstart)
 	    *pstart = start;

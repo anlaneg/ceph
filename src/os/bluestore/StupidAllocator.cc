@@ -14,7 +14,7 @@ StupidAllocator::StupidAllocator()
     num_uncommitted(0),
     num_committing(0),
     num_reserved(0),
-    free(10),
+    free(10),//free大小被硬编码成10，目的减少b树的大小
     last_alloc(0)
 {
 }
@@ -23,6 +23,7 @@ StupidAllocator::~StupidAllocator()
 {
 }
 
+//根据长度选择一个树，不明白，为何命名为_choose_free_tree ？更直白些，或者_choose_btree也行啊！
 unsigned StupidAllocator::_choose_bin(uint64_t orig_len)
 {
   uint64_t len = orig_len / g_conf->bdev_block_size;
@@ -32,16 +33,18 @@ unsigned StupidAllocator::_choose_bin(uint64_t orig_len)
   return bin;
 }
 
+//实际空闲范围的插入
 void StupidAllocator::_insert_free(uint64_t off, uint64_t len)
 {
   unsigned bin = _choose_bin(len);
   dout(30) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	   << " in bin " << bin << dendl;
   while (true) {
-    free[bin].insert(off, len, &off, &len);
-    unsigned newbin = _choose_bin(len);
-    if (newbin == bin)
+    free[bin].insert(off, len, &off, &len);//先向bin对应的树里插入
+    unsigned newbin = _choose_bin(len);//用返回的len检查，是否要换一棵树
+    if (newbin == bin)//不需要，插入完成
       break;
+    //需要换一棵树插入，先从旧的树里删除掉，再向新选的树里插入。
     dout(30) << __func__ << " promoting 0x" << std::hex << off << "~" << len
 	     << std::dec << " to bin " << newbin << dendl;
     free[bin].erase(off, len);
@@ -49,29 +52,32 @@ void StupidAllocator::_insert_free(uint64_t off, uint64_t len)
   }
 }
 
-int StupidAllocator::reserve(uint64_t need)
+//预留机制是一个提前检查的办法，如果预留可以成功，说明空闲量还足以分配。
+//但预留成功不是可以分配成功的标志。属于一种优化
+int StupidAllocator::reserve(uint64_t need)//增加预留
 {
   std::lock_guard<std::mutex> l(lock);
   dout(10) << __func__ << " need 0x" << std::hex << need
 	   << " num_free 0x" << num_free
 	   << " num_reserved 0x" << num_reserved << std::dec << dendl;
-  if ((int64_t)need > num_free - num_reserved)
+  if ((int64_t)need > num_free - num_reserved)//检查是否足够预留，如果不能，返失败，否则增加预留数
     return -ENOSPC;
   num_reserved += need;
   return 0;
 }
 
-void StupidAllocator::unreserve(uint64_t unused)
+void StupidAllocator::unreserve(uint64_t unused)//取消预留
 {
   std::lock_guard<std::mutex> l(lock);
   dout(10) << __func__ << " unused 0x" << std::hex << unused
 	   << " num_free 0x" << num_free
 	   << " num_reserved 0x" << num_reserved << std::dec << dendl;
-  assert(num_reserved >= (int64_t)unused);
+  assert(num_reserved >= (int64_t)unused);//这里不是检查，而是直接断言
   num_reserved -= unused;
 }
 
 /// return the effective length of the extent if we align to alloc_unit
+//返回p接alloc_unit对齐后的实际大小
 static uint64_t aligned_len(btree_interval_set<uint64_t>::iterator p,
 			    uint64_t alloc_unit)
 {
@@ -84,6 +90,7 @@ static uint64_t aligned_len(btree_interval_set<uint64_t>::iterator p,
     return p.get_len() - skew;
 }
 
+//申请单个区域（这个查找，的确很stupid)
 int StupidAllocator::allocate(
   uint64_t want_size, uint64_t alloc_unit, int64_t hint,
   uint64_t *offset, uint32_t *length)
@@ -93,7 +100,7 @@ int StupidAllocator::allocate(
 	   << " alloc_unit 0x" << alloc_unit
 	   << " hint 0x" << hint << std::dec
 	   << dendl;
-  uint64_t want = MAX(alloc_unit, want_size);
+  uint64_t want = MAX(alloc_unit, want_size);//检查要多大
   int bin = _choose_bin(want);
   int orig_bin = bin;
 
@@ -106,16 +113,17 @@ int StupidAllocator::allocate(
   if (hint) {
     for (bin = orig_bin; bin < (int)free.size(); ++bin) {
       p = free[bin].lower_bound(hint);
-      while (p != free[bin].end()) {
-	if (aligned_len(p, alloc_unit) >= want_size) {
+      while (p != free[bin].end()) {//尝试着从上次分配的位置进行分配
+	if (aligned_len(p, alloc_unit) >= want_size) {//对齐后，大小足够，搞定
 	  goto found;
 	}
-	++p;
+	++p;//大小不够，换下一个。进行检查"按行遍历“--这个就比较慢了
       }
     }
   }
 
   // search up (from origin, and skip searched extents by hint)
+  //没有找到，尝试lower_bound(hint)的前半部分（当hint不存在时，采用的是全查找，这个就慢的不可言语了）
   for (bin = orig_bin; bin < (int)free.size(); ++bin) {
     p = free[bin].begin();
     auto end = hint ? free[bin].lower_bound(hint) : free[bin].end();
@@ -128,6 +136,7 @@ int StupidAllocator::allocate(
   }
 
   // search down (hint)
+  //没有找到，尝试orig_bin之前的那一部分（采用hint)
   if (hint) {
     for (bin = orig_bin; bin >= 0; --bin) {
       p = free[bin].lower_bound(hint);
@@ -141,6 +150,7 @@ int StupidAllocator::allocate(
   }
 
   // search down (from origin, and skip searched extents by hint)
+  //还是没有找到，尝试orig_bin之前的那一部分(尝试hint之前的部分，或者没有hint时的首次查询）
   for (bin = orig_bin; bin >= 0; --bin) {
     p = free[bin].begin();
     auto end = hint ? free[bin].lower_bound(hint) : free[bin].end();
@@ -152,15 +162,16 @@ int StupidAllocator::allocate(
     }
   }
 
+  //这下终于可以死心了
   return -ENOSPC;
 
  found:
   uint64_t skew = p.get_start() % alloc_unit;
   if (skew)
     skew = alloc_unit - skew;
-  *offset = p.get_start() + skew;
-  *length = MIN(MAX(alloc_unit, want_size), p.get_len() - skew);
-  if (g_conf->bluestore_debug_small_allocations) {
+  *offset = p.get_start() + skew;//清除边角料
+  *length = MIN(MAX(alloc_unit, want_size), p.get_len() - skew);//清除后的长度
+  if (g_conf->bluestore_debug_small_allocations) {//debug代码
     uint64_t max =
       alloc_unit * (rand() % g_conf->bluestore_debug_small_allocations);
     if (max && *length > max) {
@@ -173,44 +184,47 @@ int StupidAllocator::allocate(
   dout(30) << __func__ << " got 0x" << std::hex << *offset << "~" << *length
 	   << " from bin " << std::dec << bin << dendl;
 
-  free[bin].erase(*offset, *length);
+  free[bin].erase(*offset, *length);//自free中删除掉 "删除掉的是不含边角料的部分“
+  //如你所愿，因为上面的erase没有全部清干净，所以出现了下面恶心的处理，需要将边角料换棵树来存放
   uint64_t off, len;
   if (*offset && free[bin].contains(*offset - skew - 1, &off, &len)) {
     int newbin = _choose_bin(len);
-    if (newbin != bin) {
+    if (newbin != bin) {//需要换棵树 :-P
       dout(30) << __func__ << " demoting 0x" << std::hex << off << "~" << len
 	       << std::dec << " to bin " << newbin << dendl;
-      free[bin].erase(off, len);
-      _insert_free(off, len);
+      free[bin].erase(off, len);//删除
+      _insert_free(off, len);//加上
     }
   }
+  //检查剩下的那部分，是否需要换棵树
   if (free[bin].contains(*offset + *length, &off, &len)) {
     int newbin = _choose_bin(len);
-    if (newbin != bin) {
+    if (newbin != bin) {//需要换棵树 :-P
       dout(30) << __func__ << " demoting 0x" << std::hex << off << "~" << len
 	       << std::dec << " to bin " << newbin << dendl;
-      free[bin].erase(off, len);
-      _insert_free(off, len);
+      free[bin].erase(off, len);//删除
+      _insert_free(off, len);//加上
     }
   }
 
-  num_free -= *length;
-  num_reserved -= *length;
+  //让我们长长的舒一口气，终于走过了换树流程
+  num_free -= *length;//减少库存
+  num_reserved -= *length;//满足了清求，删除预留
   assert(num_free >= 0);
   assert(num_reserved >= 0);
-  last_alloc = *offset + *length;
+  last_alloc = *offset + *length;//更新此数值，防止一会有人不传hint
   return 0;
 }
 
 int StupidAllocator::alloc_extents(
-  uint64_t want_size,
-  uint64_t alloc_unit,
-  uint64_t max_alloc_size,
-  int64_t hint,
-  mempool::bluestore_alloc::vector<AllocExtent> *extents,
-  int *count)
+  uint64_t want_size,//需要的大小
+  uint64_t alloc_unit,//块大小
+  uint64_t max_alloc_size,//最大需要的大小
+  int64_t hint,//最后一片的结束位置（暗示）
+  mempool::bluestore_alloc::vector<AllocExtent> *extents,//出参，申请后填充
+  int *count)//出参，申请了多少个
 {
-  uint64_t allocated_size = 0;
+  uint64_t allocated_size = 0;//已申请了多少字节
   uint64_t offset = 0;
   uint32_t length = 0;
   int res = 0;
@@ -230,13 +244,13 @@ int StupidAllocator::alloc_extents(
        */
       break;
     }
-    block_list.add_extents(offset, length);
-    allocated_size += length;
-    hint = offset + length;
+    block_list.add_extents(offset, length);//将刚申请的加入
+    allocated_size += length;//更新已申请到的
+    hint = offset + length;//更新暗示
   }
 
-  *count = block_list.get_extent_count();
-  if (want_size - allocated_size > 0) {
+  *count = block_list.get_extent_count();//申请了多少个
+  if (want_size - allocated_size > 0) {//申请的不够对方要的，释放
     release_extents(extents, *count);
     return -ENOSPC;
   }
@@ -244,6 +258,7 @@ int StupidAllocator::alloc_extents(
   return 0;
 }
 
+//释放时，存入uncommitted的map中
 int StupidAllocator::release(
   uint64_t offset, uint64_t length)
 {
@@ -292,15 +307,17 @@ void StupidAllocator::dump(ostream& out)
   }
 }
 
+//给free tree中增加offset,length
 void StupidAllocator::init_add_free(uint64_t offset, uint64_t length)
 {
   std::lock_guard<std::mutex> l(lock);
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
   _insert_free(offset, length);
-  num_free += length;
+  num_free += length;//增加最free数量
 }
 
+//自tree中扣除offet,length 原理和申请一样，只不过这次是悄悄的拿走
 void StupidAllocator::init_rm_free(uint64_t offset, uint64_t length)
 {
   std::lock_guard<std::mutex> l(lock);
@@ -329,6 +346,7 @@ void StupidAllocator::shutdown()
   dout(1) << __func__ << dendl;
 }
 
+//将未提交的已释放数据合转移至committing中
 void StupidAllocator::commit_start()
 {
   std::lock_guard<std::mutex> l(lock);
@@ -340,6 +358,7 @@ void StupidAllocator::commit_start()
   num_uncommitted = 0;
 }
 
+//遍历committing将其中的所有内容全部加入到free中。
 void StupidAllocator::commit_finish()
 {
   std::lock_guard<std::mutex> l(lock);

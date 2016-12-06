@@ -82,6 +82,7 @@ class RocksDBStore::MergeOperatorRouter : public rocksdb::AssociativeMergeOperat
 
 };
 
+//设置merge_ops
 int RocksDBStore::set_merge_operator(
   const string& prefix,
   std::shared_ptr<KeyValueDB::MergeOperator> mop)
@@ -175,6 +176,7 @@ int RocksDBStore::tryInterpret(const string key, const string val, rocksdb::Opti
   return 0;
 }
 
+//通过opt_str创建opt
 int RocksDBStore::ParseOptionsFromString(const string opt_str, rocksdb::Options &opt)
 {
   map<string, string> str_map;
@@ -199,6 +201,7 @@ int RocksDBStore::ParseOptionsFromString(const string opt_str, rocksdb::Options 
   return 0;
 }
 
+//rocksdb初始化，参数是选项
 int RocksDBStore::init(string _options_str)
 {
   options_str = _options_str;

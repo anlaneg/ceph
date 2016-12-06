@@ -1249,6 +1249,7 @@ BitAllocator::BitAllocator(int64_t total_blocks, int64_t zone_size_block, bmap_a
 BitAllocator::BitAllocator(int64_t total_blocks, int64_t zone_size_block,
          bmap_alloc_mode_t mode, bool def)
 {
+  //总块数
   init_check(total_blocks, zone_size_block, mode, def, false);
 }
 
@@ -1263,25 +1264,25 @@ void BitAllocator::init_check(int64_t total_blocks, int64_t zone_size_block,
 {
   int64_t unaligned_blocks = 0;
 
-  if (mode != SERIAL && mode != CONCURRENT) {
+  if (mode != SERIAL && mode != CONCURRENT) {//mode检查
     ceph_abort();
   }
 
-  if (total_blocks <= 0) {
+  if (total_blocks <= 0) {//总块数检查
     ceph_abort();
   }
 
   if (zone_size_block == 0 ||
-    zone_size_block < BmapEntry::size()) {
+    zone_size_block < BmapEntry::size()) {//zone_size参数检查
     ceph_abort();
   }
 
   zone_size_block = (zone_size_block / BmapEntry::size()) *
-        BmapEntry::size();
+        BmapEntry::size();//规范为BmapEntry::size()的倍数
 
   unaligned_blocks = total_blocks % zone_size_block;
   m_extra_blocks = unaligned_blocks? zone_size_block - unaligned_blocks: 0;
-  total_blocks = ROUND_UP_TO(total_blocks, zone_size_block);
+  total_blocks = ROUND_UP_TO(total_blocks, zone_size_block);//规范成zone_size_block的倍数
 
   m_alloc_mode = mode;
   m_is_stats_on = stats_on;
@@ -1519,7 +1520,7 @@ exit:
 
 void BitAllocator::free_blocks(int64_t start_block, int64_t num_blocks)
 {
-  if (num_blocks == 0) {
+  if (num_blocks == 0) {//排除0大小
     return;
   }
 

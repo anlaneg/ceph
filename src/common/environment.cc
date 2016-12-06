@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <strings.h>
 
-bool get_env_bool(const char *key)
+bool get_env_bool(const char *key)//自env中获取key对应的bool值
 {
   const char *val = getenv(key);
   if (!val)
@@ -33,7 +33,7 @@ bool get_env_bool(const char *key)
   return true;
 }
 
-int get_env_int(const char *key)
+int get_env_int(const char *key)//自env中获取key对应的int值
 {
   const char *val = getenv(key);
   if (!val)

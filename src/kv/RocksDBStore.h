@@ -67,7 +67,7 @@ class RocksDBStore : public KeyValueDB {
   void *priv;
   rocksdb::DB *db;
   rocksdb::Env *env;
-  string options_str;
+  string options_str;//初始化选项
   int do_open(ostream &out, bool create_if_missing);
 
   // manage async compactions

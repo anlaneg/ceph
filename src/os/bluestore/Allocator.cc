@@ -8,6 +8,7 @@
 
 #define dout_subsys ceph_subsys_bluestore
 
+//依据类型生成不同的allocator,目前仅支持两个stupid,bitmap
 Allocator *Allocator::create(string type,
                              int64_t size, int64_t block_size)
 {

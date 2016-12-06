@@ -17,11 +17,12 @@
 #include "common/Checksummer.h"
 #include "include/stringify.h"
 
+//添加新申请到的物理范围
 void ExtentList::add_extents(int64_t start, int64_t count) {
   AllocExtent *last_extent = NULL;
   bool can_merge = false;
 
-  if (m_num_extents > 0) {
+  if (m_num_extents > 0) {//只有多于一个范围时，才有可合并的可能，检查能否合并
     last_extent = &((*m_extents)[m_num_extents - 1]);
     uint64_t last_offset = (last_extent->offset + last_extent->length) / 
 			m_block_size; 
@@ -33,12 +34,12 @@ void ExtentList::add_extents(int64_t start, int64_t count) {
     }
   }
 
-  if (can_merge) {
+  if (can_merge) {//可以合并时，直接更新最后一个段
     last_extent->length += (count * m_block_size);
-  } else {
+  } else {//不能合并，直接新起一个段
     (*m_extents)[m_num_extents].offset = start * m_block_size;
     (*m_extents)[m_num_extents].length = count * m_block_size;
-    m_num_extents++;
+    m_num_extents++;//增加已申请的块大小
   }
   assert((int64_t) m_extents->size() >= m_num_extents);
 }

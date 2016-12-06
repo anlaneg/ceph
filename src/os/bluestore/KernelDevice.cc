@@ -49,7 +49,7 @@ KernelDevice::KernelDevice(aio_callback_t cb, void *cbpriv)
   rotational = true;
 }
 
-int KernelDevice::_lock()
+int KernelDevice::_lock()//锁文件
 {
   struct flock l;
   memset(&l, 0, sizeof(l));
@@ -63,7 +63,7 @@ int KernelDevice::_lock()
   return 0;
 }
 
-int KernelDevice::open(string p)
+int KernelDevice::open(string p)//打开指定块设备或者普通文件
 {
   path = p;
   int r = 0;
@@ -83,20 +83,20 @@ int KernelDevice::open(string p)
   }
   dio = true;
   aio = g_conf->bdev_aio;
-  if (!aio) {
+  if (!aio) {//当前不支持非aio情况
     assert(0 == "non-aio not supported");
   }
 
   // disable readahead as it will wreak havoc on our mix of
   // directio/aio and buffered io.
-  r = posix_fadvise(fd_buffered, 0, 0, POSIX_FADV_RANDOM);
+  r = posix_fadvise(fd_buffered, 0, 0, POSIX_FADV_RANDOM);//指明此文件会随机访问
   if (r) {
     r = -r;
     derr << __func__ << " open got: " << cpp_strerror(r) << dendl;
     goto out_fail;
   }
 
-  r = _lock();
+  r = _lock();//防同时打开？
   if (r < 0) {
     derr << __func__ << " failed to lock " << path << ": " << cpp_strerror(r)
 	 << dendl;
@@ -104,13 +104,13 @@ int KernelDevice::open(string p)
   }
 
   struct stat st;
-  r = ::fstat(fd_direct, &st);
+  r = ::fstat(fd_direct, &st);//检查是否可访问
   if (r < 0) {
     r = -errno;
     derr << __func__ << " fstat got " << cpp_strerror(r) << dendl;
     goto out_fail;
   }
-  if (S_ISBLK(st.st_mode)) {
+  if (S_ISBLK(st.st_mode)) {//检查是否块设备
     int64_t s;
     r = get_block_device_size(fd_direct, &s);
     if (r < 0) {
@@ -119,7 +119,7 @@ int KernelDevice::open(string p)
 
     rotational = block_device_is_rotational(path.c_str());
     size = s;
-  } else {
+  } else {//采用规则文件
     size = st.st_size;
     //regular file is rotational device
     rotational = true;
@@ -140,7 +140,7 @@ int KernelDevice::open(string p)
   assert(fs);
 
   // round size down to an even block
-  size &= ~(block_size - 1);
+  size &= ~(block_size - 1);//将大小规范为block_size的整数倍
 
   r = _aio_start();
   assert(r == 0);
@@ -164,7 +164,7 @@ int KernelDevice::open(string p)
   return r;
 }
 
-void KernelDevice::close()
+void KernelDevice::close()//关闭文件或者块设备
 {
   dout(1) << __func__ << dendl;
   _aio_stop();
@@ -184,7 +184,7 @@ void KernelDevice::close()
   path.clear();
 }
 
-int KernelDevice::flush()
+int KernelDevice::flush()//实现数据落盘
 {
   bool ret = io_since_flush.compare_and_swap(1, 0);
   if (!ret) {
@@ -192,7 +192,7 @@ int KernelDevice::flush()
     return 0;
   }
   dout(10) << __func__ << " start" << dendl;
-  if (g_conf->bdev_inject_crash) {
+  if (g_conf->bdev_inject_crash) {//测试用代码，故障注入，无需关注
     ++injecting_crash;
     // sleep for a moment to give other threads a chance to submit or
     // wait on io that races with a flush.
@@ -203,7 +203,7 @@ int KernelDevice::flush()
     _exit(1);
   }
   utime_t start = ceph_clock_now(NULL);
-  int r = ::fdatasync(fd_direct);
+  int r = ::fdatasync(fd_direct);//同步
   utime_t end = ceph_clock_now(NULL);
   utime_t dur = end - start;
   if (r < 0) {
@@ -215,7 +215,7 @@ int KernelDevice::flush()
   return r;
 }
 
-int KernelDevice::_aio_start()
+int KernelDevice::_aio_start()//启动aio线程
 {
   if (aio) {
     dout(10) << __func__ << dendl;
@@ -229,7 +229,7 @@ int KernelDevice::_aio_start()
   return 0;
 }
 
-void KernelDevice::_aio_stop()
+void KernelDevice::_aio_stop()//控制aio线程停机
 {
   if (aio) {
     dout(10) << __func__ << dendl;
@@ -240,7 +240,7 @@ void KernelDevice::_aio_stop()
   }
 }
 
-void KernelDevice::_aio_thread()
+void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的结果收集
 {
   dout(10) << __func__ << " start" << dendl;
   int inject_crash_count = 0;
@@ -271,9 +271,9 @@ void KernelDevice::_aio_thread()
 	if (left == 0) {
 	  // check waiting count before doing callback (which may
 	  // destroy this ioc).
-	  ioc->aio_wake();
-	  if (ioc->priv) {
-	    aio_callback(aio_callback_priv, ioc->priv);
+	  ioc->aio_wake();//通知等待者，当前写完成
+	  if (ioc->priv) {//完成
+	    aio_callback(aio_callback_priv, ioc->priv);//执行回调
 	  }
 	}
       }
@@ -313,7 +313,7 @@ void KernelDevice::_aio_thread()
   dout(10) << __func__ << " end" << dendl;
 }
 
-void KernelDevice::_aio_log_start(
+void KernelDevice::_aio_log_start(//调试性代码
   IOContext *ioc,
   uint64_t offset,
   uint64_t length)
@@ -356,7 +356,7 @@ void KernelDevice::debug_aio_unlink(FS::aio_t& aio)
   }
 }
 
-void KernelDevice::_aio_log_finish(
+void KernelDevice::_aio_log_finish(//调试代码
   IOContext *ioc,
   uint64_t offset,
   uint64_t length)
@@ -425,7 +425,8 @@ void KernelDevice::aio_submit(IOContext *ioc)
   }
 }
 
-int KernelDevice::aio_write(
+//这个函数中的off参数比较重要，它指出了写fd的位置，通过分配此off，可以做到对物理空间的分配。
+int KernelDevice::aio_write(//将bl写入到指定fd中，写的位置由offset指定，buffered指定是否为可缓存写入
   uint64_t off,
   bufferlist &bl,
   IOContext *ioc,
@@ -457,7 +458,7 @@ int KernelDevice::aio_write(
     ++ioc->num_pending;
     FS::aio_t& aio = ioc->pending_aios.back();
     if (g_conf->bdev_inject_crash &&
-	rand() % g_conf->bdev_inject_crash == 0) {
+	rand() % g_conf->bdev_inject_crash == 0) {//测试代码
       derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
 	   << off << "~" << len << std::dec
 	   << dendl;
@@ -482,7 +483,7 @@ int KernelDevice::aio_write(
     dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
 	    << std::dec << " buffered" << dendl;
     if (g_conf->bdev_inject_crash &&
-	rand() % g_conf->bdev_inject_crash == 0) {
+	rand() % g_conf->bdev_inject_crash == 0) {//故障注入代码，用于测试
       derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
 	   << off << "~" << len << std::dec << dendl;
       ++injecting_crash;
@@ -491,7 +492,7 @@ int KernelDevice::aio_write(
     vector<iovec> iov;
     bl.prepare_iov(&iov);
     int r = ::pwritev(buffered ? fd_buffered : fd_direct,
-		      &iov[0], iov.size(), off);
+		      &iov[0], iov.size(), off);//采用pwritev写入，offset是这个fd写入时的偏移量，也是这个函数的关键
     _aio_log_finish(ioc, off, len);
 
     if (r < 0) {
@@ -501,7 +502,7 @@ int KernelDevice::aio_write(
     }
     if (buffered) {
       // initiate IO (but do not wait)
-      r = ::sync_file_range(fd_buffered, off, len, SYNC_FILE_RANGE_WRITE);
+      r = ::sync_file_range(fd_buffered, off, len, SYNC_FILE_RANGE_WRITE);//直接写入，不刷元数据，且只刷入文件的部分内容
       if (r < 0) {
         r = -errno;
         derr << __func__ << " sync_file_range error: " << cpp_strerror(r) << dendl;
@@ -514,6 +515,7 @@ int KernelDevice::aio_write(
   return 0;
 }
 
+//对齐的读取
 int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
 		      IOContext *ioc,
 		      bool buffered)
@@ -521,18 +523,18 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << (buffered ? " (buffered)" : " (direct)")
 	  << dendl;
-  assert(off % block_size == 0);
-  assert(len % block_size == 0);
+  assert(off % block_size == 0);//off必须对齐
+  assert(len % block_size == 0);//len必须对齐
   assert(len > 0);
   assert(off < size);
   assert(off + len <= size);
 
-  _aio_log_start(ioc, off, len);
+  _aio_log_start(ioc, off, len);//调试代码
   ++ioc->num_reading;
 
   bufferptr p = buffer::create_page_aligned(len);
   int r = ::pread(buffered ? fd_buffered : fd_direct,
-		  p.c_str(), len, off);
+		  p.c_str(), len, off);//一次性返回
   if (r < 0) {
     r = -errno;
     goto out;
@@ -552,9 +554,11 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   return r < 0 ? r : 0;
 }
 
+//针对不对齐的读，将其规范化后，完成读取
 int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
 {
-  uint64_t aligned_off = align_down(off, block_size);
+  uint64_t aligned_off = align_down(off, block_size);//向下取整,读取时左侧放大
+  //向上取整，读取时右侧放大（我们是加上off后计算的，减掉后一定是block_size的整数倍）
   uint64_t aligned_len = align_up(off+len, block_size) - aligned_off;
   bufferptr p = buffer::create_page_aligned(aligned_len);
   int r = 0;
@@ -567,7 +571,7 @@ int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
     goto out;
   }
   assert((uint64_t)r == aligned_len);
-  memcpy(buf, p.c_str() + (off - aligned_off), len);
+  memcpy(buf, p.c_str() + (off - aligned_off), len);//由于进行了多读，所以需要从多读里摘取出一部分返回
 
   dout(40) << __func__ << " data: ";
   bufferlist bl;
@@ -579,6 +583,7 @@ int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
   return r < 0 ? r : 0;
 }
 
+//随机读取（不需要考虑对齐）
 int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
                        bool buffered)
 {
@@ -590,6 +595,8 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
   int r = 0;
 
   //if it's direct io and unaligned, we have to use a internal buffer
+  //非缓存情况下，如果偏移量不是block_size的整数倍，或者要读的长度不是block的整数倍，或者可写的缓存不是页的整数倍，则采用
+  //非对齐读
   if (!buffered && ((off % block_size != 0)
                     || (len % block_size != 0)
                     || (uintptr_t(buf) % CEPH_PAGE_SIZE != 0)))
@@ -600,7 +607,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
     char *t = buf;
     uint64_t left = len;
     while (left > 0) {
-      r = ::pread(fd_buffered, t, left, off);
+      r = ::pread(fd_buffered, t, left, off);//指定偏移，并多次读取，直到读取完成
       if (r < 0) {
 	r = -errno;
         derr << __func__ << " 0x" << std::hex << off << "~" << left 
@@ -613,7 +620,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
     }
   } else {
     //direct and aligned read
-    r = ::pread(fd_direct, buf, len, off);
+    r = ::pread(fd_direct, buf, len, off);//直接读，会一次性返回
     if (r < 0) {
       r = -errno;
       derr << __func__ << " direct_aligned_read" << " 0x" << std::hex 
@@ -624,6 +631,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
     assert((uint64_t)r == len);
   }
 
+  //用于显示，不理会
   dout(40) << __func__ << " data: ";
   bufferlist bl;
   bl.append(buf, len);
@@ -634,7 +642,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
   return r < 0 ? r : 0;
 }
 
-int KernelDevice::invalidate_cache(uint64_t off, uint64_t len)
+int KernelDevice::invalidate_cache(uint64_t off, uint64_t len)//清楚对应的缓存
 {
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << dendl;

@@ -27,7 +27,7 @@
 #define SPDK_PREFIX "spdk:"
 
 /// track in-flight io
-struct IOContext {
+struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层，连接两端
   void *priv;
 #ifdef HAVE_SPDK
   void *nvme_task_first = nullptr;
@@ -56,9 +56,9 @@ struct IOContext {
     return num_pending.load();
   }
 
-  void aio_wait();
+  void aio_wait();//在此等aio
 
-  void aio_wake() {
+  void aio_wake() {//尝试着唤醒
     if (num_waiting.load()) {
       std::lock_guard<std::mutex> l(lock);
       cond.notify_all();
@@ -66,14 +66,14 @@ struct IOContext {
   }
 };
 
-
+//基类，向上提供两种kernel的用一写裸设备，
 class BlockDevice {
   std::mutex ioc_reap_lock;
   vector<IOContext*> ioc_reap_queue;
   std::atomic_int ioc_reap_count = {0};
 
 protected:
-  bool rotational;
+  bool rotational;//是否可转动设备（普通硬盘）,如果是ssd，则此值为false
 
 public:
   BlockDevice() = default;

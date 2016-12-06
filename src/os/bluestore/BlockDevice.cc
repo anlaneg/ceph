@@ -45,7 +45,7 @@ void IOContext::aio_wait()
 
 BlockDevice *BlockDevice::create(const string& path, aio_callback_t cb, void *cbpriv)
 {
-  string type = "kernel";
+  string type = "kernel";//默认用kernel,如果path有spdk前缀，则用nvme
   char buf[PATH_MAX + 1];
   int r = ::readlink(path.c_str(), buf, sizeof(buf) - 1);
   if (r >= 0) {

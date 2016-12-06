@@ -1487,16 +1487,16 @@ public:
   // members
 private:
   CephContext *cct;
-  BlueFS *bluefs;
+  BlueFS *bluefs;//用于db,slow等块设备
   unsigned bluefs_shared_bdev;  ///< which bluefs bdev we are sharing
   KeyValueDB *db;
-  BlockDevice *bdev;
-  std::string freelist_type;
+  BlockDevice *bdev;//block设备
+  std::string freelist_type;//freelist的类型，默认为bitmap
   FreelistManager *fm;
   Allocator *alloc;
   uuid_d fsid;
-  int path_fd;  ///< open handle to $path
-  int fsid_fd;  ///< open handle (locked) to $path/fsid
+  int path_fd;  ///< open handle to $path //path对应的fd
+  int fsid_fd;  ///< open handle (locked) to $path/fsid //fsid对应的fd
   bool mounted;
 
   RWLock coll_lock;    ///< rwlock to protect coll_map
@@ -1542,8 +1542,8 @@ private:
 
   std::atomic<int> csum_type;
 
-  uint64_t block_size;     ///< block size of block device (power of 2)
-  uint64_t block_mask;     ///< mask to get just the block offset
+  uint64_t block_size;     ///< block size of block device (power of 2) //设置块大小
+  uint64_t block_mask;     ///< mask to get just the block offset　//块对应的mask
   size_t block_size_order; ///< bits to shift to get block size
 
   uint64_t min_alloc_size = 0; ///< minimum allocation unit (power of 2)
@@ -1657,7 +1657,7 @@ private:
   void _txc_state_proc(TransContext *txc);
   void _txc_aio_submit(TransContext *txc);
 public:
-  void _txc_aio_finish(void *p) {
+  void _txc_aio_finish(void *p) {//aiop完成后进入
     _txc_state_proc(static_cast<TransContext*>(p));
   }
 private:

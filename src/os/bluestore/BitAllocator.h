@@ -502,7 +502,7 @@ private:
   pthread_rwlock_t m_rw_lock;
   BitAllocatorStats *m_stats;
   bool m_is_stats_on;
-  int64_t m_extra_blocks;
+  int64_t m_extra_blocks;//记录的额外块数
 
   bool is_stats_on() {
     return m_is_stats_on;

@@ -39,7 +39,7 @@
 
 // ---------------
 
-FS *FS::create(uint64_t f_type)
+FS *FS::create(uint64_t f_type)//依据文件类型，创建不同的FS
 {
   switch (f_type) {
 #ifdef HAVE_LIBXFS

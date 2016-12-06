@@ -15,7 +15,7 @@ class BitMapAllocator : public Allocator {
 
   int64_t m_num_uncommitted;
   int64_t m_num_committing;
-  int64_t m_block_size;
+  int64_t m_block_size;//块大小
   int64_t m_num_reserved;
 
   btree_interval_set<uint64_t> m_uncommitted; ///< released but not yet usable

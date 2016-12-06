@@ -313,7 +313,7 @@ namespace buffer CEPH_BUFFER_API {
     bool is_zero() const;
 
     // modifiers
-    void set_offset(unsigned o) {
+    void set_offset(unsigned o) {//修改offset
       assert(raw_length() >= o);
       _off = o;
     }
@@ -586,8 +586,8 @@ namespace buffer CEPH_BUFFER_API {
       bufferlist *pbl;
       size_t offset;
       unsigned min_alloc;
-      ptr buffer;
-      char *pos, *end;
+      ptr buffer;//buffer中的内容可以加入pbl也可能没有（通过pos＝＝0来区分）
+      char *pos, *end;//这两个参数，用于指出buffer的可用区间
 
       page_aligned_appender(list *l, unsigned min_pages)
 	: pbl(l),
@@ -602,7 +602,7 @@ namespace buffer CEPH_BUFFER_API {
       }
 
       void flush() {
-	if (pos && pos != buffer.c_str()) {
+	if (pos && pos != buffer.c_str()) {//将未填满的buffer刷入到pbl中（设置长度，设置offset,方便记录下次写入)
 	  size_t len = pos - buffer.c_str();
 	  pbl->append(buffer, 0, len);
 	  buffer.set_length(buffer.length() - len);
@@ -613,24 +613,24 @@ namespace buffer CEPH_BUFFER_API {
       void append(const char *buf, size_t len) {
 	while (len > 0) {
 	  if (!pos) {
-	    size_t alloc = (len + CEPH_PAGE_SIZE - 1) & CEPH_PAGE_MASK;
-	    if (alloc < min_alloc) {
+	    size_t alloc = (len + CEPH_PAGE_SIZE - 1) & CEPH_PAGE_MASK;//规则为page的整数倍
+	    if (alloc < min_alloc) {//规则为最小申请数
 	      alloc = min_alloc;
 	    }
-	    buffer = create_page_aligned(alloc);
-	    pos = buffer.c_str();
-	    end = buffer.end_c_str();
+	    buffer = create_page_aligned(alloc);//申请页对齐内存（返回的是raw,但接受的是buffer是Ptr类型，这里隐含进行了提升）
+	    pos = buffer.c_str();//返回起始位置
+	    end = buffer.end_c_str();//返回终止位置
 	  }
 	  size_t l = len;
-	  if (l > (size_t)(end - pos)) {
+	  if (l > (size_t)(end - pos)) {//如果要copy的数据量太大，则一半一半的copy
 	    l = end - pos;
 	  }
-	  memcpy(pos, buf, l);
+	  memcpy(pos, buf, l);//copy数据，并更新读写位置，减少长度
 	  pos += l;
 	  buf += l;
 	  len -= l;
-	  if (pos == end) {
-	    pbl->append(buffer, 0, buffer.length());
+	  if (pos == end) {//buffer空间用光，将其加入pbl中
+	    pbl->append(buffer, 0, buffer.length());//将buffer加入到pbl中
 	    pos = end = nullptr;
 	  }
 	}

@@ -37,7 +37,7 @@ void set_block_device_sandbox_dir(const char *dir)
     sandbox_dir = "";
 }
 
-int get_block_device_size(int fd, int64_t *psize)
+int get_block_device_size(int fd, int64_t *psize)//获取块设备大小
 {
 #ifdef BLKGETSIZE64
   int ret = ::ioctl(fd, BLKGETSIZE64, psize);
@@ -60,7 +60,7 @@ int get_block_device_size(int fd, int64_t *psize)
  *   /dev/cciss/c0d1p2 -> cciss/c0d1
  *  dev can a symbolic link.
  */
-int get_block_device_base(const char *dev, char *out, size_t out_len)
+int get_block_device_base(const char *dev, char *out, size_t out_len)//获取设备名称，自/dev/sda3获得sda
 {
   struct stat st;
   int r = 0;
@@ -69,15 +69,15 @@ int get_block_device_base(const char *dev, char *out, size_t out_len)
   char *p;
   char realname[PATH_MAX] = {0};
 
-  if (strncmp(dev, "/dev/", 5) != 0) {
+  if (strncmp(dev, "/dev/", 5) != 0) {//检查前缀是否'/dev/',如果不时，尝试解引用后再试
     if ((readlink(dev, realname, sizeof(realname)) == -1) || (strncmp(realname, "/dev/", 5) != 0))
-      return -EINVAL;
+      return -EINVAL;//没有指向/dev，失败
   }
 
   if (strlen(realname))
     strncpy(devname, realname + 5, PATH_MAX -1);
   else
-    strncpy(devname, dev + 5, PATH_MAX-1);
+    strncpy(devname, dev + 5, PATH_MAX-1);//跳过'/dev/'
 
   devname[PATH_MAX-1] = '\0';
   for (p = devname; *p; ++p)
@@ -94,7 +94,7 @@ int get_block_device_base(const char *dev, char *out, size_t out_len)
   }
 
   snprintf(fn, sizeof(fn), "%s/sys/block", sandbox_dir);
-  dir = opendir(fn);
+  dir = opendir(fn);//尝试打开：/sys/block/
   if (!dir)
     return -errno;
 
@@ -105,13 +105,13 @@ int get_block_device_base(const char *dev, char *out, size_t out_len)
     snprintf(fn, sizeof(fn), "%s/sys/block/%s/%s", sandbox_dir, de->d_name,
 	     devname);
 
-    if (stat(fn, &st) == 0) {
+    if (stat(fn, &st) == 0) {//检查/sys/block/sda/sda2是否存在
       // match!
-      if (strlen(de->d_name) + 1 > out_len) {
+      if (strlen(de->d_name) + 1 > out_len) {//不足以填充
 	r = -ERANGE;
 	goto out;
       }
-      strncpy(out, de->d_name, out_len);
+      strncpy(out, de->d_name, out_len);//填充
       r = 0;
       goto out;
     }
@@ -129,6 +129,7 @@ int get_block_device_base(const char *dev, char *out, size_t out_len)
  * return the value (we assume it is positive)
  * return negative error on error
  */
+//读取'/sys/block/$basename/queue/$property文件内对应的数字
 int64_t get_block_device_int_property(const char *devname, const char *property)
 {
   char basename[PATH_MAX], filename[PATH_MAX];

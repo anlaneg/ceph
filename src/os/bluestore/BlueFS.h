@@ -41,9 +41,9 @@ enum {
 class BlueFS {
 public:
   static constexpr unsigned MAX_BDEV = 3;
-  static constexpr unsigned BDEV_WAL = 0;
-  static constexpr unsigned BDEV_DB = 1;
-  static constexpr unsigned BDEV_SLOW = 2;
+  static constexpr unsigned BDEV_WAL = 0;//".wal"目录
+  static constexpr unsigned BDEV_DB = 1; //排除其它两种后的
+  static constexpr unsigned BDEV_SLOW = 2;//".slow"目录
 
   enum {
     WRITER_UNKNOWN,
@@ -56,12 +56,12 @@ public:
 
     bluefs_fnode_t fnode;
     int refs;
-    uint64_t dirty_seq;
-    bool locked;
-    bool deleted;
+    uint64_t dirty_seq;//标记文件处于dirty_files中的索引号{dirty是元数据有变}
+    bool locked;//标记文件是否被锁
+    bool deleted;//标记文件已被删除
     boost::intrusive::list_member_hook<> dirty_item;
 
-    std::atomic_int num_readers, num_writers;
+    std::atomic_int num_readers, num_writers;//写者，读者数目
     std::atomic_int num_reading;
 
     File()
@@ -100,7 +100,7 @@ public:
   struct Dir : public RefCountedObject {
     MEMPOOL_CLASS_HELPERS();
 
-    mempool::bluefs::map<string,FileRef> file_map;
+    mempool::bluefs::map<string,FileRef> file_map;//目录中包含的文件
 
     Dir() : RefCountedObject(NULL, 0) {}
 
@@ -117,14 +117,15 @@ public:
     MEMPOOL_CLASS_HELPERS();
 
     FileRef file;
-    uint64_t pos;           ///< start offset for buffer
+    uint64_t pos;           ///< start offset for buffer //标明写的位置
     bufferlist buffer;      ///< new data to write (at end of file)
+    //在文件的结尾可能会存在一些数据，这些数据在上次写时，不足一页，保存在此块中，解决写时需要读取问题，见flush函数
     bufferlist tail_block;  ///< existing partial block at end of file, if any
-    bufferlist::page_aligned_appender buffer_appender;  //< for const char* only
-    int writer_type = 0;    ///< WRITER_*
+    bufferlist::page_aligned_appender buffer_appender;  //< for const char* only //采用list串起来的一组buffer
+    int writer_type = 0;    ///< WRITER_* //写类型.log,.sst
 
     std::mutex lock;
-    std::array<IOContext*,MAX_BDEV> iocv; ///< for each bdev
+    std::array<IOContext*,MAX_BDEV> iocv; ///< for each bdev //为每种bdev创建IO上下文
 
     FileWriter(FileRef f)
       : file(f),
@@ -140,17 +141,17 @@ public:
     // note: BlueRocksEnv uses this append exclusively, so it's safe
     // to use buffer_appender exclusively here (e.g., it's notion of
     // offset will remain accurate).
-    void append(const char *buf, size_t len) {
+    void append(const char *buf, size_t len) {//将buf中的len长度数据加入到buffer_appender中
       buffer_appender.append(buf, len);
     }
 
     // note: used internally only, for ino 1 or 0.
-    void append(bufferlist& bl) {
+    void append(bufferlist& bl) {//合并bl
       buffer.claim_append(bl);
     }
 
     uint64_t get_effective_write_pos() {
-      buffer_appender.flush();
+      buffer_appender.flush();//先刷入，再计算长度
       return pos + buffer.length();
     }
   };
@@ -218,20 +219,21 @@ private:
   PerfCounters *logger = nullptr;
 
   // cache
-  mempool::bluefs::map<string, DirRef> dir_map;              ///< dirname -> Dir
+  mempool::bluefs::map<string, DirRef> dir_map;              ///< dirname -> Dir //bluefs中的目录信息给出名称获取DirRef
   mempool::bluefs::unordered_map<uint64_t,FileRef> file_map; ///< ino -> File
 
   // map of dirty files, files of same dirty_seq are grouped into list.
-  map<uint64_t, dirty_file_list_t> dirty_files;
+  //记录dirty的文件
+  map<uint64_t, dirty_file_list_t> dirty_files;//相同的dirty_seq处于同一个list中，用于指出哪组文件元数据有变更
 
-  bluefs_super_t super;        ///< latest superblock (as last written)
-  uint64_t ino_last = 0;       ///< last assigned ino (this one is in use)
-  uint64_t log_seq = 0;        ///< last used log seq (by current pending log_t)
-  uint64_t log_seq_stable = 0; ///< last stable/synced log seq
-  FileWriter *log_writer = 0;  ///< writer for the log
-  bluefs_transaction_t log_t;  ///< pending, unwritten log transaction
-  bool log_flushing = false;   ///< true while flushing the log
-  std::condition_variable log_cond;
+  bluefs_super_t super;        ///< latest superblock (as last written)　　　　//bluefs文件系统超级块
+  uint64_t ino_last = 0;       ///< last assigned ino (this one is in use) //inode分配
+  uint64_t log_seq = 0;        ///< last used log seq (by current pending log_t) //实现log的sequece分配
+  uint64_t log_seq_stable = 0; ///< last stable/synced log seq //记录已固化的seq
+  FileWriter *log_writer = 0;  ///< writer for the log //日志文件的write
+  bluefs_transaction_t log_t;  ///< pending, unwritten log transaction //记录未写入的log事务
+  bool log_flushing = false;   ///< true while flushing the log //标记是否正在执行log刷新
+  std::condition_variable log_cond;//与读写大锁配合实现刷新时，阻塞等待
 
   uint64_t new_log_jump_to = 0;
   uint64_t old_log_jump_to = 0;
@@ -245,11 +247,11 @@ private:
    *  BDEV_WAL  db.wal/  - a small, fast device, specifically for the WAL
    *  BDEV_SLOW db.slow/ - a big, slow device, to spill over to as BDEV_DB fills
    */
-  vector<BlockDevice*> bdev;                  ///< block devices we can use
+  vector<BlockDevice*> bdev;                  ///< block devices we can use //指出哪些块设备我们可以用
   vector<IOContext*> ioc;                     ///< IOContexts for bdevs
-  vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own
-  vector<uint64_t> block_total;               ///< sum of block_all
-  vector<Allocator*> alloc;                   ///< allocators for bdevs
+  vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own　//记录每块dev的可用范围（每个块设备占用一项，内层为一个set列表）
+  vector<uint64_t> block_total;               ///< sum of block_all　//记录每块dev的最block数目（每个块设备占用一项）
+  vector<Allocator*> alloc;                   ///< allocators for bdevs //记录分配内容(每个块设备占一项）
 
   void _init_logger();
   void _shutdown_logger();

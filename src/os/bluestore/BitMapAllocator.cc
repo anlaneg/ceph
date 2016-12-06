@@ -24,7 +24,7 @@ BitMapAllocator::BitMapAllocator(int64_t device_size, int64_t block_size)
     m_num_committing(0)
 {
   assert(ISP2(block_size));
-  if (!ISP2(block_size)) {
+  if (!ISP2(block_size)) {//如果块大小不是2的n次方，报错
     derr << __func__ << " block_size " << block_size
          << " not power of 2 aligned!"
          << dendl;
@@ -33,7 +33,7 @@ BitMapAllocator::BitMapAllocator(int64_t device_size, int64_t block_size)
 
   int64_t zone_size_blks = g_conf->bluestore_bitmapallocator_blocks_per_zone;
   assert(ISP2(zone_size_blks));
-  if (!ISP2(zone_size_blks)) {
+  if (!ISP2(zone_size_blks)) {//如果zone大小不是2的n次
     derr << __func__ << " zone_size " << zone_size_blks
          << " not power of 2 aligned!"
          << dendl;
@@ -42,7 +42,7 @@ BitMapAllocator::BitMapAllocator(int64_t device_size, int64_t block_size)
 
   int64_t span_size = g_conf->bluestore_bitmapallocator_span_size;
   assert(ISP2(span_size));
-  if (!ISP2(span_size)) {
+  if (!ISP2(span_size)) {//如果span大小不是2的n次方（仅检查配置）
     derr << __func__ << " span_size " << span_size
          << " not power of 2 aligned!"
          << dendl;
@@ -53,7 +53,7 @@ BitMapAllocator::BitMapAllocator(int64_t device_size, int64_t block_size)
   m_bit_alloc = new BitAllocator(device_size / block_size,
         zone_size_blks, CONCURRENT, true);
   assert(m_bit_alloc);
-  if (!m_bit_alloc) {
+  if (!m_bit_alloc) {//没有申请成功
     derr << __func__ << " Unable to intialize Bit Allocator" << dendl;
   }
   dout(10) << __func__ << " instance " << (uint64_t) this
@@ -76,8 +76,8 @@ void BitMapAllocator::insert_free(uint64_t off, uint64_t len)
   assert(!(off % m_block_size));
   assert(!(len % m_block_size));
 
-  m_bit_alloc->free_blocks(off / m_block_size,
-             len / m_block_size);
+  m_bit_alloc->free_blocks(off / m_block_size,//起始块
+             len / m_block_size);//块数量
 }
 
 int BitMapAllocator::reserve(uint64_t need)
@@ -286,13 +286,13 @@ void BitMapAllocator::init_add_free(uint64_t offset, uint64_t length)
            << dendl;
   uint64_t size = m_bit_alloc->size() * m_block_size;
 
-  uint64_t offset_adj = ROUND_UP_TO(offset, m_block_size);
-  uint64_t length_adj = ((length - (offset_adj - offset)) /
+  uint64_t offset_adj = ROUND_UP_TO(offset, m_block_size);//调整offset
+  uint64_t length_adj = ((length - (offset_adj - offset)) / //获得调整后的len
                          m_block_size) * m_block_size;
 
-  if ((offset_adj + length_adj) > size) {
+  if ((offset_adj + length_adj) > size) {//检查是否足够分配
     assert(((offset_adj + length_adj) - m_block_size) < size);
-    length_adj = size - offset_adj;
+    length_adj = size - offset_adj;//缩小
   }
 
   insert_free(offset_adj, length_adj);

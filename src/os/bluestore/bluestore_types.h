@@ -66,8 +66,8 @@ class AllocExtent;
 typedef mempool::bluestore_alloc::vector<AllocExtent> AllocExtentVector;
 class AllocExtent {
 public:
-  uint64_t offset;
-  uint32_t length;
+  uint64_t offset;//偏移量
+  uint32_t length;//长度
 
   AllocExtent() { 
     offset = 0;
@@ -81,10 +81,10 @@ public:
 };
 
 class ExtentList {
-  AllocExtentVector *m_extents;
-  int64_t m_num_extents;
-  int64_t m_block_size;
-  uint64_t m_max_alloc_size;
+  AllocExtentVector *m_extents;//填充
+  int64_t m_num_extents;//这个成员变量比较不好记，它是我们每向m_extents中加一块，它就增加一个。
+  int64_t m_block_size;//块大小
+  uint64_t m_max_alloc_size;//最大要的字节数
 
 public:
   void init(AllocExtentVector *extents, int64_t block_size, uint64_t max_alloc_size) {

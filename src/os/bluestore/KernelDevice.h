@@ -24,11 +24,11 @@
 
 class KernelDevice : public BlockDevice {
   int fd_direct, fd_buffered;
-  uint64_t size;
-  uint64_t block_size;
-  string path;
-  FS *fs;
-  bool aio, dio;
+  uint64_t size;//这个磁盘大小
+  uint64_t block_size;//块大小
+  string path;//磁盘对应的路径
+  FS *fs;//依据不同的类型，例如xfs文件系统生成对应的XFS类
+  bool aio, dio;//是否开启aio,dio
   bufferptr zeros;
 
   Mutex debug_lock;
@@ -37,19 +37,19 @@ class KernelDevice : public BlockDevice {
   Mutex flush_lock;
   atomic_t io_since_flush;
 
-  FS::aio_queue_t aio_queue;
-  aio_callback_t aio_callback;
-  void *aio_callback_priv;
-  bool aio_stop;
+  FS::aio_queue_t aio_queue;//aio队列
+  aio_callback_t aio_callback;//aio完成时的回调函数
+  void *aio_callback_priv;//aio完成时回主财函数的第一个参数
+  bool aio_stop;//aio线程停止标记
 
   struct AioCompletionThread : public Thread {
     KernelDevice *bdev;
     explicit AioCompletionThread(KernelDevice *b) : bdev(b) {}
     void *entry() {
-      bdev->_aio_thread();
+      bdev->_aio_thread();//实现aio写
       return NULL;
     }
-  } aio_thread;
+  } aio_thread;//aio线程
 
   std::atomic_int injecting_crash;
 
