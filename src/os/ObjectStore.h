@@ -340,6 +340,9 @@ public:
    * A and B.
    *
    */
+  //对操作集的封装（支持将多个操作打包执行），很显然，打包的目的是为了方便数据传输，但
+  //也应注意到，回调函数是不可能打包的（不同版本间有问题），所以回调实际上在代码中是硬编码
+  //
   class Transaction {
   public:
     enum {
@@ -417,10 +420,10 @@ public:
     } __attribute__ ((packed)) ;
 
     struct TransactionData {
-      __le64 ops;
-      __le32 largest_data_len;
-      __le32 largest_data_off;
-      __le32 largest_data_off_in_data_bl;
+      __le64 ops;//事务的操作数
+      __le32 largest_data_len;//最大数据长度
+      __le32 largest_data_off;//最大数据的offset
+      __le32 largest_data_off_in_data_bl;//最大数据在data_bl中的offset
       __le32 fadvise_flags;
 
       TransactionData() noexcept :
@@ -473,14 +476,14 @@ public:
 
     void *osr {nullptr}; // NULL on replay
 
-    map<coll_t, __le32> coll_index;
-    map<ghobject_t, __le32, ghobject_t::BitwiseComparator> object_index;
+    map<coll_t, __le32> coll_index;//collection索引（临时用,哈哈，能再恶心点不？）
+    map<ghobject_t, __le32, ghobject_t::BitwiseComparator> object_index;//object索引
 
-    __le32 coll_id {0};
-    __le32 object_id {0};
+    __le32 coll_id {0};//collect　id （临时用）
+    __le32 object_id {0};//object id (临时用）
 
     bufferlist data_bl;
-    bufferlist op_bl;
+    bufferlist op_bl;//操作数据块（OP类型构成）
 
     bufferptr op_ptr;
 
@@ -582,12 +585,12 @@ public:
 	on_commit.splice(on_commit.end(), (*i).on_commit);
 	on_applied_sync.splice(on_applied_sync.end(), (*i).on_applied_sync);
       }
-      *out_on_applied = C_Contexts::list_to_context(on_applied);
+      *out_on_applied = C_Contexts::list_to_context(on_applied);//收集后，组装成list
       *out_on_commit = C_Contexts::list_to_context(on_commit);
       *out_on_applied_sync = C_Contexts::list_to_context(on_applied_sync);
     }
 
-    Context *get_on_applied() {
+    Context *get_on_applied() {//将回调通过list　context返回
       return C_Contexts::list_to_context(on_applied);
     }
     Context *get_on_commit() {
@@ -605,7 +608,7 @@ public:
     }
     uint32_t get_fadvise_flags() { return data.fadvise_flags; }
 
-    void swap(Transaction& other) noexcept {
+    void swap(Transaction& other) noexcept {//交换
       std::swap(data, other.data);
       std::swap(on_applied, other.on_applied);
       std::swap(on_commit, other.on_commit);
@@ -621,7 +624,7 @@ public:
 
     void _update_op(Op* op,
       vector<__le32> &cm,
-      vector<__le32> &om) {
+      vector<__le32> &om) {//用cm,om中的值来更新op,op中的cid,oid取cm,om中指定索引
 
       switch (op->op) {
       case OP_NOP:
@@ -709,6 +712,7 @@ public:
         assert(0 == "Unkown OP");
       }
     }
+    //将cm,om中的数据，封闭成op数组填充进bl中（这也是Op为什么会是packet对齐）
     void _update_op_bl(
       bufferlist& bl,
       vector<__le32> &cm,
@@ -729,21 +733,22 @@ public:
       }
     }
     /// Append the operations of the parameter to this Transaction. Those operations are removed from the parameter Transaction
+    //将other合入到当前事务
     void append(Transaction& other) {
 
-      data.ops += other.data.ops;
+      data.ops += other.data.ops;//合并操作数
       if (other.data.largest_data_len > data.largest_data_len) {
 	data.largest_data_len = other.data.largest_data_len;
 	data.largest_data_off = other.data.largest_data_off;
 	data.largest_data_off_in_data_bl = data_bl.length() + other.data.largest_data_off_in_data_bl;
       }
       data.fadvise_flags |= other.data.fadvise_flags;
-      on_applied.splice(on_applied.end(), other.on_applied);
+      on_applied.splice(on_applied.end(), other.on_applied);//合并回调
       on_commit.splice(on_commit.end(), other.on_commit);
       on_applied_sync.splice(on_applied_sync.end(), other.on_applied_sync);
 
       //append coll_index & object_index
-      vector<__le32> cm(other.coll_index.size());
+      vector<__le32> cm(other.coll_index.size());//填充collections索引
       map<coll_t, __le32>::iterator coll_index_p;
       for (coll_index_p = other.coll_index.begin();
            coll_index_p != other.coll_index.end();
@@ -751,7 +756,7 @@ public:
         cm[coll_index_p->second] = _get_coll_id(coll_index_p->first);
       }
 
-      vector<__le32> om(other.object_index.size());
+      vector<__le32> om(other.object_index.size());//填充object索引
       map<ghobject_t, __le32, ghobject_t::BitwiseComparator>::iterator object_index_p;
       for (object_index_p = other.object_index.begin();
            object_index_p != other.object_index.end();
@@ -781,7 +786,7 @@ public:
     /** Inquires about the Transaction as a whole. */
 
     /// How big is the encoded Transaction buffer?
-    uint64_t get_encoded_bytes() {
+    uint64_t get_encoded_bytes() {//事务编码后的字节总大小
       //layout: data_bl + op_bl + coll_index + object_index + data
 
       // coll_index size, object_index size and sizeof(transaction_data)
@@ -872,14 +877,14 @@ public:
     class iterator {
       Transaction *t;
 
-      uint64_t ops;
-      char* op_buffer_p;
+      uint64_t ops;//操作数
+      char* op_buffer_p;//op的起始位置
 
       bufferlist::iterator data_bl_p;
 
     public:
-      vector<coll_t> colls;
-      vector<ghobject_t> objects;
+      vector<coll_t> colls;//t->coll_index的反序，给出索引，找对应的collects
+      vector<ghobject_t> objects;//找对应的object
 
     private:
       explicit iterator(Transaction *t)
@@ -895,7 +900,7 @@ public:
         for (coll_index_p = t->coll_index.begin();
              coll_index_p != t->coll_index.end();
              ++coll_index_p) {
-          colls[coll_index_p->second] = coll_index_p->first;
+          colls[coll_index_p->second] = coll_index_p->first;//构造操作相关的collections对照表
         }
 
         map<ghobject_t, __le32, ghobject_t::BitwiseComparator>::iterator object_index_p;
@@ -910,15 +915,15 @@ public:
 
     public:
 
-      bool have_op() {
+      bool have_op() {//是否还有操作
         return ops > 0;
       }
-      Op* decode_op() {
+      Op* decode_op() {//对操作解码，并返回
         assert(ops > 0);
 
         Op* op = reinterpret_cast<Op*>(op_buffer_p);
-        op_buffer_p += sizeof(Op);
-        ops--;
+        op_buffer_p += sizeof(Op);//操作向前进
+        ops--;//操作数减小
 
         return op;
       }
@@ -962,7 +967,7 @@ public:
       }
     };
 
-    iterator begin() {
+    iterator begin() {//构造一个迭代器
        return iterator(this);
     }
 
@@ -990,13 +995,13 @@ private:
       memset(p, 0, sizeof(Op));
       return reinterpret_cast<Op*>(p);
     }
-    __le32 _get_coll_id(const coll_t& coll) {
+    __le32 _get_coll_id(const coll_t& coll) {//如果coll存在，则返回其对应的index,否则为其分配index
       map<coll_t, __le32>::iterator c = coll_index.find(coll);
       if (c != coll_index.end())
-        return c->second;
+        return c->second;//之前已分这个collection分配过index,直接返回
 
-      __le32 index_id = coll_id++;
-      coll_index[coll] = index_id;
+      __le32 index_id = coll_id++;//没有分配过，现在给它分配id
+      coll_index[coll] = index_id;//将分配好的索引填充进去
       return index_id;
     }
     __le32 _get_object_id(const ghobject_t& oid) {
@@ -1028,7 +1033,7 @@ public:
      * Ensure the existance of an object in a collection. Create an
      * empty object if necessary
      */
-    void touch(const coll_t& cid, const ghobject_t& oid) {
+    void touch(const coll_t& cid, const ghobject_t& oid) {//将touch操作装进本事务
       Op* _op = _get_next_op();
       _op->op = OP_TOUCH;
       _op->cid = _get_coll_id(cid);
@@ -1453,7 +1458,7 @@ public:
     assert(!tls.empty());
     tls.back().register_on_applied(onreadable);
     tls.back().register_on_commit(ondisk);
-    tls.back().register_on_applied_sync(onreadable_sync);
+    tls.back().register_on_applied_sync(onreadable_sync);//仅给最后一个注册回调
     return queue_transactions(osr, tls, op, handle);
   }
 

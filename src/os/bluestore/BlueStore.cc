@@ -207,7 +207,7 @@ static string pretty_binary_string(const string& in)
   return out;
 }
 
-static void _key_encode_shard(shard_id_t shard, string *key)
+static void _key_encode_shard(shard_id_t shard, string *key)//将shard转化为字符串，并将其加入到key中
 {
   key->push_back((char)((uint8_t)shard.id + (uint8_t)0x80));
 }
@@ -228,24 +228,24 @@ static void get_coll_key_range(const coll_t& cid, int bits,
 
   spg_t pgid;
   if (cid.is_pg(&pgid)) {
-    _key_encode_shard(pgid.shard, start);
+    _key_encode_shard(pgid.shard, start);//加入shard值（ec考虑）
     *temp_start = *start;
 
-    _key_encode_u64(pgid.pool() + 0x8000000000000000ull, start);
+    _key_encode_u64(pgid.pool() + 0x8000000000000000ull, start);//加入pool
     _key_encode_u64((-2ll - pgid.pool()) + 0x8000000000000000ull, temp_start);
 
     *end = *start;
     *temp_end = *temp_start;
 
     uint32_t reverse_hash = hobject_t::_reverse_bits(pgid.ps());
-    _key_encode_u32(reverse_hash, start);
+    _key_encode_u32(reverse_hash, start);//加入ps
     _key_encode_u32(reverse_hash, temp_start);
 
     uint64_t end_hash = reverse_hash  + (1ull << (32 - bits));
     if (end_hash > 0xffffffffull)
       end_hash = 0xffffffffull;
 
-    _key_encode_u32(end_hash, end);
+    _key_encode_u32(end_hash, end);//加入hash
     _key_encode_u32(end_hash, temp_end);
   } else {
     _key_encode_shard(shard_id_t::NO_SHARD, start);
@@ -277,6 +277,7 @@ static int get_key_shared_blob(const string& key, uint64_t *sbid)
 
 static int get_key_object(const string& key, ghobject_t *oid);
 
+//由oid生成其对应的key(即统一的名称）
 static void get_object_key(const ghobject_t& oid, string *key)
 {
   key->clear();
@@ -2380,14 +2381,14 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   int r = store->db->get(PREFIX_OBJ, key, &v);
   dout(20) << " r " << r << " v.len " << v.length() << dendl;
   Onode *on;
-  if (v.length() == 0) {
+  if (v.length() == 0) {//数据库里没有
     assert(r == -ENOENT);
     if (!g_conf->bluestore_debug_misc &&
 	!create)
       return OnodeRef();
 
     // new object, new onode
-    on = new Onode(&onode_map, this, oid, key);
+    on = new Onode(&onode_map, this, oid, key);//创建
   } else {
     // loaded
     assert(r >= 0);
@@ -5518,15 +5519,16 @@ int BlueStore::collection_list(
   return r;
 }
 
+//列出指定collection中的所有object(通过start,end来定位，通过db查找）
 int BlueStore::_collection_list(
   Collection* c, ghobject_t start, ghobject_t end,
   bool sort_bitwise, int max,
   vector<ghobject_t> *ls, ghobject_t *pnext)
 {
 
-  if (!c->exists)
+  if (!c->exists)//不存在，返回失败
     return -ENOENT;
-  if (!sort_bitwise)
+  if (!sort_bitwise)//不支持sort_bitwise为false情况
     return -EOPNOTSUPP;
 
   int r = 0;
@@ -5542,26 +5544,26 @@ int BlueStore::_collection_list(
     pnext = &static_next;
 
   if (start == ghobject_t::get_max() ||
-    start.hobj.is_max()) {
+    start.hobj.is_max()) {//max后面就没有了
     goto out;
   }
   get_coll_key_range(c->cid, c->cnode.bits, &temp_start_key, &temp_end_key,
-    &start_key, &end_key);
+    &start_key, &end_key);//组合出temp_start,temp_end,start,end对应的hash值
   dout(20) << __func__
     << " range " << pretty_binary_string(temp_start_key)
     << " to " << pretty_binary_string(temp_end_key)
     << " and " << pretty_binary_string(start_key)
     << " to " << pretty_binary_string(end_key)
     << " start " << start << dendl;
-  it = db->get_iterator(PREFIX_OBJ);
+  it = db->get_iterator(PREFIX_OBJ);//生成iterator
   if (start == ghobject_t() ||
     start.hobj == hobject_t() ||
     start == c->cid.get_min_hobj()) {
-    it->upper_bound(temp_start_key);
+    it->upper_bound(temp_start_key);//start为最小项，取temp_start
     temp = true;
   } else {
     string k;
-    get_object_key(start, &k);
+    get_object_key(start, &k);//由start生成k
     if (start.hobj.is_temp()) {
       temp = true;
       assert(k >= temp_start_key && k < temp_end_key);
@@ -5571,11 +5573,11 @@ int BlueStore::_collection_list(
     }
     dout(20) << " start from " << pretty_binary_string(k)
       << " temp=" << (int)temp << dendl;
-    it->lower_bound(k);
+    it->lower_bound(k);//将it定位到start
   }
-  if (end.hobj.is_max()) {
+  if (end.hobj.is_max()) {//如果end是is_max
     pend = temp ? temp_end_key : end_key;
-  } else {
+  } else {//生成pend
     get_object_key(end, &end_key);
     if (end.hobj.is_temp()) {
       if (temp)
@@ -5608,12 +5610,12 @@ int BlueStore::_collection_list(
       break;
     }
     dout(30) << __func__ << " key " << pretty_binary_string(it->key()) << dendl;
-    if (is_extent_shard_key(it->key())) {
+    if (is_extent_shard_key(it->key())) {//跳过shard_key
       it->next();
       continue;
     }
     ghobject_t oid;
-    int r = get_key_object(it->key(), &oid);
+    int r = get_key_object(it->key(), &oid);//确保oid存在
     assert(r == 0);
     dout(20) << __func__ << " oid " << oid << " end " << end << dendl;
     if (ls->size() >= (unsigned)max) {
@@ -5622,7 +5624,7 @@ int BlueStore::_collection_list(
       set_next = true;
       break;
     }
-    ls->push_back(oid);
+    ls->push_back(oid);//加入oid
     it->next();
   }
 out:
@@ -6202,7 +6204,7 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       if (txc->ioc.has_pending_aios()) {
 	txc->state = TransContext::STATE_AIO_WAIT;
 	txc->had_ios = true;
-	_txc_aio_submit(txc);
+	_txc_aio_submit(txc);//提交aio
 	return;
       }
       // ** fall-thru **
@@ -6866,6 +6868,7 @@ int BlueStore::_wal_replay()
 // ---------------------------
 // transactions
 
+//bluestore事务入队处理。
 int BlueStore::queue_transactions(
     Sequencer *posr,
     vector<Transaction>& tls,
@@ -6876,9 +6879,9 @@ int BlueStore::queue_transactions(
   Context *ondisk;
   Context *onreadable_sync;
   ObjectStore::Transaction::collect_contexts(
-    tls, &onreadable, &ondisk, &onreadable_sync);
+    tls, &onreadable, &ondisk, &onreadable_sync);//将所有tls中的回调进行包装，填充到onreadable,ondisk,onreadable_sync
 
-  if (g_conf->objectstore_blackhole) {
+  if (g_conf->objectstore_blackhole) {//默认为false,测试代码不考虑
     dout(0) << __func__ << " objectstore_blackhole = TRUE, dropping transaction"
 	    << dendl;
     delete ondisk;
@@ -6901,16 +6904,16 @@ int BlueStore::queue_transactions(
   }
 
   // prepare
-  TransContext *txc = _txc_create(osr);
+  TransContext *txc = _txc_create(osr);//创建事务上下文
   txc->onreadable = onreadable;
   txc->onreadable_sync = onreadable_sync;
   txc->oncommit = ondisk;
 
-  for (vector<Transaction>::iterator p = tls.begin(); p != tls.end(); ++p) {
+  for (vector<Transaction>::iterator p = tls.begin(); p != tls.end(); ++p) {//遍历事务
     (*p).set_osr(osr);
     txc->ops += (*p).get_num_ops();
     txc->bytes += (*p).get_num_bytes();
-    _txc_add_transaction(txc, &(*p));
+    _txc_add_transaction(txc, &(*p));//将此事务添加至txc中(将p中的op解出来，然后合并到txc中
   }
 
   _txc_write_nodes(txc, txc->t);
@@ -6952,6 +6955,7 @@ void BlueStore::_txc_aio_submit(TransContext *txc)
   bdev->aio_submit(&txc->ioc);
 }
 
+//将事务t加入到事务上下文txc中
 void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 {
   Transaction::iterator i = t->begin();
@@ -6966,7 +6970,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
     // note first collection we reference
     if (!txc->first_collection)
-      txc->first_collection = cvec[j];
+      txc->first_collection = cvec[j];//设置首个collection
   }
   vector<OnodeRef> ovec(i.objects.size());
 
@@ -6981,7 +6985,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     // collection operations
     CollectionRef &c = cvec[op->cid];
     switch (op->op) {
-    case Transaction::OP_RMCOLL:
+    case Transaction::OP_RMCOLL://移除rm collection
       {
         coll_t cid = i.get_cid(op->cid);
 	r = _remove_collection(txc, cid, &c);
@@ -6990,7 +6994,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       }
       break;
 
-    case Transaction::OP_MKCOLL:
+    case Transaction::OP_MKCOLL://构造collection
       {
 	assert(!c);
 	coll_t cid = i.get_cid(op->cid);
@@ -7000,7 +7004,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       }
       break;
 
-    case Transaction::OP_SPLIT_COLLECTION:
+    case Transaction::OP_SPLIT_COLLECTION://split由上层支持
       assert(0 == "deprecated");
       break;
 
@@ -7048,7 +7052,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       assert(0 == "not implemented");
       break;
     }
-    if (r < 0) {
+    if (r < 0) {//如果出现r就挂
       derr << __func__ << " error " << cpp_strerror(r)
            << " not handled on operation " << op->op
            << " (op " << pos << ", counting from 0)" << dendl;
@@ -7070,7 +7074,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     OnodeRef &o = ovec[op->oid];
     if (!o) {
       ghobject_t oid = i.get_oid(op->oid);
-      o = c->get_onode(oid, create);
+      o = c->get_onode(oid, create);//在这里找到o
     }
     if (!create && (!o || !o->exists)) {
       dout(10) << __func__ << " op " << op->op << " got ENOENT on "
@@ -7084,14 +7088,14 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       r = _touch(txc, c, o);
       break;
 
-    case Transaction::OP_WRITE:
+    case Transaction::OP_WRITE://写操作执行
       {
         uint64_t off = op->off;
         uint64_t len = op->len;
 	uint32_t fadvise_flags = i.get_fadvise_flags();
         bufferlist bl;
         i.decode_bl(bl);
-	r = _write(txc, c, o, off, len, bl, fadvise_flags);
+	r = _write(txc, c, o, off, len, bl, fadvise_flags);//执行write
       }
       break;
 
@@ -7944,7 +7948,7 @@ void BlueStore::_wctx_finish(
   }
 }
 
-void BlueStore::_do_write_data(
+void BlueStore::_do_write_data(//做数据写
   TransContext *txc,
   CollectionRef& c,
   OnodeRef o,
@@ -8008,7 +8012,7 @@ int BlueStore::_do_write(
 	   << dendl;
   _dump_onode(o);
 
-  if (length == 0) {
+  if (length == 0) {//写入长度为０
     return 0;
   }
 
@@ -8810,7 +8814,7 @@ int BlueStore::_rename(TransContext *txc,
 
 // collections
 
-int BlueStore::_create_collection(
+int BlueStore::_create_collection(//创建collection
   TransContext *txc,
   coll_t cid,
   unsigned bits,

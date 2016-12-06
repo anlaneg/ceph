@@ -968,7 +968,7 @@ void ReplicatedBackend::do_pull(OpRequestRef op)
     replies[from].push_back(PushOp());//针对每一个pull操作,构造成push消息
     handle_pull(from, *i, &(replies[from].back()));//处理pull方法
   }
-  send_   pushes(m->get_priority(), replies);
+  send_pushes(m->get_priority(), replies);
 }
 
 void ReplicatedBackend::do_push_reply(OpRequestRef op)

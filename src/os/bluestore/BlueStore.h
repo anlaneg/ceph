@@ -1061,7 +1061,7 @@ public:
     Cache *cache;
 
     /// forward lookups
-    mempool::bluestore_meta_other::unordered_map<ghobject_t,OnodeRef> onode_map;
+    mempool::bluestore_meta_other::unordered_map<ghobject_t,OnodeRef> onode_map;//通过oid对应Onode
 
     OnodeSpace(Cache *c) : cache(c) {}
     ~OnodeSpace() {
@@ -1202,7 +1202,7 @@ public:
       return "???";
     }
 
-    void log_state_latency(PerfCounters *logger, int state) {
+    void log_state_latency(PerfCounters *logger, int state) {//增加state变量的用时长
       utime_t lat, now = ceph_clock_now(g_ceph_context);
       lat = now - last_stamp;
       logger->tinc(state, lat);
@@ -1213,7 +1213,7 @@ public:
     OpSequencerRef osr;
     boost::intrusive::list_member_hook<> sequencer_item;
 
-    uint64_t ops, bytes;
+    uint64_t ops, bytes;//事务集中的操作总数，事务集中的字节总数
 
     set<OnodeRef> onodes;     ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs;  ///< these need to be updated/written
@@ -1500,7 +1500,7 @@ private:
   bool mounted;
 
   RWLock coll_lock;    ///< rwlock to protect coll_map
-  mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;
+  mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;//记录collection的map,通过cid映射map
 
   vector<Cache*> cache_shards;
 

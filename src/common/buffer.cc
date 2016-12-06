@@ -1922,6 +1922,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     return s;
   }
 
+  //获取连续的内存（保证orig_off -orig_off+len之间是平坦的内存）
   char *buffer::list::get_contiguous(unsigned orig_off, unsigned len)
   {
     if (orig_off + len > length())
@@ -1933,13 +1934,13 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
 
     unsigned off = orig_off;
     std::list<ptr>::iterator curbuf = _buffers.begin();
-    while (off > 0 && off >= curbuf->length()) {
+    while (off > 0 && off >= curbuf->length()) {//offset比它大，需要先跳几个curbuf
       off -= curbuf->length();
       ++curbuf;
     }
 
-    if (off + len > curbuf->length()) {
-      bufferlist tmp;
+    if (off + len > curbuf->length()) {//就是在这个curbuf里了，但一个curbuf不够
+      bufferlist tmp;//将需要的数据全部组装成tmp中
       unsigned l = off + len;
 
       do {
