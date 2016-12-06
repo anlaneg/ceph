@@ -54,3 +54,6 @@ GTAGS
 
 # editor backup files etc.
 \#*\#
+.cproject
+.project
+.settings/
