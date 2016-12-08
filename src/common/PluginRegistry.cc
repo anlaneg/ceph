@@ -97,19 +97,21 @@ int PluginRegistry::add(const std::string& type,
   return 0;
 }
 
+//找到指定插件，并将其载入
 Plugin *PluginRegistry::get_with_load(const std::string& type,
           const std::string& name)
 {
   Mutex::Locker l(lock);
-  Plugin* ret = get(type, name);
+  Plugin* ret = get(type, name);//查找是否存在这个插件
   if (!ret) {
     int err = load(type, name);
     if (err == 0)
-      ret = get(type, name);
+      ret = get(type, name);//本来直接返回ret即可，为什么需要再查一次？
   } 
   return ret;
 }
 
+//插件被按照类型划分放置在plugins变量中，类型是key,插件是value（map<std::string,Plugin*>类型）
 Plugin *PluginRegistry::get(const std::string& type,
 			    const std::string& name)
 {
@@ -132,6 +134,7 @@ Plugin *PluginRegistry::get(const std::string& type,
   return ret;
 }
 
+//装载指定类型，指定名称的plugin
 int PluginRegistry::load(const std::string &type,
 			 const std::string &name)
 {
@@ -139,7 +142,7 @@ int PluginRegistry::load(const std::string &type,
   ldout(cct, 1) << __func__ << " " << type << " " << name << dendl;
 
   std::string fname = cct->_conf->plugin_dir + "/" + type + "/" PLUGIN_PREFIX
-    + name + PLUGIN_SUFFIX;
+    + name + PLUGIN_SUFFIX;//插件目录及名称格式
   void *library = dlopen(fname.c_str(), RTLD_NOW);
   if (!library) {
     string err1(dlerror());
@@ -162,7 +165,7 @@ int PluginRegistry::load(const std::string &type,
     lderr(cct) << __func__ << " code_version == NULL" << dlerror() << dendl;
     return -EXDEV;
   }
-  if (code_version() != string(CEPH_GIT_NICE_VER)) {
+  if (code_version() != string(CEPH_GIT_NICE_VER)) {//检查版本
     lderr(cct) << __func__ << " plugin " << fname << " version "
 	       << code_version() << " != expected "
 	       << CEPH_GIT_NICE_VER << dendl;
@@ -176,7 +179,7 @@ int PluginRegistry::load(const std::string &type,
     (int (*)(CephContext *,
 	     const std::string& type,
 	     const std::string& name))dlsym(library, PLUGIN_INIT_FUNCTION);
-  if (code_init) {
+  if (code_init) {//作初始化
     int r = code_init(cct, type, name);
     if (r != 0) {
       lderr(cct) << __func__ << " " << fname << " "
@@ -194,7 +197,7 @@ int PluginRegistry::load(const std::string &type,
   }
 
   Plugin *plugin = get(type, name);
-  if (plugin == 0) {
+  if (plugin == 0) {//没有注册的插件
     lderr(cct) << __func__ << " " << fname << " "
 	       << PLUGIN_INIT_FUNCTION << "()"
 	       << "did not register plugin type " << type << " name " << name
@@ -203,7 +206,7 @@ int PluginRegistry::load(const std::string &type,
     return -EBADF;
   }
 
-  plugin->library = library;
+  plugin->library = library;//设置so句柄
 
   ldout(cct, 1) << __func__ << ": " << type << " " << name
 		<< " loaded and registered" << dendl;

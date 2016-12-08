@@ -1694,6 +1694,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
   }
 
   // sort-of-like-assignment-op
+  //清除掉自身的缓存，将bl的缓存赋值给自已
   void buffer::list::claim(list& bl, unsigned int flags)
   {
     // free my buffers
@@ -1701,6 +1702,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     claim_append(bl, flags);
   }
 
+  //提取到bl中的buffer，并将bl的buffer清除，窃取
   void buffer::list::claim_append(list& bl, unsigned int flags)
   {
     // steal the other guy's buffers
@@ -1708,7 +1710,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     if (!(flags & CLAIM_ALLOW_NONSHAREABLE))
       bl.make_shareable();
     _buffers.splice(_buffers.end(), bl._buffers );
-    bl._len = 0;
+    bl._len = 0;//清空bl的buffer
     bl.last_p = bl.begin();
   }
 
@@ -1965,9 +1967,10 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     return curbuf->c_str() + off;
   }
 
+  //将other中的数据，从off开始取数据，取数据长度为len
   void buffer::list::substr_of(const list& other, unsigned off, unsigned len)
   {
-    if (off + len > other.length())
+    if (off + len > other.length())//需要的数据，比other中存在的数据要多，报错
       throw end_of_buffer();
 
     clear();
@@ -1975,7 +1978,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     // skip off
     std::list<ptr>::const_iterator curbuf = other._buffers.begin();
     while (off > 0 &&
-	   off >= curbuf->length()) {
+	   off >= curbuf->length()) {//需要跳过这些curbuf,这些在off在前面
       // skip this buffer
       //cout << "skipping over " << *curbuf << std::endl;
       off -= (*curbuf).length();
@@ -1985,21 +1988,22 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     
     while (len > 0) {
       // partial?
-      if (off + len < curbuf->length()) {
+      if (off + len < curbuf->length()) {//恰好是curbuf中的一部分
 	//cout << "copying partial of " << *curbuf << std::endl;
-	_buffers.push_back( ptr( *curbuf, off, len ) );
+	_buffers.push_back( ptr( *curbuf, off, len ) );//提取出来，并存入buffers
 	_len += len;
-	break;
+	break;//操作结束
       }
       
+      //整块都需要。
       // through end
       //cout << "copying end (all?) of " << *curbuf << std::endl;
       unsigned howmuch = curbuf->length() - off;
       _buffers.push_back( ptr( *curbuf, off, howmuch ) );
       _len += howmuch;
-      len -= howmuch;
+      len -= howmuch;//减少需要的长度
       off = 0;
-      ++curbuf;
+      ++curbuf;//换下一个块
     }
   }
 

@@ -277,7 +277,7 @@ private:
   ceph_spinlock_t _feature_lock;
   std::set<std::string> _experimental_features;
 
-  PluginRegistry *_plugin_registry;
+  PluginRegistry *_plugin_registry;//插件注册
 
   md_config_obs_t *_lockdep_obs;
 

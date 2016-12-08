@@ -949,6 +949,7 @@ void BlueStore::TwoQCache::_audit(const char *when)
 #undef dout_prefix
 #define dout_prefix *_dout << "bluestore.BufferSpace(" << this << " in " << cache << ") "
 
+//清空buffer_map
 void BlueStore::BufferSpace::_clear()
 {
   // note: we already hold cache->lock
@@ -958,6 +959,7 @@ void BlueStore::BufferSpace::_clear()
   }
 }
 
+//丢弃掉offset位置开始，长度为length的数据
 int BlueStore::BufferSpace::_discard(uint64_t offset, uint64_t length)
 {
   // note: we already hold cache->lock
@@ -975,39 +977,41 @@ int BlueStore::BufferSpace::_discard(uint64_t offset, uint64_t length)
     if (b->cache_private > cache_private) {
       cache_private = b->cache_private;
     }
-    if (b->offset < offset) {
+    if (b->offset < offset) {//这一块包含了offset
       int64_t front = offset - b->offset;
-      if (b->end() > end) {
+      if (b->end() > end) {//如果这一块包含了front和end
 	// drop middle (split)
 	uint64_t tail = b->end() - end;
 	if (b->data.length()) {
 	  bufferlist bl;
-	  bl.substr_of(b->data, b->length - tail, tail);
-	  _add_buffer(new Buffer(this, b->state, b->seq, end, bl), 0, b);
+	  bl.substr_of(b->data, b->length - tail, tail);//提取end后面部分
+	  _add_buffer(new Buffer(this, b->state, b->seq, end, bl), 0, b);//把end后的数据加入
 	} else {
-	  _add_buffer(new Buffer(this, b->state, b->seq, end, tail), 0, b);
+	  _add_buffer(new Buffer(this, b->state, b->seq, end, tail), 0, b);//无数据情况，仅指明长度，无数据
 	}
 	if (!b->is_writing()) {
 	  cache->_adjust_buffer_size(b, front - (int64_t)b->length);
 	}
-	b->truncate(front);
+	b->truncate(front);//截断
 	cache->_audit("discard end 1");
-	break;
-      } else {
+	break;//收工
+      } else {//这一块仅包含front,没有包含end
 	// drop tail
 	if (!b->is_writing()) {
 	  cache->_adjust_buffer_size(b, front - (int64_t)b->length);
 	}
-	b->truncate(front);
+	b->truncate(front);//载断
 	++i;
-	continue;
+	continue;//尝试下一块
       }
     }
+    //这一块没有包含offset,但包含在offset与end之间
     if (b->end() <= end) {
       // drop entire buffer
-      _rm_buffer(i++);
+      _rm_buffer(i++);//这种不包含end,直接删除掉
       continue;
     }
+    //这种b的前部分需要丢弃掉
     // drop front
     uint64_t keep = b->end() - end;
     if (b->data.length()) {
@@ -1017,21 +1021,23 @@ int BlueStore::BufferSpace::_discard(uint64_t offset, uint64_t length)
     } else {
       _add_buffer(new Buffer(this, b->state, b->seq, end, keep), 0, b);
     }
-    _rm_buffer(i);
+    _rm_buffer(i);//旧的删除掉，换一个新的加入
     cache->_audit("discard end 2");
     break;
   }
   return cache_private;
 }
 
+//自bufferspace中读取数据，自offset开始读取length,读取的数据可能中间有空隙，空隙将被认为是数据
+//res中将保存读取到的数据，res_intervals中将保证我们读取到的数据对应(offset,length)元组
 void BlueStore::BufferSpace::read(
   uint64_t offset, uint64_t length,
   BlueStore::ready_regions_t& res,
   interval_set<uint64_t>& res_intervals)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
-  res.clear();
-  res_intervals.clear();
+  res.clear();//确保res为空
+  res_intervals.clear();//确保intervals为空
   uint64_t want_bytes = length;
   uint64_t end = offset + length;
   for (auto i = _data_lower_bound(offset);
@@ -1040,11 +1046,11 @@ void BlueStore::BufferSpace::read(
     Buffer *b = i->second.get();
     assert(b->end() > offset);
     if (b->is_writing() || b->is_clean()) {
-      if (b->offset < offset) {
+      if (b->offset < offset) {//b中后半部分有数据是需要的
 	uint64_t skip = offset - b->offset;
 	uint64_t l = MIN(length, b->length - skip);
-	res[offset].substr_of(b->data, skip, l);
-	res_intervals.insert(offset, l);
+	res[offset].substr_of(b->data, skip, l);//加入读取到的数据
+	res_intervals.insert(offset, l);//插入regions interval,即(offset,length)
 	offset += l;
 	length -= l;
 	if (!b->is_writing()) {
@@ -1054,24 +1060,25 @@ void BlueStore::BufferSpace::read(
       }
       if (b->offset > offset) {
 	uint64_t gap = b->offset - offset;
-	if (length <= gap) {
+	if (length <= gap) {//offset与b->offset之间有空隙，这段空隙比length要大，说明读完了
 	  break;
 	}
-	offset += gap;
+	offset += gap;//跳过空隙
 	length -= gap;
       }
       if (!b->is_writing()) {
 	cache->_touch_buffer(b);
       }
-      if (b->length > length) {
+      if (b->length > length) {//说明b内部包含有我们需要数据，0-length范围是我们要的
 	res[offset].substr_of(b->data, 0, length);
 	res_intervals.insert(offset, length);
-        break;
-      } else {
+        break;//读完了
+      } else {//这个b，我们全要
 	res[offset].append(b->data);
 	res_intervals.insert(offset, b->length);
         if (b->length == length)
-          break;
+          break;//读完
+    //还没有满足，需要再向后索取
 	offset += b->length;
 	length -= b->length;
       }
@@ -1091,10 +1098,10 @@ void BlueStore::BufferSpace::finish_write(uint64_t seq)
 
   auto i = writing.begin();
   while (i != writing.end()) {
-    if (i->seq > seq) {
+    if (i->seq > seq) {//后面的seq将比这个seq还要大，不用再尝试了
       break;
     }
-    if (i->seq < seq) {
+    if (i->seq < seq) {//i不是我们需要的seq
       ++i;
       continue;
     }
@@ -1103,7 +1110,7 @@ void BlueStore::BufferSpace::finish_write(uint64_t seq)
     dout(20) << __func__ << " " << *b << dendl;
     assert(b->is_writing());
 
-    if (b->flags & Buffer::FLAG_NOCACHE) {
+    if (b->flags & Buffer::FLAG_NOCACHE) {//移除
       writing.erase(i++);
       buffer_map.erase(b->offset);
     } else {
@@ -1116,19 +1123,20 @@ void BlueStore::BufferSpace::finish_write(uint64_t seq)
   cache->_audit("finish_write end");
 }
 
+//将bufferspace在pos位置断开，断开后的后半部分保存在r中。
 void BlueStore::BufferSpace::split(size_t pos, BlueStore::BufferSpace &r)
 {
   std::lock_guard<std::recursive_mutex> lk(cache->lock);
   assert(r.cache == cache);
-  if (buffer_map.empty())
+  if (buffer_map.empty())//无bufffer不处理
     return;
 
-  auto p = --buffer_map.end();
+  auto p = --buffer_map.end();//指向最后一个元素
   while (true) {
     if (p->second->end() <= pos)
       break;
 
-    if (p->second->offset < pos) {
+    if (p->second->offset < pos) {//发现的第一个比pos小的p
       dout(30) << __func__ << " cut " << *p->second << dendl;
       size_t left = pos - p->second->offset;
       size_t right = p->second->length - left;
@@ -1146,17 +1154,19 @@ void BlueStore::BufferSpace::split(size_t pos, BlueStore::BufferSpace &r)
       break;
     }
 
+    //这个p的offset一定比pos大。
     assert(p->second->end() > pos);
     dout(30) << __func__ << " move " << *p->second << dendl;
     if (p->second->data.length()) {
       r._add_buffer(new Buffer(&r, p->second->state, p->second->seq,
-                               p->second->offset - pos, p->second->data),
+                               p->second->offset - pos, p->second->data),//p->offset-pos偏移量减小
                     0, p->second.get());
     } else {
       r._add_buffer(new Buffer(&r, p->second->state, p->second->seq,
                                p->second->offset - pos, p->second->length),
                     0, p->second.get());
     }
+    //减加完后，删除原来的。
     if (p == buffer_map.begin()) {
       _rm_buffer(p);
       break;
@@ -2572,6 +2582,7 @@ void BlueStore::handle_conf_change(const struct md_config_t *conf,
   }
 }
 
+//压缩设置
 void BlueStore::_set_compression()
 {
   comp_min_blob_size = g_conf->bluestore_compression_min_blob_size;
@@ -2590,9 +2601,9 @@ void BlueStore::_set_compression()
 
   compressor = nullptr;
 
-  auto& alg_name = g_conf->bluestore_compression_algorithm;
+  auto& alg_name = g_conf->bluestore_compression_algorithm;//压缩算法名称
   if (!alg_name.empty()) {
-    compressor = Compressor::create(cct, alg_name);
+    compressor = Compressor::create(cct, alg_name);//依据压缩算法名称进行创建
     if (!compressor) {
       derr << __func__ << " unable to initialize " << alg_name.c_str() << " compressor"
            << dendl;
@@ -2604,6 +2615,7 @@ void BlueStore::_set_compression()
 	   << dendl;
 }
 
+//设置checksum类型
 void BlueStore::_set_csum()
 {
   csum_type = Checksummer::CSUM_NONE;
@@ -3955,7 +3967,7 @@ void BlueStore::set_cache_shards(unsigned num)
   assert(num >= old);
   cache_shards.resize(num);
   for (unsigned i = old; i < num; ++i) {
-    cache_shards[i] = Cache::create(g_conf->bluestore_cache_type, logger);
+    cache_shards[i] = Cache::create(g_conf->bluestore_cache_type, logger);//默认使用2q　cache类型
   }
 }
 
@@ -7532,12 +7544,12 @@ void BlueStore::_do_write_small(
     }
 
     // direct write into unused blocks of an existing mutable blob?
-    uint64_t b_off = offset - head_pad - bstart;//左侧前移
-    uint64_t b_len = length + head_pad + tail_pad;//右侧前移
+    uint64_t b_off = offset - head_pad - bstart;//左侧左移
+    uint64_t b_len = length + head_pad + tail_pad;//右侧右移
     if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&
 	b->get_blob().get_ondisk_length() >= b_off + b_len &&
 	b->get_blob().is_unused(b_off, b_len) &&
-	b->get_blob().is_allocated(b_off, b_len)) {
+	b->get_blob().is_allocated(b_off, b_len)) {//不需要放大写，且不需要分配新的段。写到没有使用的段
       dout(20) << __func__ << "  write to unused 0x" << std::hex
 	       << b_off << "~" << b_len
 	       << " pad 0x" << head_pad << " + 0x" << tail_pad
@@ -7572,23 +7584,23 @@ void BlueStore::_do_write_small(
 	head_read + tail_read < min_alloc_size) {
       dout(20) << __func__ << "  reading head 0x" << std::hex << head_read
 	       << " and tail 0x" << tail_read << std::dec << dendl;
-      if (head_read) {
+      if (head_read) {//需要在head写前进行读操作
 	bufferlist head_bl;
 	int r = _do_read(c.get(), o, offset - head_pad - head_read, head_read,
 			 head_bl, 0);//写时读取问题（先把要多写的读出来，前向写前读）
 	assert(r >= 0 && r <= (int)head_read);
 	size_t zlen = head_read - r;
-	if (zlen) {
+	if (zlen) {//不足的部分补０
 	  head_bl.append_zero(zlen);
 	  logger->inc(l_bluestore_write_pad_bytes, zlen);
 	}
 	b_off -= head_read;
 	b_len += head_read;
-	head_bl.claim_append(padded);
+	head_bl.claim_append(padded);//加上padded
 	padded.swap(head_bl);
 	logger->inc(l_bluestore_write_penalty_read_ops);
       }
-      if (tail_read) {
+      if (tail_read) {//需要在tail写前进行读操作
 	bufferlist tail_bl;
 	int r = _do_read(c.get(), o, offset + length + tail_pad, tail_read,
 			 tail_bl, 0);//后面写前读
@@ -7596,7 +7608,7 @@ void BlueStore::_do_write_small(
 	b_len += tail_read;
 	padded.claim_append(tail_bl);
 	size_t zlen = tail_read - r;
-	if (zlen) {
+	if (zlen) {//不足的部分补０
 	  padded.append_zero(zlen);
 	  logger->inc(l_bluestore_write_pad_bytes, zlen);
 	}
@@ -7609,7 +7621,7 @@ void BlueStore::_do_write_small(
     if (b->get_blob().get_ondisk_length() >= b_off + b_len &&
 	b_off % chunk_size == 0 &&
 	b_len % chunk_size == 0 &&
-	b->get_blob().is_allocated(b_off, b_len)) {
+	b->get_blob().is_allocated(b_off, b_len)) {//需要放大读写时处理（不需要申请空间）
       bluestore_wal_op_t *op = _get_wal_op(txc, o);
       op->op = bluestore_wal_op_t::OP_WRITE;
       _buffer_cache_write(txc, b, b_off, padded,
@@ -7641,6 +7653,7 @@ void BlueStore::_do_write_small(
     ++ep;
   }
 
+  //需要放大写，且写时需要申请空间
   // new blob.
   b = c->new_blob();
   unsigned alloc_len = min_alloc_size;

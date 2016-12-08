@@ -713,7 +713,7 @@ namespace buffer CEPH_BUFFER_API {
     bool is_zero() const;
 
     // modifiers
-    void clear() {
+    void clear() {//清除
       _buffers.clear();
       _len = 0;
       _memcopy_count = 0;

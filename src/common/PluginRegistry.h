@@ -36,7 +36,7 @@ namespace ceph {
 
   class Plugin {
   public:
-    void *library;
+    void *library;//指向打开的so名柄
     CephContext *cct;
 
     explicit Plugin(CephContext *cct) : library(NULL), cct(cct) {}

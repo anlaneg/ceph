@@ -80,7 +80,7 @@ OPTION(mon_cluster_log_to_graylog_port, OPT_STR, "12201")
 
 OPTION(enable_experimental_unrecoverable_data_corrupting_features, OPT_STR, "")
 
-OPTION(plugin_dir, OPT_STR, CEPH_PKGLIBDIR)
+OPTION(plugin_dir, OPT_STR, CEPH_PKGLIBDIR)//CEPH_PKGLIBDIR由编译时定义，规定了lib的目录
 
 OPTION(xio_trace_mempool, OPT_BOOL, false) // mempool allocation counters
 OPTION(xio_trace_msgcnt, OPT_BOOL, false) // incoming/outgoing msg counters
@@ -1013,10 +1013,10 @@ OPTION(bluestore_min_alloc_size, OPT_U32, 0)
 OPTION(bluestore_min_alloc_size_hdd, OPT_U32, 64*1024)
 OPTION(bluestore_min_alloc_size_ssd, OPT_U32, 4*1024)
 OPTION(bluestore_max_alloc_size, OPT_U32, 0)
-OPTION(bluestore_compression_mode, OPT_STR, "none")  // force|aggressive|passive|none
-OPTION(bluestore_compression_algorithm, OPT_STR, "snappy")
-OPTION(bluestore_compression_min_blob_size, OPT_U32, 128*1024)
-OPTION(bluestore_compression_max_blob_size, OPT_U32, 512*1024)
+OPTION(bluestore_compression_mode, OPT_STR, "none")  // force|aggressive|passive|none　//压缩模式
+OPTION(bluestore_compression_algorithm, OPT_STR, "snappy")//压缩算法名称
+OPTION(bluestore_compression_min_blob_size, OPT_U32, 128*1024)//压缩最小块
+OPTION(bluestore_compression_max_blob_size, OPT_U32, 512*1024)//压缩最大块
 OPTION(bluestore_max_blob_size, OPT_U32, 512*1024)
 /*
  * Require the net gain of compression at least to be at this ratio,

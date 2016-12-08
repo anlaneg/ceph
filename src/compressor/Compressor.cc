@@ -82,16 +82,17 @@ CompressorRef Compressor::create(CephContext *cct, const std::string &type)
   std::stringstream ss;
   PluginRegistry *reg = cct->get_plugin_registry();
   CompressionPlugin *factory = dynamic_cast<CompressionPlugin*>(reg->get_with_load("compressor", type));
-  if (factory == NULL) {
+  if (factory == NULL) {//没有找到这种插件
     lderr(cct) << __func__ << " cannot load compressor of type " << type << dendl;
     return NULL;
   }
-  int err = factory->factory(&cs_impl, &ss);
+  int err = factory->factory(&cs_impl, &ss);//创建压缩操作对象
   if (err)
     lderr(cct) << __func__ << " factory return error " << err << dendl;
   return cs_impl;
 }
 
+//按算法id进行创建
 CompressorRef Compressor::create(CephContext *cct, int alg)
 {
   if (alg < 0 || alg >= COMP_ALG_LAST) {

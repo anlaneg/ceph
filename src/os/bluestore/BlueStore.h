@@ -123,12 +123,12 @@ public:
   struct Buffer {
     MEMPOOL_CLASS_HELPERS();
 
-    enum {
+    enum {//buffer状态
       STATE_EMPTY,     ///< empty buffer -- used for cache history
       STATE_CLEAN,     ///< clean data that is up to date
       STATE_WRITING,   ///< data that is being written (io not yet complete)
     };
-    static const char *get_state_name(int s) {
+    static const char *get_state_name(int s) {//状态转状态名称
       switch (s) {
       case STATE_EMPTY: return "empty";
       case STATE_CLEAN: return "clean";
@@ -148,7 +148,7 @@ public:
     }
 
     BufferSpace *space;
-    uint16_t state;             ///< STATE_*
+    uint16_t state;             ///< STATE_* //状态
     uint16_t cache_private = 0; ///< opaque (to us) value used by Cache impl
     uint32_t flags;             ///< FLAG_*
     uint64_t seq;
@@ -158,9 +158,11 @@ public:
     boost::intrusive::list_member_hook<> lru_item;
     boost::intrusive::list_member_hook<> state_item;
 
+    //默认data为空
     Buffer(BufferSpace *space, unsigned s, uint64_t q, uint32_t o, uint32_t l,
 	   unsigned f = 0)
       : space(space), state(s), flags(f), seq(q), offset(o), length(l) {}
+    //注入data
     Buffer(BufferSpace *space, unsigned s, uint64_t q, uint32_t o, bufferlist& b,
 	   unsigned f = 0)
       : space(space), state(s), flags(f), seq(q), offset(o),
@@ -172,7 +174,7 @@ public:
     bool is_clean() const {
       return state == STATE_CLEAN;
     }
-    bool is_writing() const {
+    bool is_writing() const {//检查是否正在写
       return state == STATE_WRITING;
     }
 
@@ -180,12 +182,12 @@ public:
       return offset + length;
     }
 
-    void truncate(uint32_t newlen) {
+    void truncate(uint32_t newlen) {//将buffer截短为newlen
       assert(newlen < length);
       if (data.length()) {
 	bufferlist t;
-	t.substr_of(data, 0, newlen);
-	data.claim(t);
+	t.substr_of(data, 0, newlen);//从data中提取newlen
+	data.claim(t);//使data拿着t的数据
       }
       length = newlen;
     }
@@ -211,8 +213,8 @@ public:
 	&Buffer::state_item> > state_list_t;
 
     mempool::bluestore_meta_other::map<uint64_t, std::unique_ptr<Buffer>>
-      buffer_map;
-    Cache *cache;
+      buffer_map;//map,采用offset进行索引的buffer
+    Cache *cache;//通过bufferspace构造时注入，用于实现不同类型的缓存
 
     // we use a bare intrusive list here instead of std::map because
     // it uses less memory and we expect this to be very small (very
@@ -234,41 +236,42 @@ public:
 
     void _add_buffer(Buffer *b, int level, Buffer *near) {
       cache->_audit("_add_buffer start");
-      buffer_map[b->offset].reset(b);
+      buffer_map[b->offset].reset(b);//加入索引
       if (b->is_writing()) {
-        writing.push_back(*b);
+        writing.push_back(*b);//加入writing
       } else {
-	cache->_add_buffer(b, level, near);
+	cache->_add_buffer(b, level, near);//交给cache管理
       }
       cache->_audit("_add_buffer end");
     }
-    void _rm_buffer(Buffer *b) {
-      _rm_buffer(buffer_map.find(b->offset));
+    void _rm_buffer(Buffer *b) {//移除
+      _rm_buffer(buffer_map.find(b->offset));//通过索引定位
     }
     void _rm_buffer(map<uint64_t,std::unique_ptr<Buffer>>::iterator p) {
       assert(p != buffer_map.end());
       cache->_audit("_rm_buffer start");
       if (p->second->is_writing()) {
-        writing.erase(writing.iterator_to(*p->second));
+        writing.erase(writing.iterator_to(*p->second));//自writing内移除
       } else {
-	cache->_rm_buffer(p->second.get());
+	cache->_rm_buffer(p->second.get());//自缓存中移除
       }
       buffer_map.erase(p);
       cache->_audit("_rm_buffer end");
     }
 
+    //找出第一个包含offset位置的buffer
     map<uint64_t,std::unique_ptr<Buffer>>::iterator _data_lower_bound(
       uint64_t offset) {
-      auto i = buffer_map.lower_bound(offset);
+      auto i = buffer_map.lower_bound(offset);//返回第一个大于第于offset的迭代器
       if (i != buffer_map.begin()) {
-	--i;
+	--i;//向后退一格，防止offset被上一个buffer包含
 	if (i->first + i->second->length <= offset)
-	  ++i;
+	  ++i;//确实没有被包含
       }
       return i;
     }
 
-    bool empty() const {
+    bool empty() const {//是否为空
       return buffer_map.empty();
     }
 
@@ -276,6 +279,7 @@ public:
     void _clear();
 
     // return value is the highest cache_private of a trimmed buffer, or 0.
+    //丢弃offset起始长度length的数据，返回这一段内最大的cache_private
     int discard(uint64_t offset, uint64_t length) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       return _discard(offset, length);
@@ -285,12 +289,12 @@ public:
     void write(uint64_t seq, uint64_t offset, bufferlist& bl, unsigned flags) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_WRITING, seq, offset, bl,
-			     flags);
-      b->cache_private = _discard(offset, bl.length());
+			     flags);//构造buffer,使其的data指向bl
+      b->cache_private = _discard(offset, bl.length());//丢弃已有的offset到bl.length的数据，并返回最大cache_private
       _add_buffer(b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);
     }
     void finish_write(uint64_t seq);
-    void did_read(uint64_t offset, bufferlist& bl) {
+    void did_read(uint64_t offset, bufferlist& bl) {//构造offset范围，丢掉这之间的数据
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_CLEAN, 0, offset, bl);
       b->cache_private = _discard(offset, bl.length());
@@ -301,7 +305,7 @@ public:
 	      BlueStore::ready_regions_t& res,
 	      interval_set<uint64_t>& res_intervals);
 
-    void truncate(uint64_t offset) {
+    void truncate(uint64_t offset) {//丢弃掉offset之后的所有数据
       discard(offset, (uint64_t)-1 - offset);
     }
 
@@ -335,6 +339,7 @@ public:
     // these are defined/set if the blob is marked 'shared'
     uint64_t sbid = 0;          ///< shared blob id
     string key;                 ///< key in kv store
+    //从属于哪个set
     SharedBlobSet *parent_set = 0;  ///< containing SharedBlobSet
 
     BufferSpace bc;             ///< buffer cache
@@ -364,12 +369,13 @@ public:
   typedef boost::intrusive_ptr<SharedBlob> SharedBlobRef;
 
   /// a lookup table of SharedBlobs
+  //如上所言，一个sharedblob表
   struct SharedBlobSet {
     std::mutex lock;   ///< protect lookup, insertion, removal
 
     // we use a bare pointer because we don't want to affect the ref
     // count
-    mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;
+    mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;//按sbid进行索引
 
     SharedBlobRef lookup(uint64_t sbid) {
       std::lock_guard<std::mutex> l(lock);
@@ -830,7 +836,7 @@ public:
 
     size_t last_trim_seq = 0;
 
-    static Cache *create(string type, PerfCounters *logger);
+    static Cache *create(string type, PerfCounters *logger);//依据不同类型生成相应的cache实例
 
     virtual ~Cache() {}
 
@@ -1540,7 +1546,7 @@ private:
   set<ghobject_t, ghobject_t::BitwiseComparator> debug_data_error_objects;
   set<ghobject_t, ghobject_t::BitwiseComparator> debug_mdata_error_objects;
 
-  std::atomic<int> csum_type;
+  std::atomic<int> csum_type;//checksum类型（为什么要是原子变量？）
 
   uint64_t block_size;     ///< block size of block device (power of 2) //设置块大小
   uint64_t block_mask;     ///< mask to get just the block offset　//块对应的mask
@@ -1554,10 +1560,11 @@ private:
 
   bool sync_wal_apply;	  ///< see config option bluestore_sync_wal_apply
 
+  //压缩模式
   std::atomic<Compressor::CompressionMode> comp_mode = {Compressor::COMP_NONE}; ///< compression mode
-  CompressorRef compressor;
-  std::atomic<uint64_t> comp_min_blob_size = {0};
-  std::atomic<uint64_t> comp_max_blob_size = {0};
+  CompressorRef compressor;//依据名称创建的compressor
+  std::atomic<uint64_t> comp_min_blob_size = {0};//压缩最小块
+  std::atomic<uint64_t> comp_max_blob_size = {0};//压缩最大块
 
   // cache trim control
 
