@@ -377,7 +377,7 @@ public:
     // count
     mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;//按sbid进行索引
 
-    SharedBlobRef lookup(uint64_t sbid) {
+    SharedBlobRef lookup(uint64_t sbid) {//在sb_map中查找sbid如果找到返回sharedblob，如果找不到，返回null
       std::lock_guard<std::mutex> l(lock);
       auto p = sb_map.find(sbid);
       if (p == sb_map.end()) {
@@ -426,9 +426,9 @@ public:
     SharedBlobRef shared_blob;      ///< shared blob state (if any)
 
   private:
-    mutable bluestore_blob_t blob;  ///< decoded blob metadata
+    mutable bluestore_blob_t blob;  ///< decoded blob metadata //解码后的元数据
     mutable bool dirty = true;      ///< true if blob is newer than blob_bl
-    mutable bufferlist blob_bl;     ///< cached encoded blob
+    mutable bufferlist blob_bl;     ///< cached encoded blob　//未解码前的元数据
     /// refs from this shard.  ephemeral if id<0, persisted if spanning.
     bluestore_extent_ref_map_t ref_map;
 
@@ -462,7 +462,7 @@ public:
       o.blob_bl = blob_bl;
     }
 
-    const bluestore_blob_t& get_blob() const {
+    const bluestore_blob_t& get_blob() const {//blob对应的元数据
       return blob;
     }
     bluestore_blob_t& dirty_blob() {
@@ -603,7 +603,7 @@ public:
     friend bool operator>(const Extent &a, const Extent &b) {
       return a.logical_offset > b.logical_offset;
     }
-    friend bool operator==(const Extent &a, const Extent &b) {
+    friend bool operator==(const Extent &a, const Extent &b) {//两个extent比较，如果logical_offset相等，则认为相等
       return a.logical_offset == b.logical_offset;
     }
 
@@ -642,8 +642,8 @@ public:
       string key;            ///< kv key
       uint32_t offset;       ///< starting logical offset
       bluestore_onode_t::shard_info *shard_info;
-      bool loaded = false;   ///< true if shard is loaded
-      bool dirty = false;    ///< true if shard is dirty and needs reencoding
+      bool loaded = false;   ///< true if shard is loaded　//指出是否已加载进extent_map
+      bool dirty = false;    ///< true if shard is dirty and needs reencoding  //指出是否已属于dirty
     };
     mempool::bluestore_meta_other::vector<Shard> shards;    ///< shards
 
@@ -689,16 +689,16 @@ public:
 
     /// return index of shard containing offset
     /// or -1 if not found
-    int seek_shard(uint32_t offset) {
+    int seek_shard(uint32_t offset) {//采用二分法查找offset位置对应的shards
       size_t end = shards.size();
       size_t mid, left = 0;
       size_t right = end; // one passed the right end
 
-      while (left < right) {
+      while (left < right) {//二分法查找
         mid = left + (right - left) / 2;
-        if (offset >= shards[mid].offset) {
+        if (offset >= shards[mid].offset) {//右侧或者找到
           size_t next = mid + 1;
-          if (next >= end || offset < shards[next].offset)
+          if (next >= end || offset < shards[next].offset)//offset比下一个起始点要小，next已查找到右边界
             return mid;
           //continue to search forwards
           left = next;
@@ -724,7 +724,7 @@ public:
       if (offset + length <= shards[s+1].offset) {
 	return false;
       }
-      return true;
+      return true;//跨了多于一个shards，返回true
     }
 
     /// ensure that a range of the map is loaded
@@ -738,9 +738,11 @@ public:
     extent_map_t::iterator find(uint64_t offset);
 
     /// find a lextent that includes offset
+    //如上述，定位到包含offset的lextent
     extent_map_t::iterator find_lextent(uint64_t offset);
 
     /// seek to the first lextent including or after offset
+    //如上述，定位到offset,要么返回的iter包含offs
     extent_map_t::iterator seek_lextent(uint64_t offset);
 
     /// add a new Extent
@@ -764,6 +766,7 @@ public:
 
     /// put new lextent into lextent_map overwriting existing ones if
     /// any and update references accordingly
+    //创建一个新的区域，如果存在，则移除之前的
     Extent *set_lextent(uint64_t logical_offset,
 			uint64_t offset, uint64_t length,
                         BlobRef b, extent_map_t *old_extents);
@@ -790,12 +793,12 @@ public:
     Collection *c;//属于哪个目录
 
     ghobject_t oid;//对象id
-    string key;     ///< key under PREFIX_OBJ where we are stored
+    string key;     ///< key under PREFIX_OBJ where we are stored　//存储在db中用的key(可由oid生成）
 
-    OnodeSpace *space;    ///< containing OnodeSpace
+    OnodeSpace *space;    ///< containing OnodeSpace　//属于那个space
     boost::intrusive::list_member_hook<> lru_item;
 
-    bluestore_onode_t onode;  ///< metadata stored as value in kv store
+    bluestore_onode_t onode;  ///< metadata stored as value in kv store　//元数据
     bool exists;              ///< true if object logically exists
 
     ExtentMap extent_map;
@@ -866,6 +869,7 @@ public:
       --num_blobs;
     }
 
+    //回收用
     void trim(uint64_t target_bytes, float target_meta_ratio,
 	      float bytes_per_onode);
 
@@ -1095,11 +1099,11 @@ public:
 
     bool exists;
 
-    SharedBlobSet shared_blob_set;      ///< open SharedBlobs
+    SharedBlobSet shared_blob_set;      ///< open SharedBlobs //collection对应的sharedblobs
 
     // cache onodes on a per-collection basis to avoid lock
     // contention.
-    OnodeSpace onode_map;
+    OnodeSpace onode_map;//如上述，在每个collection里添加缓存的onode，避免加锁
 
     //pool options
     pool_opts_t pool_opts;
@@ -1117,6 +1121,7 @@ public:
     //  open = SharedBlob is instantiated
     //  shared = blob_t shared flag is set; SharedBlob is hashed.
     //  loaded = SharedBlob::shared_blob_t is loaded from kv store
+    //创建相应的shared_blob
     void open_shared_blob(BlobRef b);
     void load_shared_blob(SharedBlobRef sb);
     void make_blob_shared(BlobRef b);
@@ -1127,11 +1132,11 @@ public:
       return b;
     }
 
-    const coll_t &get_cid() override {
+    const coll_t &get_cid() override {//对应的cid
       return cid;
     }
 
-    bool contains(const ghobject_t& oid) {
+    bool contains(const ghobject_t& oid) {//是否包含这个对象
       if (cid.is_meta())
 	return oid.hobj.pool == -1;
       spg_t spgid;
@@ -1170,9 +1175,10 @@ public:
   class OpSequencer;
   typedef boost::intrusive_ptr<OpSequencer> OpSequencerRef;
 
+  //事务上下文
   struct TransContext {
     typedef enum {
-      STATE_PREPARE,
+      STATE_PREPARE,//起始状态
       STATE_AIO_WAIT,
       STATE_IO_DONE,
       STATE_KV_QUEUED,     // queued for kv_sync_thread submission
@@ -1208,7 +1214,7 @@ public:
       return "???";
     }
 
-    void log_state_latency(PerfCounters *logger, int state) {//增加state变量的用时长
+    void log_state_latency(PerfCounters *logger, int state) {//记录state变量的用时长
       utime_t lat, now = ceph_clock_now(g_ceph_context);
       lat = now - last_stamp;
       logger->tinc(state, lat);
@@ -1221,6 +1227,7 @@ public:
 
     uint64_t ops, bytes;//事务集中的操作总数，事务集中的字节总数
 
+    //记录哪些onode需要更新或者写
     set<OnodeRef> onodes;     ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs;  ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs_written; ///< update these on io completion
@@ -1236,6 +1243,7 @@ public:
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
 
     interval_set<uint64_t> allocated, released;
+    //记录统计数据
     struct volatile_statfs{
       enum {
         STATFS_ALLOCATED = 0,
@@ -1294,8 +1302,8 @@ public:
     CollectionRef first_collection;  ///< first referenced collection
 
     uint64_t seq = 0;
-    utime_t start;
-    utime_t last_stamp;
+    utime_t start;//记录状态起始时间
+    utime_t last_stamp;//记录状态起始时间（一直和start同时使用？）
 
     uint64_t last_nid = 0;     ///< if non-zero, highest new nid we allocated
     uint64_t last_blobid = 0;  ///< if non-zero, highest new blobid we allocated
@@ -1317,14 +1325,15 @@ public:
       delete wal_txn;
     }
 
-    void write_onode(OnodeRef &o) {
+    void write_onode(OnodeRef &o) {//将onnode加入集合onodes
       onodes.insert(o);
     }
-    void write_shared_blob(SharedBlobRef &sb) {
+    void write_shared_blob(SharedBlobRef &sb) {//将sb加入到shared_blobs中
       shared_blobs.insert(sb);
     }
   };
 
+  //操作序列（采用此队实现操作的序列化）
   class OpSequencer : public Sequencer_impl {
   public:
     std::mutex qlock;
@@ -1335,7 +1344,7 @@ public:
         TransContext,
 	boost::intrusive::list_member_hook<>,
 	&TransContext::sequencer_item> > q_list_t;
-    q_list_t q;  ///< transactions
+    q_list_t q;  ///< transactions　//事务上下文队列
 
     typedef boost::intrusive::list<
       TransContext,
@@ -1351,7 +1360,7 @@ public:
 
     std::mutex wal_apply_mutex;
 
-    uint64_t last_seq = 0;
+    uint64_t last_seq = 0;//用于分配事务编号
 
     std::atomic_int txc_with_unstable_io = {0};  ///< num txcs with unstable io
 
@@ -1365,13 +1374,13 @@ public:
       assert(q.empty());
     }
 
-    void queue_new(TransContext *txc) {
+    void queue_new(TransContext *txc) {//分事务上下文分配seq，并将其加入队列
       std::lock_guard<std::mutex> l(qlock);
       txc->seq = ++last_seq;
       q.push_back(*txc);
     }
 
-    void flush() {
+    void flush() {//等待事务队列为空
       std::unique_lock<std::mutex> l(qlock);
       while (!q.empty())
 	qcond.wait(l);
@@ -1391,7 +1400,7 @@ public:
     }
 
     /// if there is a wal on @seq, wait for it to apply
-    void wait_for_wal_on_seq(uint64_t seq) {
+    void wait_for_wal_on_seq(uint64_t seq) {//等待seq指明的事务状态大于等于STATE_WAL_CLEANUP状态
       std::unique_lock<std::mutex> l(qlock);
       restart:
       for (OpSequencer::q_list_t::reverse_iterator p = q.rbegin();
@@ -1400,7 +1409,7 @@ public:
 	if (p->seq == seq) {
 	  TransContext *txc = &(*p);
 	  if (txc->wal_txn) {
-	    while (txc->state < TransContext::STATE_WAL_CLEANUP) {
+	    while (txc->state < TransContext::STATE_WAL_CLEANUP) {//等待此事务达到wal状态
 	      txc->osr->qcond.wait(l);
 	      goto restart;  // txc may have gone away
 	    }
@@ -1413,6 +1422,7 @@ public:
     }
   };
 
+  //WAL工作队列
   class WALWQ : public ThreadPool::WorkQueue<TransContext> {
     // We need to order WAL items within each Sequencer.  To do that,
     // queue each txc under osr, and queue the osr's here.  When we
@@ -1495,15 +1505,15 @@ private:
   CephContext *cct;
   BlueFS *bluefs;//用于db,slow等块设备
   unsigned bluefs_shared_bdev;  ///< which bluefs bdev we are sharing
-  KeyValueDB *db;
+  KeyValueDB *db;//指向key-value类数据库
   BlockDevice *bdev;//block设备
   std::string freelist_type;//freelist的类型，默认为bitmap
   FreelistManager *fm;
   Allocator *alloc;
-  uuid_d fsid;
+  uuid_d fsid;//对应的fsid
   int path_fd;  ///< open handle to $path //path对应的fd
   int fsid_fd;  ///< open handle (locked) to $path/fsid //fsid对应的fd
-  bool mounted;
+  bool mounted;//是否已挂载
 
   RWLock coll_lock;    ///< rwlock to protect coll_map
   mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;//记录collection的map,通过cid映射map
@@ -1522,13 +1532,13 @@ private:
 
   std::mutex wal_lock;
   std::atomic<uint64_t> wal_seq = {0};
-  ThreadPool wal_tp;
-  WALWQ wal_wq;
+  ThreadPool wal_tp;//wal工作线程池
+  WALWQ wal_wq;//wal工作队列
 
   int m_finisher_num;
   vector<Finisher*> finishers;
 
-  KVSyncThread kv_sync_thread;
+  KVSyncThread kv_sync_thread;//key-value同步线程
   std::mutex kv_lock;
   std::condition_variable kv_cond, kv_sync_cond;
   bool kv_stop;
@@ -1730,6 +1740,7 @@ public:
     return "bluestore";
   }
 
+  //检查是否需要日志
   bool needs_journal() override { return false; };
   bool wants_journal() override { return false; };
   bool allows_journal() override { return false; };

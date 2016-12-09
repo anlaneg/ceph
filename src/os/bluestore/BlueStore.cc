@@ -389,6 +389,7 @@ static int get_key_object(const string& key, ghobject_t *oid)
 // extent shard keys are the onode key, plus a u32, plus 'x'.  the trailing
 // char lets us quickly test whether it is a shard key without decoding any
 // of the prefix bytes.
+//将ononde_key存放key,然后将offset按内存存入key,最后存入'x'
 static void get_extent_shard_key(const string& onode_key, uint32_t offset,
 				 string *key)
 {
@@ -398,6 +399,7 @@ static void get_extent_shard_key(const string& onode_key, uint32_t offset,
   key->push_back(EXTENT_SHARD_KEY_SUFFIX);
 }
 
+//与get_extent_shard_key生成的格式相同，这里替换原有的offset
 static void rewrite_extent_shard_key(uint32_t offset, string *key)
 {
   assert(key->size() > sizeof(uint32_t) + 1);
@@ -1182,6 +1184,7 @@ void BlueStore::BufferSpace::split(size_t pos, BlueStore::BufferSpace &r)
 #undef dout_prefix
 #define dout_prefix *_dout << "bluestore.OnodeSpace(" << this << " in " << cache << ") "
 
+//如果onode_map中没有，则填加，如果有，则直接返回，忽略添加。
 BlueStore::OnodeRef BlueStore::OnodeSpace::add(const ghobject_t& oid, OnodeRef o)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
@@ -1193,10 +1196,11 @@ BlueStore::OnodeRef BlueStore::OnodeSpace::add(const ghobject_t& oid, OnodeRef o
   }
   dout(30) << __func__ << " " << oid << " " << o << dendl;
   onode_map[oid] = o;
-  cache->_add_onode(o, 1);
+  cache->_add_onode(o, 1);//加入cache
   return o;
 }
 
+//如果onode_map中没有，则返回空引用，则更新cache，并返回
 BlueStore::OnodeRef BlueStore::OnodeSpace::lookup(const ghobject_t& oid)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
@@ -1208,11 +1212,12 @@ BlueStore::OnodeRef BlueStore::OnodeSpace::lookup(const ghobject_t& oid)
     return OnodeRef();
   }
   dout(30) << __func__ << " " << oid << " hit " << p->second << dendl;
-  cache->_touch_onode(p->second);
+  cache->_touch_onode(p->second);//表示最近查到过
   cache->logger->inc(l_bluestore_onode_hits);
   return p->second;
 }
 
+//将所有onode删除
 void BlueStore::OnodeSpace::clear()
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
@@ -1223,12 +1228,14 @@ void BlueStore::OnodeSpace::clear()
   onode_map.clear();
 }
 
+//检查是否为空
 bool BlueStore::OnodeSpace::empty()
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
   return onode_map.empty();
 }
 
+//将old_oid重命名为new_oid,如果new_oid已存在，将被删除
 void BlueStore::OnodeSpace::rename(OnodeRef& oldo,
 				     const ghobject_t& old_oid,
 				     const ghobject_t& new_oid,
@@ -1242,7 +1249,7 @@ void BlueStore::OnodeSpace::rename(OnodeRef& oldo,
   assert(po != pn);
 
   assert(po != onode_map.end());
-  if (pn != onode_map.end()) {
+  if (pn != onode_map.end()) {//如果pn存在，将被overwrite,故先删除
     dout(30) << __func__ << "  removing target " << pn->second << dendl;
     cache->_rm_onode(pn->second);
     onode_map.erase(pn);
@@ -1251,16 +1258,17 @@ void BlueStore::OnodeSpace::rename(OnodeRef& oldo,
 
   // install a non-existent onode at old location
   oldo.reset(new Onode(this, o->c, old_oid, o->key));
-  po->second = oldo;
-  cache->_add_onode(po->second, 1);
+  po->second = oldo;//设置
+  cache->_add_onode(po->second, 1);//加入缓存
 
   // add at new position and fix oid, key
-  onode_map.insert(make_pair(new_oid, o));
+  onode_map.insert(make_pair(new_oid, o));//加入
   cache->_touch_onode(o);
   o->oid = new_oid;
   o->key = new_okey;
 }
 
+//遍历onode_map，针对每一个元素执行f,如果f返回True,则返回True否则遍历完所有元素后，返回false
 bool BlueStore::OnodeSpace::map_any(std::function<bool(OnodeRef)> f)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
@@ -1876,6 +1884,7 @@ bool BlueStore::ExtentMap::encode_some(uint32_t offset, uint32_t length,
   return false;
 }
 
+//从中解出extent,并将其加入到extend_map中
 void BlueStore::ExtentMap::decode_some(bufferlist& bl)
 {
   /*
@@ -1892,7 +1901,7 @@ void BlueStore::ExtentMap::decode_some(bufferlist& bl)
   uint64_t pos = 0;
   uint64_t prev_len = 0;
   unsigned n = 0;
-  while (!p.end()) {
+  while (!p.end()) {//从中解出extent,并将其加入到extend_map中
     Extent *le = new Extent();
     uint64_t blobid;
     denc_varint(blobid, p);
@@ -1987,6 +1996,7 @@ void BlueStore::ExtentMap::init_shards(Onode *on, bool loaded, bool dirty)
   }
 }
 
+//按shards数组中的记录从db中加载offset-length段，并将其加入extentmap中
 void BlueStore::ExtentMap::fault_range(
   KeyValueDB *db,
   uint32_t offset,
@@ -2008,19 +2018,19 @@ void BlueStore::ExtentMap::fault_range(
     auto p = &shards[start];
     if (!p->loaded) {
       if (first_key) {
-        get_extent_shard_key(onode->key, p->offset, &key);
+        get_extent_shard_key(onode->key, p->offset, &key);//将onode->key及offset加上'x'存入到key中
         first_key = false;
       } else
-        rewrite_extent_shard_key(p->offset, &key);
+        rewrite_extent_shard_key(p->offset, &key);//置换offset
       bufferlist v;
       int r = db->get(PREFIX_OBJ, key, &v);
-      if (r < 0) {
+      if (r < 0) {//挂掉
 	derr << __func__ << " missing shard 0x" << std::hex << p->offset
 	     << std::dec << " for " << onode->oid << dendl;
 	assert(r >= 0);
       }
       decode_some(v);
-      p->loaded = true;
+      p->loaded = true;//已加载
       dout(20) << __func__ << " open shard 0x" << std::hex << p->offset
 	       << std::dec << " (" << v.length() << " bytes)" << dendl;
       assert(p->dirty == false);
@@ -2030,6 +2040,7 @@ void BlueStore::ExtentMap::fault_range(
   }
 }
 
+//将shards中自offset起始到length置为dirty状态
 void BlueStore::ExtentMap::dirty_range(
   KeyValueDB::Transaction t,
   uint32_t offset,
@@ -2051,7 +2062,7 @@ void BlueStore::ExtentMap::dirty_range(
   while (start <= last) {
     assert((size_t)start < shards.size());
     auto p = &shards[start];
-    if (!p->loaded) {
+    if (!p->loaded) {//如果没有加载就报错。
       dout(20) << __func__ << " shard 0x" << std::hex << p->offset << std::dec
                << " is not loaded, can't mark dirty" << dendl;
       assert(0 == "can't mark unloaded shard dirty");
@@ -2069,14 +2080,15 @@ BlueStore::extent_map_t::iterator BlueStore::ExtentMap::find(
   uint64_t offset)
 {
   Extent dummy(offset);
-  return extent_map.find(dummy);
+  return extent_map.find(dummy);//由于offset相等即认为两者相等，故传入dummy比较
 }
 
+//找offset所在的extent范围，如果找到返回，找不到返回end()
 BlueStore::extent_map_t::iterator BlueStore::ExtentMap::find_lextent(
   uint64_t offset)
 {
   auto fp = seek_lextent(offset);
-  if (fp != extent_map.end() && fp->logical_offset > offset)
+  if (fp != extent_map.end() && fp->logical_offset > offset)//如果这个段里没有fp返回end
     return extent_map.end();  // extent is past offset
   return fp;
 }
@@ -2085,9 +2097,9 @@ BlueStore::extent_map_t::iterator BlueStore::ExtentMap::seek_lextent(
   uint64_t offset)
 {
   Extent dummy(offset);
-  auto fp = extent_map.lower_bound(dummy);//找比offset第一小的
+  auto fp = extent_map.lower_bound(dummy);//找出第一个大于等于offset的
   if (fp != extent_map.begin()) {//如果offset不是当前extent_map中最小的
-    --fp;//向后退一格，防止到达end()
+    --fp;//向后退一格，防止end(),防止offset被前一个范围所包含
     if (fp->logical_end() <= offset) {//如果这个范围无法满足，则增加fp
       ++fp;
     }
@@ -2104,6 +2116,7 @@ bool BlueStore::ExtentMap::has_any_lextents(uint64_t offset, uint64_t length)//�
   return true;
 }
 
+//检查offset开始length长度是否可合并extent,如果可以合并将其合并
 int BlueStore::ExtentMap::compress_extent_map(uint64_t offset, uint64_t length)
 {
   if (extent_map.empty())
@@ -2131,7 +2144,7 @@ int BlueStore::ExtentMap::compress_extent_map(uint64_t offset, uint64_t length)
 
   auto n = p;
   for (++n; n != extent_map.end(); p = n++) {
-    if (n->logical_offset > offset + length) {
+    if (n->logical_offset > offset + length) {//已到段末尾，退
       break;  // stop after end
     }
     while (n != extent_map.end() &&
@@ -2146,7 +2159,7 @@ int BlueStore::ExtentMap::compress_extent_map(uint64_t offset, uint64_t length)
       rm(n++);
       ++removed;
     }
-    if (n == extent_map.end()) {
+    if (n == extent_map.end()) {//提前结束，退
       break;
     }
     if (n->logical_offset >= shard_end) {
@@ -2162,9 +2175,10 @@ int BlueStore::ExtentMap::compress_extent_map(uint64_t offset, uint64_t length)
   if (removed && onode) {
     onode->c->store->logger->inc(l_bluestore_extent_compress, removed);
   }
-  return removed;
+  return removed;//指指是否合并过。
 }
 
+//将offset位置开始长度为length的范围自当前extentmap中移除掉，被移除的范围存入old_extents中
 void BlueStore::ExtentMap::punch_hole(
   uint64_t offset,
   uint64_t length,
@@ -2173,19 +2187,19 @@ void BlueStore::ExtentMap::punch_hole(
   auto p = seek_lextent(offset);
   uint64_t end = offset + length;
   while (p != extent_map.end()) {
-    if (p->logical_offset >= end) {
+    if (p->logical_offset >= end) {//超过end点，退
       break;
     }
     if (p->logical_offset < offset) {
-      if (p->logical_end() > end) {
+      if (p->logical_end() > end) {//中间的一部分被拿走，存入old_extents
 	// split and deref middle
-	uint64_t front = offset - p->logical_offset;
+	uint64_t front = offset - p->logical_offset;//需要front个才能达到offset
 	old_extents->insert(
-	  *new Extent(offset, p->blob_offset + front, length, p->blob));
+	  *new Extent(offset, p->blob_offset + front, length, p->blob));//创建一个extent,自offset开始,取长度length,blob_offset＋front是数据在blob中的偏移量
 	add(end,
 	    p->blob_offset + front + length,
 	    p->length - front - length,
-	    p->blob);
+	    p->blob);//创建一个extent,指向end之后的部分
 	p->length = front;
 	break;
       } else {
@@ -2193,13 +2207,13 @@ void BlueStore::ExtentMap::punch_hole(
 	assert(p->logical_end() > offset); // else seek_lextent bug
 	uint64_t keep = offset - p->logical_offset;
 	old_extents->insert(*new Extent(offset, p->blob_offset + keep,
-					p->length - keep,  p->blob));
-	p->length = keep;
+					p->length - keep,  p->blob));//这段拿走
+	p->length = keep;//前半部分保存（更新长度即可）
 	++p;
 	continue;
       }
     }
-    if (p->logical_offset + p->length <= end) {
+    if (p->logical_offset + p->length <= end) {//整块拿走
       // deref whole lextent
       old_extents->insert(*new Extent(p->logical_offset, p->blob_offset,
 				      p->length, p->blob));
@@ -2210,7 +2224,7 @@ void BlueStore::ExtentMap::punch_hole(
     uint64_t keep = p->logical_end() - end;
     old_extents->insert(*new Extent(p->logical_offset, p->blob_offset,
 				    p->length - keep, p->blob));
-    add(end, p->blob_offset + p->length - keep, keep, p->blob);
+    add(end, p->blob_offset + p->length - keep, keep, p->blob);//尾部存在，其它拿走
     rm(p);
     break;
   }
@@ -2305,7 +2319,7 @@ void BlueStore::Collection::open_shared_blob(BlobRef b)
 {
   assert(!b->shared_blob);
   const bluestore_blob_t& blob = b->get_blob();
-  if (!blob.is_shared()) {
+  if (!blob.is_shared()) {//是否共享
     b->shared_blob = new SharedBlob(cache);
     return;
   }
@@ -2362,6 +2376,7 @@ void BlueStore::Collection::make_blob_shared(BlobRef b)
   dout(20) << __func__ << " now " << *b << dendl;
 }
 
+//给定oid,返回oid对应的信息，如果oid不存在，且容许创建，则创建，否则返回空
 BlueStore::OnodeRef BlueStore::Collection::get_onode(
   const ghobject_t& oid,
   bool create)
@@ -2369,15 +2384,15 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   assert(create ? lock.is_wlocked() : lock.is_locked());
 
   spg_t pgid;
-  if (cid.is_pg(&pgid)) {
-    if (!oid.match(cnode.bits, pgid.ps())) {
+  if (cid.is_pg(&pgid)) {//如果是pg,返回pgid
+    if (!oid.match(cnode.bits, pgid.ps())) {//检查oid是否为当前pg的一个object
       derr << __func__ << " oid " << oid << " not part of " << pgid
 	   << " bits " << cnode.bits << dendl;
       ceph_abort();
     }
   }
 
-  OnodeRef o = onode_map.lookup(oid);
+  OnodeRef o = onode_map.lookup(oid);//如果已存在，直接返回
   if (o)
     return o;
 
@@ -2395,17 +2410,17 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
     assert(r == -ENOENT);
     if (!g_conf->bluestore_debug_misc &&
 	!create)
-      return OnodeRef();
+      return OnodeRef();//不让创建，返空引用
 
     // new object, new onode
     on = new Onode(&onode_map, this, oid, key);//创建
-  } else {
+  } else {//数据库里有
     // loaded
     assert(r >= 0);
     on = new Onode(&onode_map, this, oid, key);
     on->exists = true;
     bufferptr::iterator p = v.front().begin();
-    on->onode.decode(p);
+    on->onode.decode(p);//将元数据解码进onode
 
     // initialize extent_map
     on->extent_map.decode_spanning_blobs(this, p);
@@ -2417,7 +2432,7 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
     }
   }
   o.reset(on);
-  return onode_map.add(oid, o);
+  return onode_map.add(oid, o);//加入o
 }
 
 void BlueStore::Collection::trim_cache()
@@ -2768,6 +2783,7 @@ int BlueStore::get_block_device_fsid(const string& path, uuid_d *fsid)
   return 0;
 }
 
+//打开path对应的目录，设置path_fd
 int BlueStore::_open_path()
 {
   assert(path_fd < 0);
@@ -2781,6 +2797,7 @@ int BlueStore::_open_path()
   return 0;
 }
 
+//关闭path对应的目录。清空path_fd
 void BlueStore::_close_path()
 {
   VOID_TEMP_FAILURE_RETRY(::close(path_fd));
@@ -3088,6 +3105,7 @@ void BlueStore::_close_alloc()
   alloc = NULL;
 }
 
+//打开fsid文件对应的fd,设置fsid_fd,如果create为True，不存在时，创建相应文件
 int BlueStore::_open_fsid(bool create)
 {
   assert(fsid_fd < 0);
@@ -3103,6 +3121,7 @@ int BlueStore::_open_fsid(bool create)
   return 0;
 }
 
+//读取fsid_fd文件中的fsid,其值为uuid
 int BlueStore::_read_fsid(uuid_d *uuid)
 {
   char fsid_str[40];
@@ -3123,6 +3142,7 @@ int BlueStore::_read_fsid(uuid_d *uuid)
   return 0;
 }
 
+//写fsid文件
 int BlueStore::_write_fsid()
 {
   int r = ::ftruncate(fsid_fd, 0);
@@ -3146,12 +3166,14 @@ int BlueStore::_write_fsid()
   return 0;
 }
 
+//关闭fsid文件
 void BlueStore::_close_fsid()
 {
   VOID_TEMP_FAILURE_RETRY(::close(fsid_fd));
   fsid_fd = -1;
 }
 
+//锁fsid文件
 int BlueStore::_lock_fsid()
 {
   struct flock l;
@@ -3169,6 +3191,7 @@ int BlueStore::_lock_fsid()
   return 0;
 }
 
+//如果文件正在被用，返回True,采用锁fsid文件检测
 bool BlueStore::test_mount_in_use()
 {
   // most error conditions mean the mount is not in use (e.g., because

@@ -624,7 +624,7 @@ public:
     return type == TYPE_PG;
   }
   bool is_pg(spg_t *pgid_) const {
-    if (type == TYPE_PG) {
+    if (type == TYPE_PG) {//检查此collect是否为pg目录
       *pgid_ = pgid;
       return true;
     }
