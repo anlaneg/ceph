@@ -63,6 +63,7 @@ const string PREFIX_SHARED_BLOB = "X"; // u64 offset -> shared_blob_t
 #define BDEV_LABEL_BLOCK_SIZE  4096
 
 // for bluefs, label (4k) + bluefs super (4k), means we start at 8k.
+//如上述，label占用了前４k,super占用４k,所以我们从8k位置处开始
 #define BLUEFS_START  8192
 
 #define OBJECT_MAX_SIZE 0xffffffff // 32 bits
@@ -1031,7 +1032,8 @@ int BlueStore::BufferSpace::_discard(uint64_t offset, uint64_t length)
 }
 
 //自bufferspace中读取数据，自offset开始读取length,读取的数据可能中间有空隙，空隙将被认为是数据
-//res中将保存读取到的数据，res_intervals中将保证我们读取到的数据对应(offset,length)元组
+//res中将保存读取到的数据，res_intervals中将保存我们读取到的数据对应(offset,length)元组
+//自buffer_map中读取数据
 void BlueStore::BufferSpace::read(
   uint64_t offset, uint64_t length,
   BlueStore::ready_regions_t& res,
@@ -1056,7 +1058,7 @@ void BlueStore::BufferSpace::read(
 	offset += l;
 	length -= l;
 	if (!b->is_writing()) {
-	  cache->_touch_buffer(b);
+	  cache->_touch_buffer(b);//
 	}
 	continue;
       }
@@ -1997,6 +1999,7 @@ void BlueStore::ExtentMap::init_shards(Onode *on, bool loaded, bool dirty)
 }
 
 //按shards数组中的记录从db中加载offset-length段，并将其加入extentmap中
+//加载offset,length之间的元数据
 void BlueStore::ExtentMap::fault_range(
   KeyValueDB *db,
   uint32_t offset,
@@ -2238,7 +2241,7 @@ BlueStore::Extent *BlueStore::ExtentMap::set_lextent(
   punch_hole(logical_offset, length, old_extents);
   b->get_ref(blob_offset, length);
   Extent *le = new Extent(logical_offset, blob_offset, length, b);
-  extent_map.insert(*le);
+  extent_map.insert(*le);//将此范围加入
   if (!needs_reshard && spans_shard(logical_offset, length)) {
     needs_reshard = true;
   }
@@ -2289,7 +2292,7 @@ BlueStore::BlobRef BlueStore::ExtentMap::split_blob(
 #undef dout_prefix
 #define dout_prefix *_dout << "bluestore.onode(" << this << ") "
 
-void BlueStore::Onode::flush()
+void BlueStore::Onode::flush()//等待flush_txns队列为空
 {
   std::unique_lock<std::mutex> l(flush_lock);
   dout(20) << __func__ << " " << flush_txns << dendl;
@@ -2435,7 +2438,7 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   return onode_map.add(oid, o);//加入o
 }
 
-void BlueStore::Collection::trim_cache()
+void BlueStore::Collection::trim_cache()//cache维护
 {
   // see if mempool stats have updated
   uint64_t total_bytes;
@@ -2804,6 +2807,7 @@ void BlueStore::_close_path()
   path_fd = -1;
 }
 
+//写块设备的label
 int BlueStore::_write_bdev_label(string path, bluestore_bdev_label_t label)
 {
   dout(10) << __func__ << " path " << path << " label " << label << dendl;
@@ -2875,6 +2879,7 @@ int BlueStore::_read_bdev_label(string path, bluestore_bdev_label_t *label)
   return 0;
 }
 
+//读取或者设置块设备的label
 int BlueStore::_check_or_set_bdev_label(
   string path, uint64_t size, string desc, bool create)
 {
@@ -2900,6 +2905,7 @@ int BlueStore::_check_or_set_bdev_label(
   return 0;
 }
 
+//依据配置填充min_alloc_size,max_alloc_size
 void BlueStore::_set_alloc_sizes(void)
 {
   /*
@@ -2909,7 +2915,7 @@ void BlueStore::_set_alloc_sizes(void)
     min_alloc_size = g_conf->bluestore_min_alloc_size;
   } else {
     assert(bdev);
-    if (bdev->is_rotational()) {
+    if (bdev->is_rotational()) {//区分是硬盘，还是ssd
       min_alloc_size = g_conf->bluestore_min_alloc_size_hdd;
     } else {
       min_alloc_size = g_conf->bluestore_min_alloc_size_ssd;
@@ -2926,17 +2932,18 @@ void BlueStore::_set_alloc_sizes(void)
 	   << std::dec << dendl;
 }
 
+//打开'block‘设备
 int BlueStore::_open_bdev(bool create)
 {
   bluestore_bdev_label_t label;
   assert(bdev == NULL);
   string p = path + "/block";
-  bdev = BlockDevice::create(p, aio_cb, static_cast<void*>(this));
+  bdev = BlockDevice::create(p, aio_cb, static_cast<void*>(this));//打开'block'设备
   int r = bdev->open(p);
   if (r < 0)
     goto fail;
 
-  if (bdev->supported_bdev_label()) {
+  if (bdev->supported_bdev_label()) {//kernerl bdev支持label
     r = _check_or_set_bdev_label(p, bdev->get_size(), "main", create);
     if (r < 0)
       goto fail_close;
@@ -2967,6 +2974,7 @@ void BlueStore::_close_bdev()
   bdev = NULL;
 }
 
+//管理块设备上的block管理
 int BlueStore::_open_fm(bool create)
 {
   assert(fm == NULL);
@@ -2979,7 +2987,7 @@ int BlueStore::_open_fm(bool create)
     {
       bufferlist bl;
       bl.append(freelist_type);
-      t->set(PREFIX_SUPER, "freelist_type", bl);
+      t->set(PREFIX_SUPER, "freelist_type", bl);//保存freelist_type
     }
     fm->create(bdev->get_size(), t);
 
@@ -3001,9 +3009,9 @@ int BlueStore::_open_fm(bool create)
 
     // note: we do not mark bluefs space as allocated in the freelist; we
     // instead rely on bluefs_extents.
-    fm->allocate(0, BLUEFS_START, t);
+    fm->allocate(0, BLUEFS_START, t);//把这两页申请出来，我们实际上已经占用了
 
-    if (g_conf->bluestore_debug_prefill > 0) {
+    if (g_conf->bluestore_debug_prefill > 0) {//debug代码，不考虑
       uint64_t end = bdev->get_size() - reserved;
       dout(1) << __func__ << " pre-fragmenting freespace, using "
 	      << g_conf->bluestore_debug_prefill << " with max free extent "
@@ -3044,10 +3052,10 @@ int BlueStore::_open_fm(bool create)
 	start += l + u;
       }
     }
-    db->submit_transaction_sync(t);
+    db->submit_transaction_sync(t);//fm记录的信息刷入库
   }
 
-  int r = fm->init();
+  int r = fm->init();//重新读取
   if (r < 0) {
     derr << __func__ << " freelist init failed: " << cpp_strerror(r) << dendl;
     delete fm;
@@ -3066,6 +3074,7 @@ void BlueStore::_close_fm()
   fm = NULL;
 }
 
+//初始化alloc,通过fm来初始化alloc
 int BlueStore::_open_alloc()
 {
   assert(alloc == NULL);
@@ -3079,7 +3088,7 @@ int BlueStore::_open_alloc()
   fm->enumerate_reset();
   uint64_t offset, length;
   while (fm->enumerate_next(&offset, &length)) {
-    alloc->init_add_free(offset, length);
+    alloc->init_add_free(offset, length);//将每个未用的段加入到alloc中，来准备分配
     ++num;
     bytes += length;
   }
@@ -3088,7 +3097,7 @@ int BlueStore::_open_alloc()
 	   << dendl;
 
   // also mark bluefs space as allocated
-  for (auto e = bluefs_extents.begin(); e != bluefs_extents.end(); ++e) {
+  for (auto e = bluefs_extents.begin(); e != bluefs_extents.end(); ++e) {//将这些标记为已使用
     alloc->init_rm_free(e.get_start(), e.get_len());
   }
   dout(10) << __func__ << " marked bluefs_extents 0x" << std::hex
@@ -3213,6 +3222,7 @@ bool BlueStore::test_mount_in_use()
   return ret;
 }
 
+//创建各块设备，及相关bluefs的目录
 int BlueStore::_open_db(bool create)
 {
   int r;
@@ -3222,6 +3232,7 @@ int BlueStore::_open_db(bool create)
   stringstream err;
   ceph::shared_ptr<Int64ArrayMergeOperator> merge_op(new Int64ArrayMergeOperator);
 
+  //填充kv的后端取值
   string kv_backend;
   if (create) {
     kv_backend = g_conf->bluestore_kvbackend;
@@ -3234,6 +3245,7 @@ int BlueStore::_open_db(bool create)
   }
   dout(10) << __func__ << " kv_backend = " << kv_backend << dendl;
 
+  //填充是否用bluefs （１为用，０为不用）
   bool do_bluefs;
   if (create) {
     do_bluefs = g_conf->bluestore_bluefs;
@@ -3257,9 +3269,9 @@ int BlueStore::_open_db(bool create)
   dout(10) << __func__ << " do_bluefs = " << do_bluefs << dendl;
 
   rocksdb::Env *env = NULL;
-  if (do_bluefs) {
+  if (do_bluefs) {//用bluefs
     dout(10) << __func__ << " initializing bluefs" << dendl;
-    if (kv_backend != "rocksdb") {
+    if (kv_backend != "rocksdb") {//如果用bluefs,则要求后端必须为rocksdb
       derr << " backend must be rocksdb to use bluefs" << dendl;
       return -EINVAL;
     }
@@ -3270,18 +3282,18 @@ int BlueStore::_open_db(bool create)
 
     bfn = path + "/block.db";
     if (::stat(bfn.c_str(), &st) == 0) {
-      r = bluefs->add_block_device(BlueFS::BDEV_DB, bfn);
+      r = bluefs->add_block_device(BlueFS::BDEV_DB, bfn);//为bluefs加入'/block.db'
       if (r < 0) {
         derr << __func__ << " add block device(" << bfn << ") returned: " 
              << cpp_strerror(r) << dendl;
         goto free_bluefs;
       }
 
-      if (bluefs->bdev_support_label(BlueFS::BDEV_DB)) {
+      if (bluefs->bdev_support_label(BlueFS::BDEV_DB)) {//此设备支持设置label
         r = _check_or_set_bdev_label(
 	  bfn,
 	  bluefs->get_block_device_size(BlueFS::BDEV_DB),
-          "bluefs db", create);
+          "bluefs db", create);//设置label为‘bluefs db‘
         if (r < 0) {
           derr << __func__
 	       << " check block device(" << bfn << ") label returned: "
@@ -3289,7 +3301,7 @@ int BlueStore::_open_db(bool create)
           goto free_bluefs;
         }
       }
-      if (create) {
+      if (create) {//新创建，则加入bluefs的范围
 	bluefs->add_block_extent(
 	  BlueFS::BDEV_DB,
 	  BLUEFS_START,
@@ -3302,7 +3314,7 @@ int BlueStore::_open_db(bool create)
 
     // shared device
     bfn = path + "/block";
-    r = bluefs->add_block_device(bluefs_shared_bdev, bfn);
+    r = bluefs->add_block_device(bluefs_shared_bdev, bfn);//添加共享块设备
     if (r < 0) {
       derr << __func__ << " add block device(" << bfn << ") returned: " 
 	   << cpp_strerror(r) << dendl;
@@ -3311,6 +3323,7 @@ int BlueStore::_open_db(bool create)
     if (create) {
       // note: we might waste a 4k block here if block.db is used, but it's
       // simpler.
+    　　//针对不支持label的设备，我们仍然浪费了４k的block
       uint64_t initial =
 	bdev->get_size() * (g_conf->bluestore_bluefs_min_ratio +
 			    g_conf->bluestore_bluefs_gift_ratio);
@@ -3319,9 +3332,10 @@ int BlueStore::_open_db(bool create)
       initial = P2ROUNDUP(initial, g_conf->bluefs_alloc_size);
       initial += g_conf->bluefs_alloc_size - BLUEFS_START;
       bluefs->add_block_extent(bluefs_shared_bdev, BLUEFS_START, initial);
-      bluefs_extents.insert(BLUEFS_START, initial);
+      bluefs_extents.insert(BLUEFS_START, initial);//填加范围
     }
 
+    //创建block.wal块设备
     bfn = path + "/block.wal";
     if (::stat(bfn.c_str(), &st) == 0) {
       r = bluefs->add_block_device(BlueFS::BDEV_WAL, bfn);
@@ -3354,15 +3368,15 @@ int BlueStore::_open_db(bool create)
       g_conf->set_val("rocksdb_separate_wal_dir", "false");
     }
 
-    if (create) {
+    if (create) {//bluefs格式化
       bluefs->mkfs(fsid);
     }
-    r = bluefs->mount();
+    r = bluefs->mount();//挂载
     if (r < 0) {
       derr << __func__ << " failed bluefs mount: " << cpp_strerror(r) << dendl;
       goto free_bluefs;
     }
-    if (g_conf->bluestore_bluefs_env_mirror) {
+    if (g_conf->bluestore_bluefs_env_mirror) {//默认不开启
       rocksdb::Env *a = new BlueRocksEnv(bluefs);
       unique_ptr<rocksdb::Directory> dir;
       rocksdb::Env *b = rocksdb::Env::Default();
@@ -3375,7 +3389,7 @@ int BlueStore::_open_db(bool create)
       }
       env = new rocksdb::EnvMirror(b, a, false, true);
     } else {
-      env = new BlueRocksEnv(bluefs);
+      env = new BlueRocksEnv(bluefs);//与db的适配层
 
       // simplify the dir names, too, as "seen" by rocksdb
       fn = "db";
@@ -3391,20 +3405,20 @@ int BlueStore::_open_db(bool create)
                << (uint64_t)(db_size * 95 / 100) << " "
                << fn + ".slow" << ","
                << (uint64_t)(slow_size * 95 / 100);
-      g_conf->set_val("rocksdb_db_paths", db_paths.str(), false, false);
+      g_conf->set_val("rocksdb_db_paths", db_paths.str(), false, false);//保存文件名，大小
       dout(10) << __func__ << " set rocksdb_db_paths to "
 	       << g_conf->rocksdb_db_paths << dendl;
     }
 
     if (create) {
-      env->CreateDir(fn);
+      env->CreateDir(fn);//让bluefs创建目录‘db'
       if (g_conf->rocksdb_separate_wal_dir)
-	env->CreateDir(fn + ".wal");
+	env->CreateDir(fn + ".wal");//'db.wal'
       if (g_conf->rocksdb_db_paths.length())
-	env->CreateDir(fn + ".slow");
+	env->CreateDir(fn + ".slow");'db.slow'
     }
-  } else if (create) {
-    int r = ::mkdir(fn.c_str(), 0755);
+  } else if (create) {//不使用bluefs，但需要创建
+    int r = ::mkdir(fn.c_str(), 0755);//建立普通db目录
     if (r < 0)
       r = -errno;
     if (r < 0 && r != -EEXIST) {
@@ -3416,7 +3430,7 @@ int BlueStore::_open_db(bool create)
     // wal_dir, too!
     if (g_conf->rocksdb_separate_wal_dir) {
       string walfn = path + "/db.wal";
-      r = ::mkdir(walfn.c_str(), 0755);
+      r = ::mkdir(walfn.c_str(), 0755);//‘db.wal'目录
       if (r < 0)
 	r = -errno;
       if (r < 0 && r != -EEXIST) {
@@ -3428,6 +3442,7 @@ int BlueStore::_open_db(bool create)
     }
   }
 
+  //构造db类
   db = KeyValueDB::create(g_ceph_context,
 			  kv_backend,
 			  fn,
@@ -3478,6 +3493,7 @@ free_bluefs:
   return r;
 }
 
+//稍毁db,unmount掉bluefs
 void BlueStore::_close_db()
 {
   assert(db);
@@ -3669,16 +3685,16 @@ int BlueStore::_open_collections(int *errors)
 {
   assert(coll_map.empty());
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_COLL);
-  for (it->upper_bound(string());
+  for (it->upper_bound(string());//遍历所有目录名称
        it->valid();
        it->next()) {
     coll_t cid;
-    if (cid.parse(it->key())) {
+    if (cid.parse(it->key())) {//对key进行解码，且成功
       CollectionRef c(
 	new Collection(
 	  this,
-	  cache_shards[cid.hash_to_shard(cache_shards.size())],
-	  cid));
+	  cache_shards[cid.hash_to_shard(cache_shards.size())],//通过hash均匀分配cache_shards
+	  cid));//创建collection
       bufferlist bl = it->value();
       bufferlist::iterator p = bl.begin();
       try {
@@ -3690,7 +3706,7 @@ int BlueStore::_open_collections(int *errors)
       }   
       dout(20) << __func__ << " opened " << cid << dendl;
       coll_map[cid] = c;
-    } else {
+    } else {//解析失败，显示错误，增加错误记数
       derr << __func__ << " unrecognized collection " << it->key() << dendl;
       if (errors)
 	(*errors)++;
@@ -3699,6 +3715,7 @@ int BlueStore::_open_collections(int *errors)
   return 0;
 }
 
+//创建epath对应的链接name
 int BlueStore::_setup_block_symlink_or_file(
   string name,
   string epath,
@@ -3720,7 +3737,7 @@ int BlueStore::_setup_block_symlink_or_file(
       return r;
     }
 
-    if (!epath.compare(0, strlen(SPDK_PREFIX), SPDK_PREFIX)) {
+    if (!epath.compare(0, strlen(SPDK_PREFIX), SPDK_PREFIX)) {//spdk情况
       int fd = ::openat(path_fd, epath.c_str(), flags, 0644);
       if (fd < 0) {
 	r = -errno;
@@ -3743,9 +3760,9 @@ int BlueStore::_setup_block_symlink_or_file(
       struct stat st;
       int r = ::fstat(fd, &st);
       if (r == 0 &&
-	  S_ISREG(st.st_mode) &&   // if it is a regular file
+	  S_ISREG(st.st_mode) &&   // if it is a regular file　//name是一个普通文件
 	  st.st_size == 0) {       // and is 0 bytes
-	r = ::ftruncate(fd, size);
+	r = ::ftruncate(fd, size);//截断为size
 	if (r < 0) {
 	  r = -errno;
 	  derr << __func__ << " failed to resize " << name << " file to "
@@ -3804,7 +3821,7 @@ int BlueStore::mkfs()
 
   {
     string done;
-    r = read_meta("mkfs_done", &done);
+    r = read_meta("mkfs_done", &done);//mkfs已完成标记
     if (r == 0) {
       dout(1) << __func__ << " already created" << dendl;
       if (g_conf->bluestore_fsck_on_mkfs) {
@@ -3825,20 +3842,20 @@ int BlueStore::mkfs()
 
   {
     string type;
-    r = read_meta("type", &type);
-    if (r == 0) {
+    r = read_meta("type", &type);//读取类型，当前目录的'type'文件
+    if (r == 0) {//读成功了，但不是bluestore,报错
       if (type != "bluestore") {
 	derr << __func__ << " expected bluestore, but type is " << type << dendl;
 	return -EIO;
       }
-    } else {
+    } else {//读失败，写入bluestore
       r = write_meta("type", "bluestore");
       if (r < 0)
         return r;
     }
   }
 
-  freelist_type = g_conf->bluestore_freelist_type;
+  freelist_type = g_conf->bluestore_freelist_type;//设置freelist_type,默认为bitmap
 
   r = _open_path();
   if (r < 0)
@@ -3862,7 +3879,7 @@ int BlueStore::mkfs()
     }
     // we'll write it later.
   } else {
-    if (!fsid.is_zero() && fsid != old_fsid) {
+    if (!fsid.is_zero() && fsid != old_fsid) {//读到的和提供给我们的不一样，拒绝
       derr << __func__ << " on-disk fsid " << old_fsid
 	   << " != provided " << fsid << dendl;
       r = -EINVAL;
@@ -3873,18 +3890,18 @@ int BlueStore::mkfs()
 
   r = _setup_block_symlink_or_file("block", g_conf->bluestore_block_path,
 				   g_conf->bluestore_block_size,
-				   g_conf->bluestore_block_create);
+				   g_conf->bluestore_block_create);//创建'block'链接，指向bluestore_block_path
   if (r < 0)
     goto out_close_fsid;
   if (g_conf->bluestore_bluefs) {
     r = _setup_block_symlink_or_file("block.wal", g_conf->bluestore_block_wal_path,
 	g_conf->bluestore_block_wal_size,
-	g_conf->bluestore_block_wal_create);
+	g_conf->bluestore_block_wal_create);//创建'block.wal'链接，指向bluesotore_block_wal_path
     if (r < 0)
       goto out_close_fsid;
     r = _setup_block_symlink_or_file("block.db", g_conf->bluestore_block_db_path,
 	g_conf->bluestore_block_db_size,
-	g_conf->bluestore_block_db_create);
+	g_conf->bluestore_block_db_create);//创建'block.db'链接，指向bluestore_block_db_path
     if (r < 0)
       goto out_close_fsid;
   }
@@ -3893,28 +3910,28 @@ int BlueStore::mkfs()
   if (r < 0)
     goto out_close_fsid;
 
-  r = _open_db(true);
+  r = _open_db(true);//挂载fs,打开rocksdb
   if (r < 0)
     goto out_close_bdev;
 
-  r = _open_fm(true);
+  r = _open_fm(true);//初始化块设备管理freelistmanager
   if (r < 0)
     goto out_close_db;
 
   _save_min_min_alloc_size(min_alloc_size);
 
-  r = _open_alloc();
+  r = _open_alloc();//初始化alloc
   if (r < 0)
     goto out_close_fm;
 
-  r = write_meta("kv_backend", g_conf->bluestore_kvbackend);
+  r = write_meta("kv_backend", g_conf->bluestore_kvbackend);//写kv_backend文件
   if (r < 0)
     goto out_close_alloc;
-  r = write_meta("bluefs", stringify((int)g_conf->bluestore_bluefs));
+  r = write_meta("bluefs", stringify((int)g_conf->bluestore_bluefs));//写bluefs文件
   if (r < 0)
     goto out_close_alloc;
 
-  if (fsid != old_fsid) {
+  if (fsid != old_fsid) {//写fsid文件
     r = _write_fsid();
     if (r < 0) {
       derr << __func__ << " error writing fsid: " << cpp_strerror(r) << dendl;
@@ -3923,13 +3940,13 @@ int BlueStore::mkfs()
   }
 
   // indicate success by writing the 'mkfs_done' file
-  r = write_meta("mkfs_done", "yes");
+  r = write_meta("mkfs_done", "yes");//指明mkfs完成
   if (r < 0)
     goto out_close_alloc;
   dout(10) << __func__ << " success" << dendl;
 
   if (bluefs &&
-      g_conf->bluestore_precondition_bluefs > 0) {
+      g_conf->bluestore_precondition_bluefs > 0) {//用于随机产生几个操作，无实意
     dout(10) << __func__ << " preconditioning with "
 	     << pretty_si_t(g_conf->bluestore_precondition_bluefs)
 	     << " in blocks of "
@@ -4761,7 +4778,7 @@ int BlueStore::statfs(struct store_statfs_t *buf)
 // ---------------
 // cache
 
-BlueStore::CollectionRef BlueStore::_get_collection(const coll_t& cid)
+BlueStore::CollectionRef BlueStore::_get_collection(const coll_t& cid)//给定cid，返回collection
 {
   RWLock::RLocker l(coll_lock);
   ceph::unordered_map<coll_t,CollectionRef>::iterator cp = coll_map.find(cid);
@@ -4949,7 +4966,7 @@ int BlueStore::read(
   uint32_t op_flags,
   bool allow_eio)
 {
-  Collection *c = static_cast<Collection*>(c_.get());
+  Collection *c = static_cast<Collection*>(c_.get());//增加计数
   const coll_t &cid = c->get_cid();
   dout(15) << __func__ << " " << cid << " " << oid
 	   << " 0x" << std::hex << offset << "~" << length << std::dec
@@ -4962,22 +4979,22 @@ int BlueStore::read(
   {
     RWLock::RLocker l(c->lock);
 
-    OnodeRef o = c->get_onode(oid, false);
+    OnodeRef o = c->get_onode(oid, false);//因为是读操作，故不容许创建
     if (!o || !o->exists) {
       r = -ENOENT;
       goto out;
     }
 
     if (offset == length && offset == 0)
-      length = o->onode.size;
+      length = o->onode.size;//支持offset为０时，length设置为０，读整个文件
 
-    r = _do_read(c, o, offset, length, bl, op_flags);
+    r = _do_read(c, o, offset, length, bl, op_flags);//完成填充
   }
 
  out:
   assert(allow_eio || r != -EIO);
   c->trim_cache();
-  if (r == 0 && _debug_data_eio(oid)) {
+  if (r == 0 && _debug_data_eio(oid)) {//故障注入
     r = -EIO;
     derr << __func__ << " " << c->cid << " " << oid << " INJECT EIO" << dendl;
   }
@@ -5012,6 +5029,9 @@ struct region_t {
 typedef list<region_t> regions2read_t;
 typedef map<BlueStore::BlobRef, regions2read_t> blobs2read_t;
 
+//读取数据时，需要先知道o对应的各物理段，这此通过fault_range载入，
+//然后通过blob读数据，读取的数据如果是连续的，则直接加入，如果不连续，检查是否压
+//缩
 int BlueStore::_do_read(
   Collection *c,
   OnodeRef o,
@@ -5028,12 +5048,13 @@ int BlueStore::_do_read(
            << o->onode.size << ")" << dendl;
   bl.clear();
 
-  if (offset >= o->onode.size) {
+  if (offset >= o->onode.size) {//读的偏移量超过文件本身，返回０
     return r;
   }
 
   // generally, don't buffer anything, unless the client explicitly requests
   // it.
+  //检查客户端是否期待buffer
   bool buffered = false;
   if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_WILLNEED) {
     dout(20) << __func__ << " will do buffered read" << dendl;
@@ -5045,13 +5066,13 @@ int BlueStore::_do_read(
     buffered = true;
   }
 
-  if (offset + length > o->onode.size) {
+  if (offset + length > o->onode.size) {//截短length
     length = o->onode.size - offset;
   }
 
-  o->flush();
+  o->flush();//等待此o上的事务做完
 
-  o->extent_map.fault_range(db, offset, length);
+  o->extent_map.fault_range(db, offset, length);//加载这一段数据（读取各段对应的物理盘偏移量）
   _dump_onode(o);
 
   ready_regions_t ready_regions;
@@ -5062,40 +5083,42 @@ int BlueStore::_do_read(
   uint64_t pos = offset;
   auto lp = o->extent_map.seek_lextent(offset);
   while (left > 0 && lp != o->extent_map.extent_map.end()) {
-    if (pos < lp->logical_offset) {
+    if (pos < lp->logical_offset) {//说明有个洞
       unsigned hole = lp->logical_offset - pos;
-      if (hole >= left) {
+      if (hole >= left) {//读完
 	break;
       }
       dout(30) << __func__ << "  hole 0x" << std::hex << pos << "~" << hole
 	       << std::dec << dendl;
+      //跳过洞
       pos += hole;
       left -= hole;
     }
     BlobRef bptr = lp->blob;
-    unsigned l_off = pos - lp->logical_offset;
-    unsigned b_off = l_off + lp->blob_offset;
-    unsigned b_len = std::min(left, lp->length - l_off);
+    unsigned l_off = pos - lp->logical_offset;//在lp中的偏移量
+    unsigned b_off = l_off + lp->blob_offset;//在blob中的偏移量
+    unsigned b_len = std::min(left, lp->length - l_off);//需要读多长
 
     ready_regions_t cache_res;
     interval_set<uint64_t> cache_interval;
-    bptr->shared_blob->bc.read(b_off, b_len, cache_res, cache_interval);
+    bptr->shared_blob->bc.read(b_off, b_len, cache_res, cache_interval);//将数据读到cache_res中，cache_interval是读到的不同段
     dout(20) << __func__ << "  blob " << *bptr << std::hex
 	     << " need 0x" << b_off << "~" << b_len
 	     << " cache has 0x" << cache_interval
 	     << std::dec << dendl;
 
+    //遍历读取到的数据，从cache_res
     auto pc = cache_res.begin();
     while (b_len > 0) {
       unsigned l;
       if (pc != cache_res.end() &&
-	  pc->first == b_off) {
+	  pc->first == b_off) {//连续块处理
 	l = pc->second.length();
-	ready_regions[pos].claim(pc->second);
+	ready_regions[pos].claim(pc->second);//从pos位置开始的数据pc->second
 	dout(30) << __func__ << "    use cache 0x" << std::hex << pos << ": 0x"
 		 << b_off << "~" << l << std::dec << dendl;
-	++pc;
-      } else {
+	++pc;//下一块
+      } else {//中间有空隙
 	l = b_len;
 	if (pc != cache_res.end()) {
 	  assert(pc->first > b_off);
@@ -5119,7 +5142,7 @@ int BlueStore::_do_read(
     BlobRef bptr = b2r_it->first;
     dout(20) << __func__ << "  blob " << *bptr << std::hex
 	     << " need 0x" << b2r_it->second << std::dec << dendl;
-    if (bptr->get_blob().has_flag(bluestore_blob_t::FLAG_COMPRESSED)) {
+    if (bptr->get_blob().has_flag(bluestore_blob_t::FLAG_COMPRESSED)) {//被压缩
       bufferlist compressed_bl, raw_bl;
       IOContext ioc(NULL);   // FIXME?
       r = bptr->get_blob().map(
@@ -5138,17 +5161,17 @@ int BlueStore::_do_read(
       if (_verify_csum(o, &bptr->get_blob(), 0, compressed_bl) < 0) {
 	return -EIO;
       }
-      r = _decompress(compressed_bl, &raw_bl);
+      r = _decompress(compressed_bl, &raw_bl);//解压缩
       if (r < 0)
 	return r;
-      if (buffered) {
+      if (buffered) {//丢掉对解压缩后的数据的缓存
 	bptr->shared_blob->bc.did_read(0, raw_bl);
       }
-      for (auto& i : b2r_it->second) {
+      for (auto& i : b2r_it->second) {//存入这些数据
 	ready_regions[i.logical_offset].substr_of(
 	  raw_bl, i.blob_xoffset, i.length);
       }
-    } else {
+    } else {//非压缩数据
       for (auto reg : b2r_it->second) {
 	// determine how much of the blob to read
 	uint64_t chunk_size = bptr->get_blob().get_chunk_size(block_size);
@@ -5175,7 +5198,7 @@ int BlueStore::_do_read(
 	r = bptr->get_blob().map(r_off, r_len,
 			     [&](uint64_t offset, uint64_t length) {
 	    bufferlist t;
-	    int r = bdev->read(offset, length, &t, &ioc, false);
+	    int r = bdev->read(offset, length, &t, &ioc, false);//自块设备中进行读取
 	    if (r < 0)
               return r;
 	    bl.claim_append(t);
@@ -5193,7 +5216,7 @@ int BlueStore::_do_read(
 	}
 
 	// prune and keep result
-	ready_regions[reg.logical_offset].substr_of(bl, front, reg.length);
+	ready_regions[reg.logical_offset].substr_of(bl, front, reg.length);//存入读到的数据
       }
     }
     ++b2r_it;
@@ -5204,14 +5227,14 @@ int BlueStore::_do_read(
   auto pr_end = ready_regions.end();
   pos = 0;
   while (pos < length) {
-    if (pr != pr_end && pr->first == pos + offset) {
+    if (pr != pr_end && pr->first == pos + offset) {//恰好是从头上开始
       dout(30) << __func__ << " assemble 0x" << std::hex << pos
 	       << ": data from 0x" << pr->first << "~" << pr->second.length()
 	       << std::dec << dendl;
       pos += pr->second.length();
-      bl.claim_append(pr->second);
+      bl.claim_append(pr->second);//全部放入
       ++pr;
-    } else {
+    } else {//存在空隙，用0来进行填充
       uint64_t l = length - pos;
       if (pr != pr_end) {
         assert(pr->first > pos + offset);
@@ -5379,13 +5402,14 @@ int BlueStore::fiemap(
   return 0;
 }
 
+//获取属性
 int BlueStore::getattr(
   const coll_t& cid,
   const ghobject_t& oid,
   const char *name,
   bufferptr& value)
 {
-  CollectionHandle c = _get_collection(cid);
+  CollectionHandle c = _get_collection(cid);//找到collection
   if (!c)
     return -ENOENT;
   return getattr(c, oid, name, value);
@@ -5408,7 +5432,7 @@ int BlueStore::getattr(
     string k(name);
 
     OnodeRef o = c->get_onode(oid, false);
-    if (!o || !o->exists) {
+    if (!o || !o->exists) {//确保o是存在的
       r = -ENOENT;
       goto out;
     }
@@ -5431,7 +5455,7 @@ int BlueStore::getattr(
   return r;
 }
 
-
+//获取所有属性
 int BlueStore::getattrs(
   const coll_t& cid,
   const ghobject_t& oid,
@@ -5462,7 +5486,7 @@ int BlueStore::getattrs(
       r = -ENOENT;
       goto out;
     }
-    aset = o->onode.attrs;
+    aset = o->onode.attrs;//返回所有属性
     r = 0;
   }
 
@@ -5477,7 +5501,7 @@ int BlueStore::getattrs(
   return r;
 }
 
-int BlueStore::list_collections(vector<coll_t>& ls)
+int BlueStore::list_collections(vector<coll_t>& ls)//列出所有目录
 {
   RWLock::RLocker l(coll_lock);
   for (ceph::unordered_map<coll_t, CollectionRef>::iterator p = coll_map.begin();
@@ -5487,13 +5511,13 @@ int BlueStore::list_collections(vector<coll_t>& ls)
   return 0;
 }
 
-bool BlueStore::collection_exists(const coll_t& c)
+bool BlueStore::collection_exists(const coll_t& c)//目录是否存在
 {
   RWLock::RLocker l(coll_lock);
   return coll_map.count(c);
 }
 
-int BlueStore::collection_empty(const coll_t& cid, bool *empty)
+int BlueStore::collection_empty(const coll_t& cid, bool *empty)//检查目录是否为空
 {
   dout(15) << __func__ << " " << cid << dendl;
   vector<ghobject_t> ls;
@@ -5521,7 +5545,7 @@ int BlueStore::collection_bits(const coll_t& cid)
   return c->cnode.bits;
 }
 
-int BlueStore::collection_list(
+int BueStore::collection_list(//列出所有对象
   const coll_t& cid, ghobject_t start, ghobject_t end,
   bool sort_bitwise, int max,
   vector<ghobject_t> *ls, ghobject_t *pnext)
@@ -5532,7 +5556,7 @@ int BlueStore::collection_list(
   return collection_list(c, start, end, sort_bitwise, max, ls, pnext);
 }
 
-int BlueStore::collection_list(
+int BlueStore::collection_list(//列出所有对象
   CollectionHandle &c_, ghobject_t start, ghobject_t end,
   bool sort_bitwise, int max,
   vector<ghobject_t> *ls, ghobject_t *pnext)
@@ -6181,7 +6205,7 @@ int BlueStore::_open_super_meta()
   return 0;
 }
 
-void BlueStore::_assign_nid(TransContext *txc, OnodeRef o)
+void BlueStore::_assign_nid(TransContext *txc, OnodeRef o)//如果此对象没有分配nid,则分配nid
 {
   if (o->onode.nid)
     return;
@@ -6228,6 +6252,7 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
   txc->statfs_delta.reset();
 }
 
+//走事务提交状态机
 void BlueStore::_txc_state_proc(TransContext *txc)
 {
   while (true) {
@@ -6237,7 +6262,7 @@ void BlueStore::_txc_state_proc(TransContext *txc)
     case TransContext::STATE_PREPARE:
       txc->log_state_latency(logger, l_bluestore_state_prepare_lat);
       if (txc->ioc.has_pending_aios()) {
-	txc->state = TransContext::STATE_AIO_WAIT;
+	txc->state = TransContext::STATE_AIO_WAIT;//下一步aio_wait
 	txc->had_ios = true;
 	_txc_aio_submit(txc);//提交aio
 	return;
@@ -6562,7 +6587,7 @@ void BlueStore::_osr_reap_done(OpSequencer *osr)
       osr->q.pop_front();
       txc->log_state_latency(logger, l_bluestore_state_done_lat);
       delete txc;
-      osr->qcond.notify_all();
+      osr->qcond.notify_all();//通知所有关心此事务完成的线程
       if (osr->q.empty())
         dout(20) << __func__ << " osr " << osr << " q now empty" << dendl;
     }
@@ -6818,7 +6843,7 @@ int BlueStore::_wal_apply(TransContext *txc)
   for (list<bluestore_wal_op_t>::iterator p = wt.ops.begin();
        p != wt.ops.end();
        ++p) {
-    int r = _do_wal_op(txc, *p);
+    int r = _do_wal_op(txc, *p);//在这里写
     assert(r == 0);
   }
 
@@ -6903,9 +6928,9 @@ int BlueStore::_wal_replay()
 // ---------------------------
 // transactions
 
-//bluestore事务入队处理。
+//bluestore事务入队处理。（所有操作入口）
 int BlueStore::queue_transactions(
-    Sequencer *posr,
+    Sequencer *posr,//顺序化本身是上层的不透明对象，其值实际上由下层store来设置
     vector<Transaction>& tls,
     TrackedOpRef op,
     ThreadPool::TPHandle *handle)
@@ -6926,6 +6951,7 @@ int BlueStore::queue_transactions(
   }
 
   // set up the sequencer
+  //检查这个操作序列化对象，如果已初始化（posr->p != null),则直接使用，否则初始化p再使用
   OpSequencer *osr;
   assert(posr);
   if (posr->p) {
@@ -6948,7 +6974,7 @@ int BlueStore::queue_transactions(
     (*p).set_osr(osr);
     txc->ops += (*p).get_num_ops();
     txc->bytes += (*p).get_num_bytes();
-    _txc_add_transaction(txc, &(*p));//将此事务添加至txc中(将p中的op解出来，然后合并到txc中
+    _txc_add_transaction(txc, &(*p));//针对每一个op执行操作
   }
 
   _txc_write_nodes(txc, txc->t);
@@ -6997,11 +7023,11 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
   _dump_transaction(t);
 
-  vector<CollectionRef> cvec(i.colls.size());
+  vector<CollectionRef> cvec(i.colls.size());//i.colls是事务关联的collections
   unsigned j = 0;
   for (vector<coll_t>::iterator p = i.colls.begin(); p != i.colls.end();
        ++p, ++j) {
-    cvec[j] = _get_collection(*p);
+    cvec[j] = _get_collection(*p);//通过cid找collection
 
     // note first collection we reference
     if (!txc->first_collection)
@@ -7009,7 +7035,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
   }
   vector<OnodeRef> ovec(i.objects.size());
 
-  for (int pos = 0; i.have_op(); ++pos) {
+  for (int pos = 0; i.have_op(); ++pos) {//遍历当前事务的所有op
     Transaction::Op *op = i.decode_op();
     int r = 0;
 
@@ -7018,28 +7044,28 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       continue;
 
     // collection operations
-    CollectionRef &c = cvec[op->cid];
+    CollectionRef &c = cvec[op->cid];//准备相关的collection
     switch (op->op) {
-    case Transaction::OP_RMCOLL://移除rm collection
+    case Transaction::OP_RMCOLL:
       {
         coll_t cid = i.get_cid(op->cid);
-	r = _remove_collection(txc, cid, &c);
+	r = _remove_collection(txc, cid, &c);//完成collection的移除（非空情况下移除会失败）
 	if (!r)
 	  continue;
       }
       break;
 
-    case Transaction::OP_MKCOLL://构造collection
+    case Transaction::OP_MKCOLL:
       {
 	assert(!c);
 	coll_t cid = i.get_cid(op->cid);
-	r = _create_collection(txc, cid, op->split_bits, &c);
+	r = _create_collection(txc, cid, op->split_bits, &c);//完成collection创建
 	if (!r)
 	  continue;
       }
       break;
 
-    case Transaction::OP_SPLIT_COLLECTION://split由上层支持
+    case Transaction::OP_SPLIT_COLLECTION:
       assert(0 == "deprecated");
       break;
 
@@ -7047,13 +7073,13 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       {
         uint32_t bits = op->split_bits;
         uint32_t rem = op->split_rem;
-	r = _split_collection(txc, c, cvec[op->dest_cid], bits, rem);
+	r = _split_collection(txc, c, cvec[op->dest_cid], bits, rem);//对应的变更c的bits,丢掉缓存（实现c,d分离）
 	if (!r)
 	  continue;
       }
       break;
 
-    case Transaction::OP_COLL_HINT:
+    case Transaction::OP_COLL_HINT://在bluestore中实现为空操作
       {
         uint32_t type = op->hint_type;
         bufferlist hint;
@@ -7096,6 +7122,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     }
 
     // these operations implicity create the object
+    //如果遇到这些操作，需要隐含创建object
     bool create = false;
     if (op->op == Transaction::OP_TOUCH ||
 	op->op == Transaction::OP_WRITE ||
@@ -7106,12 +7133,12 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
     // object operations
     RWLock::WLocker l(c->lock);
-    OnodeRef &o = ovec[op->oid];
+    OnodeRef &o = ovec[op->oid];//取出object
     if (!o) {
       ghobject_t oid = i.get_oid(op->oid);
       o = c->get_onode(oid, create);//在这里找到o
     }
-    if (!create && (!o || !o->exists)) {
+    if (!create && (!o || !o->exists)) {//如果要求object需要，但实际上元数据显示不存在，则报错
       dout(10) << __func__ << " op " << op->op << " got ENOENT on "
 	       << i.get_oid(op->oid) << dendl;
       r = -ENOENT;
@@ -7120,7 +7147,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
     switch (op->op) {
     case Transaction::OP_TOUCH:
-      r = _touch(txc, c, o);
+      r = _touch(txc, c, o);//创建o,分配新的onid,加入onode
       break;
 
     case Transaction::OP_WRITE://写操作执行
@@ -7130,7 +7157,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 	uint32_t fadvise_flags = i.get_fadvise_flags();
         bufferlist bl;
         i.decode_bl(bl);
-	r = _write(txc, c, o, off, len, bl, fadvise_flags);//执行write
+	r = _write(txc, c, o, off, len, bl, fadvise_flags);//执行write(write_big,write_small入口）
       }
       break;
 
@@ -7138,11 +7165,11 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       {
         uint64_t off = op->off;
         uint64_t len = op->len;
-	r = _zero(txc, c, o, off, len);
+	r = _zero(txc, c, o, off, len);//将off开始，长度为len的写入zero
       }
       break;
 
-    case Transaction::OP_TRIMCACHE:
+    case Transaction::OP_TRIMCACHE://自动trimcache,无需操作
       {
         // deprecated, no-op
       }
@@ -7151,13 +7178,13 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     case Transaction::OP_TRUNCATE:
       {
         uint64_t off = op->off;
-	r = _truncate(txc, c, o, off);
+	r = _truncate(txc, c, o, off);//截断
       }
       break;
 
     case Transaction::OP_REMOVE:
       {
-	r = _remove(txc, c, o);
+	r = _remove(txc, c, o);//移除
       }
       break;
 
@@ -7166,7 +7193,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
         string name = i.decode_string();
         bufferptr bp;
         i.decode_bp(bp);
-	r = _setattr(txc, c, o, name, bp);
+	r = _setattr(txc, c, o, name, bp);//直接填充即可
       }
       break;
 
@@ -7174,20 +7201,20 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       {
         map<string, bufferptr> aset;
         i.decode_attrset(aset);
-	r = _setattrs(txc, c, o, aset);
+	r = _setattrs(txc, c, o, aset);//直接填充即可
       }
       break;
 
     case Transaction::OP_RMATTR:
       {
 	string name = i.decode_string();
-	r = _rmattr(txc, c, o, name);
+	r = _rmattr(txc, c, o, name);//直接移除
       }
       break;
 
     case Transaction::OP_RMATTRS:
       {
-	r = _rmattrs(txc, c, o);
+	r = _rmattrs(txc, c, o);//直接全部移除
       }
       break;
 
@@ -7198,7 +7225,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 	if (!no) {
 	  no = c->get_onode(noid, true);
 	}
-	r = _clone(txc, c, o, no);
+	r = _clone(txc, c, o, no);//将o截断为０，然后do_read,do_write
       }
       break;
 
@@ -7216,7 +7243,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
         uint64_t srcoff = op->off;
         uint64_t len = op->len;
         uint64_t dstoff = op->dest_off;
-	r = _clone_range(txc, c, o, no, srcoff, len, dstoff);
+	r = _clone_range(txc, c, o, no, srcoff, len, dstoff);//范围内copy
       }
       break;
 
@@ -7241,7 +7268,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 	if (!no) {
 	  no = c->get_onode(noid, false);
 	}
-	r = _rename(txc, c, o, no, noid);
+	r = _rename(txc, c, o, no, noid);//重命名
       }
       break;
 
@@ -7254,7 +7281,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       {
 	bufferlist aset_bl;
         i.decode_attrset_bl(&aset_bl);
-	r = _omap_setkeys(txc, c, o, aset_bl);
+	r = _omap_setkeys(txc, c, o, aset_bl);//set omap
       }
       break;
     case Transaction::OP_OMAP_RMKEYS:
@@ -7295,7 +7322,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     }
 
   endop:
-    if (r < 0) {
+    if (r < 0) {//如果有出错，报错
       bool ok = false;
 
       if (r == -ENOENT && !(op->op == Transaction::OP_CLONERANGE ||
@@ -7354,9 +7381,9 @@ int BlueStore::_touch(TransContext *txc,
 {
   dout(15) << __func__ << " " << c->cid << " " << o->oid << dendl;
   int r = 0;
-  o->exists = true;
+  o->exists = true;//对象存在
   _assign_nid(txc, o);
-  txc->write_onode(o);
+  txc->write_onode(o);//仅将o加入onode中
   dout(10) << __func__ << " " << c->cid << " " << o->oid << " = " << r << dendl;
   return r;
 }
@@ -7508,16 +7535,17 @@ void BlueStore::_do_write_small(
   bufferlist bl;
   blp.copy(length, bl);//将blp内length长度copy到bl内
 
-  // look for an existing mutable blob we can use //查找offset
+  // look for an existing mutable blob we can use
+  //查找offset所在的ep
   auto ep = o->extent_map.seek_lextent(offset);
-  if (ep != o->extent_map.extent_map.begin()) {//防止end()
+  if (ep != o->extent_map.extent_map.begin()) {
     --ep;
     if (ep->blob_end() <= offset) {
       ++ep;//继续向后走
     }
   }
   BlobRef b;
-  while (ep != o->extent_map.extent_map.end()) {//查找end
+  while (ep != o->extent_map.extent_map.end()) {//均可以找到相应的范围
     if (ep->blob_start() >= end) {
       break;//可能找到了（要么在这中间，要么与这重叠）
     }
@@ -7537,12 +7565,13 @@ void BlueStore::_do_write_small(
     dout(20) << __func__ << " considering " << *b
 	     << " bstart 0x" << std::hex << bstart << std::dec << dendl;
 
+    //由于担心写一个对象时采用乱序写，故当不对齐时，如果这一段还没有写过，则直接填充zero
     // can we pad our head/tail out with zeros?
     uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
     uint64_t head_pad = P2PHASE(offset, chunk_size);//offset前移数量（即head填充）
     if (head_pad &&
 	o->extent_map.has_any_lextents(offset - head_pad, chunk_size)) {
-      head_pad = 0;//已申请不必再填充
+      head_pad = 0;//已申请不必再填充(说明已写）
     }
 
     uint64_t tail_pad = P2NPHASE(end, chunk_size);//尾部要后移数量（即tail填充）
@@ -7560,7 +7589,7 @@ void BlueStore::_do_write_small(
     if (tail_pad) {
       padded.append_zero(tail_pad);//在padded中填充tail_pad
     }
-    if (head_pad || tail_pad) {//对填充数据进行计数
+    if (head_pad || tail_pad) {//对填充数据进行计数（由于不对齐，且用户还没有写不对齐部分，故而填充０）
       dout(20) << __func__ << "  can pad head 0x" << std::hex << head_pad
 	       << " tail 0x" << tail_pad << std::dec << dendl;
       logger->inc(l_bluestore_write_pad_bytes, head_pad + tail_pad);
@@ -7571,27 +7600,27 @@ void BlueStore::_do_write_small(
     uint64_t b_len = length + head_pad + tail_pad;//右侧右移
     if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&
 	b->get_blob().get_ondisk_length() >= b_off + b_len &&
-	b->get_blob().is_unused(b_off, b_len) &&
-	b->get_blob().is_allocated(b_off, b_len)) {//不需要放大写，且不需要分配新的段。写到没有使用的段
+	b->get_blob().is_unused(b_off, b_len) && //这段没有使用
+	b->get_blob().is_allocated(b_off, b_len)) {//不需要放大写，且不需要分配新的段。这一段，恰没有人写过。写到没有使用的段
       dout(20) << __func__ << "  write to unused 0x" << std::hex
 	       << b_off << "~" << b_len
 	       << " pad 0x" << head_pad << " + 0x" << tail_pad
 	       << std::dec << " of mutable " << *b << dendl;
       assert(b->is_unreferenced(b_off, b_len));
       _buffer_cache_write(txc, b, b_off, padded,
-			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
+			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);//加入buffer
 
       b->get_blob().map_bl(
 	b_off, padded,
 	[&](uint64_t offset, uint64_t length, bufferlist& t) {
 	  bdev->aio_write(offset, t,
 			  &txc->ioc, wctx->buffered);
-	});
+	});//对写入的这一段，调用aio进行写。为什么立即写入？原因可能是为了对外和其它情况提供一致的写。
       b->dirty_blob().calc_csum(b_off, padded);
       dout(20) << __func__ << "  lex old " << *ep << dendl;
       Extent *le = o->extent_map.set_lextent(offset, b_off + head_pad, length,
 					     b,
-					     &wctx->old_extents);
+					     &wctx->old_extents);//增大范围
       b->dirty_blob().mark_used(le->blob_offset, le->length);
       txc->statfs_delta.stored() += le->length;
       dout(20) << __func__ << "  lex " << *le << dendl;
@@ -7600,6 +7629,7 @@ void BlueStore::_do_write_small(
     }
 
     // read some data to fill out the chunk?
+    //写的时候需要读一部分内容，读出来，加上要写的就行
     uint64_t head_read = P2PHASE(b_off, chunk_size);
     uint64_t tail_read = P2NPHASE(b_off + b_len, chunk_size);
     if ((head_read || tail_read) &&
@@ -7610,7 +7640,7 @@ void BlueStore::_do_write_small(
       if (head_read) {//需要在head写前进行读操作
 	bufferlist head_bl;
 	int r = _do_read(c.get(), o, offset - head_pad - head_read, head_read,
-			 head_bl, 0);//写时读取问题（先把要多写的读出来，前向写前读）
+			 head_bl, 0);//写时读取问题（先把要多写的读出来，前向写前读），自硬盘读
 	assert(r >= 0 && r <= (int)head_read);
 	size_t zlen = head_read - r;
 	if (zlen) {//不足的部分补０
@@ -7644,18 +7674,18 @@ void BlueStore::_do_write_small(
     if (b->get_blob().get_ondisk_length() >= b_off + b_len &&
 	b_off % chunk_size == 0 &&
 	b_len % chunk_size == 0 &&
-	b->get_blob().is_allocated(b_off, b_len)) {//需要放大读写时处理（不需要申请空间）
+	b->get_blob().is_allocated(b_off, b_len)) {//需要放大读写时处理（不需要申请空间，是overwrite）
       bluestore_wal_op_t *op = _get_wal_op(txc, o);
       op->op = bluestore_wal_op_t::OP_WRITE;
       _buffer_cache_write(txc, b, b_off, padded,
-			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
+			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);//写入buffer
 
       int r = b->get_blob().map(
 	b_off, b_len,
 	[&](uint64_t offset, uint64_t length) {
 	  op->extents.emplace_back(bluestore_pextent_t(offset, length));
           return 0;
-	});
+	});//将此类型的写直接分配一个bluestore_wal_op_t操作，由其来触发写
       assert(r == 0);
       if (b->get_blob().csum_type) {
 	b->dirty_blob().calc_csum(b_off, padded);
@@ -7665,8 +7695,8 @@ void BlueStore::_do_write_small(
 	       << b_len << std::dec << " of mutable " << *b
 	       << " at " << op->extents << dendl;
       Extent *le = o->extent_map.set_lextent(offset, offset - bstart, length,
-                                     b, &wctx->old_extents);
-      b->dirty_blob().mark_used(le->blob_offset, le->length);
+                                     b, &wctx->old_extents);//扩大范围
+      b->dirty_blob().mark_used(le->blob_offset, le->length);//标记使用
       txc->statfs_delta.stored() += le->length;
       dout(20) << __func__ << "  lex " << *le << dendl;
       logger->inc(l_bluestore_write_small_wal);
@@ -7676,16 +7706,16 @@ void BlueStore::_do_write_small(
     ++ep;
   }
 
-  //需要放大写，且写时需要申请空间
+  //需要放大写，且写时需要申请空间（范围需要扩大）
   // new blob.
   b = c->new_blob();
   unsigned alloc_len = min_alloc_size;
   uint64_t b_off = P2PHASE(offset, alloc_len);
   _buffer_cache_write(txc, b, b_off, bl,
-		      wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
+		      wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);//写入buffer
   _pad_zeros(&bl, &b_off, block_size);
   Extent *le = o->extent_map.set_lextent(offset, P2PHASE(offset, alloc_len),
-			 length, b, &wctx->old_extents);
+			 length, b, &wctx->old_extents);//设置范围
   txc->statfs_delta.stored() += le->length;
   dout(20) << __func__ << "  lex " << *le << dendl;
   wctx->write(b, alloc_len, b_off, bl, true);
@@ -7713,7 +7743,7 @@ void BlueStore::_do_write_big(//数据为对齐的读
     bufferlist t;
     blp.copy(l, t);
     _buffer_cache_write(txc, b, 0, t, wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
-    wctx->write(b, l, 0, t, false);
+    wctx->write(b, l, 0, t, false);//记录发生过这样一个写
     Extent *le = o->extent_map.set_lextent(offset, 0, l,
                                            b, &wctx->old_extents);
     txc->statfs_delta.stored() += l;
@@ -7811,7 +7841,7 @@ int BlueStore::_do_alloc_write(
       // FIXME: memory alignment here is bad
       bufferlist t;
 
-      r = c->compress(*l, t);
+      r = c->compress(*l, t);//压缩
       assert(r == 0);
 
       chdr.length = t.length();
@@ -7870,7 +7900,7 @@ int BlueStore::_do_alloc_write(
     AllocExtentVector extents = AllocExtentVector(final_length / min_alloc_size);
 
     int r = alloc->alloc_extents(final_length, min_alloc_size, max_alloc_size,
-                                 hint, &extents, &count);
+                                 hint, &extents, &count);//申请物理范围
     assert(r == 0);
     need -= final_length;
     txc->statfs_delta.allocated() += final_length;
@@ -7908,7 +7938,7 @@ int BlueStore::_do_alloc_write(
     b->get_blob().map_bl(
       b_off, *l,
       [&](uint64_t offset, uint64_t length, bufferlist& t) {
-	bdev->aio_write(offset, t, &txc->ioc, false);
+	bdev->aio_write(offset, t, &txc->ioc, false);//交由异步写处理
       });
   }
   if (need > 0) {
@@ -8019,7 +8049,7 @@ void BlueStore::_do_write_data(//做数据写
     }
 
     if (middle_length) {
-      _do_write_big(txc, c, o, middle_offset, middle_length, p, wctx);//对齐的大块读
+      _do_write_big(txc, c, o, middle_offset, middle_length, p, wctx);//对齐的大块读（放入缓存中，等一会直接写）
     }
 
     if (tail_length) {
@@ -8054,6 +8084,7 @@ int BlueStore::_do_write(
 
   uint64_t end = offset + length;
 
+  //检查客户端是否要求缓存写
   WriteContext wctx;
   if (fadvise_flags & CEPH_OSD_OP_FLAG_FADVISE_WILLNEED) {
     dout(20) << __func__ << " will do buffered write" << dendl;
@@ -8071,6 +8102,7 @@ int BlueStore::_do_write(
   wctx.csum_order = block_size_order;
 
   // compression parameters
+  //装载压缩参数
   unsigned alloc_hints = o->onode.alloc_hint_flags;
   auto cm = select_option(
     "compression_mode",
@@ -8141,10 +8173,10 @@ int BlueStore::_do_write(
 	   << " target_blob_size 0x" << std::hex << wctx.target_blob_size
 	   << std::dec << dendl;
 
-  o->extent_map.fault_range(db, offset, length);
-  _do_write_data(txc, c, o, offset, length, bl, &wctx);
+  o->extent_map.fault_range(db, offset, length);//从db中加载这段元数据
+  _do_write_data(txc, c, o, offset, length, bl, &wctx);//完成数据写
 
-  r = _do_alloc_write(txc, c, &wctx);
+  r = _do_alloc_write(txc, c, &wctx);//完成物理范围申请，触发aio
   if (r < 0) {
     derr << __func__ << " _do_alloc_write failed with " << cpp_strerror(r)
 	 << dendl;
@@ -8155,7 +8187,7 @@ int BlueStore::_do_write(
 
   o->extent_map.compress_extent_map(offset, length);
 
-  o->extent_map.dirty_range(txc->t, offset, length);
+  o->extent_map.dirty_range(txc->t, offset, length);//指明dirty
 
   if (end > o->onode.size) {
     dout(20) << __func__ << " extending size to 0x" << std::hex << end
@@ -8220,11 +8252,11 @@ int BlueStore::_do_zero(TransContext *txc,
 
   // ensure any wal IO has completed before we truncate off any extents
   // they may touch.
-  o->flush();
+  o->flush();//等待所有操作完成
 
   WriteContext wctx;
   o->extent_map.fault_range(db, offset, length);
-  o->extent_map.punch_hole(offset, length, &wctx.old_extents);
+  o->extent_map.punch_hole(offset, length, &wctx.old_extents);//做个hole,就完成了
   o->extent_map.dirty_range(txc->t, offset, length);
   _wctx_finish(txc, c, o, &wctx);
 
@@ -8259,12 +8291,12 @@ int BlueStore::_do_truncate(
     WriteContext wctx;
     uint64_t length = o->onode.size - offset;
     o->extent_map.fault_range(db, offset, length);
-    o->extent_map.punch_hole(offset, length, &wctx.old_extents);
+    o->extent_map.punch_hole(offset, length, &wctx.old_extents);//从offset位置至末尾做个hole
     o->extent_map.dirty_range(txc->t, offset, length);
     _wctx_finish(txc, c, o, &wctx);
   }
 
-  o->onode.size = offset;
+  o->onode.size = offset;//更新size为offset
 
   txc->write_onode(o);
   return 0;
@@ -8290,16 +8322,16 @@ int BlueStore::_do_remove(
   CollectionRef& c,
   OnodeRef o)
 {
-  int r = _do_truncate(txc, c, o, 0);
+  int r = _do_truncate(txc, c, o, 0);//先截断为０长度
   if (r < 0)
     return r;
   if (o->onode.omap_head) {
     _do_omap_clear(txc, o->onode.omap_head);
   }
-  o->exists = false;
+  o->exists = false;//标记为不存在
   o->onode = bluestore_onode_t();
   txc->onodes.erase(o);
-  for (auto &s : o->extent_map.shards) {
+  for (auto &s : o->extent_map.shards) {//删除数据库
     txc->t->rmkey(PREFIX_OBJ, s.key);
   }
   txc->t->rmkey(PREFIX_OBJ, o->key);
@@ -8328,7 +8360,7 @@ int BlueStore::_setattr(TransContext *txc,
 	   << " " << name << " (" << val.length() << " bytes)"
 	   << dendl;
   int r = 0;
-  o->onode.attrs[name] = val;
+  o->onode.attrs[name] = val;//填充属性
   txc->write_onode(o);
   dout(10) << __func__ << " " << c->cid << " " << o->oid
 	   << " " << name << " (" << val.length() << " bytes)"
@@ -8875,7 +8907,7 @@ int BlueStore::_create_collection(//创建collection
     coll_map[cid] = *c;
   }
   ::encode((*c)->cnode, bl);
-  txc->t->set(PREFIX_COLL, stringify(cid), bl);
+  txc->t->set(PREFIX_COLL, stringify(cid), bl);//数据库保存
   r = 0;
 
  out:
@@ -8883,6 +8915,7 @@ int BlueStore::_create_collection(//创建collection
   return r;
 }
 
+//移除collection
 int BlueStore::_remove_collection(TransContext *txc, coll_t cid,
 				  CollectionRef *c)
 {
@@ -8897,6 +8930,7 @@ int BlueStore::_remove_collection(TransContext *txc, coll_t cid,
     }
     size_t nonexistent_count = 0;
     assert((*c)->exists);
+    //检查c中是否仍存在object,返回非空
     if ((*c)->onode_map.map_any([&](OnodeRef o) {
         if (o->exists) {
           dout(10) << __func__ << " " << o->oid << " " << o
@@ -8922,7 +8956,7 @@ int BlueStore::_remove_collection(TransContext *txc, coll_t cid,
       for (auto it = ls.begin(); !exists && it < ls.end(); ++it) {
         dout(10) << __func__ << " oid " << *it << dendl;
         auto onode = (*c)->onode_map.lookup(*it);
-        exists = !onode || onode->exists;
+        exists = !onode || onode->exists;//存在
         if (exists) {
           dout(10) << __func__ << " " << *it
                    << " exists in db" << dendl;
@@ -8933,7 +8967,7 @@ int BlueStore::_remove_collection(TransContext *txc, coll_t cid,
         txc->removed_collections.push_back(*c);
         (*c)->exists = false;
         c->reset();
-        txc->t->rmkey(PREFIX_COLL, stringify(cid));
+        txc->t->rmkey(PREFIX_COLL, stringify(cid));//自数据库中删除
         r = 0;
       } else {
         dout(10) << __func__ << " " << cid
@@ -8974,7 +9008,7 @@ int BlueStore::_split_collection(TransContext *txc,
   assert(d->shared_blob_set.empty());
 
   // adjust bits
-  c->cnode.bits = bits;
+  c->cnode.bits = bits;//调整bits
   assert(d->cnode.bits == bits);
   r = 0;
 

@@ -533,7 +533,7 @@ struct bluestore_blob_t {
 	      std::function<void(uint64_t,uint64_t,bufferlist&)> f) const {
     auto p = extents.begin();
     assert(p != extents.end());
-    while (x_off >= p->length) {
+    while (x_off >= p->length) {//找到合适的p
       x_off -= p->length;
       ++p;
       assert(p != extents.end());
@@ -544,11 +544,11 @@ struct bluestore_blob_t {
       assert(p != extents.end());
       uint64_t l = MIN(p->length - x_off, x_len);
       bufferlist t;
-      it.copy(l, t);
-      f(p->offset + x_off, l, t);
+      it.copy(l, t);//准备足够长度的数据
+      f(p->offset + x_off, l, t);//调用回调
       x_off = 0;
       x_len -= l;
-      ++p;
+      ++p;//处理可能未完，向下一个p移动
     }
   }
 
@@ -666,7 +666,7 @@ ostream& operator<<(ostream& out, const bluestore_shared_blob_t& o);
 struct bluestore_onode_t {
   uint64_t nid = 0;                    ///< numeric id (locally unique)
   uint64_t size = 0;                   ///< object size
-  map<string, bufferptr> attrs;        ///< attrs
+  map<string, bufferptr> attrs;        ///< attrs　//属性，对象的attribute
   uint64_t omap_head = 0;              ///< id for omap root node
 
   struct shard_info {

@@ -286,12 +286,13 @@ public:
     }
     int _discard(uint64_t offset, uint64_t length);
 
+    //将数据交给writing处理或者交给cache进行管理
     void write(uint64_t seq, uint64_t offset, bufferlist& bl, unsigned flags) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_WRITING, seq, offset, bl,
-			     flags);//构造buffer,使其的data指向bl
-      b->cache_private = _discard(offset, bl.length());//丢弃已有的offset到bl.length的数据，并返回最大cache_private
-      _add_buffer(b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);
+			     flags);//构造buffer,使其的data指向bl　（这是要新写入的数据）
+      b->cache_private = _discard(offset, bl.length());//丢弃已有的offset到bl.length的数据，并返回最大cache_private（这里之前缓存的旧数据，需要扔掉）
+      _add_buffer(b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);//将新数据加入（标明，无缓存）
     }
     void finish_write(uint64_t seq);
     void did_read(uint64_t offset, bufferlist& bl) {//构造offset范围，丢掉这之间的数据
@@ -1230,14 +1231,14 @@ public:
     //记录哪些onode需要更新或者写
     set<OnodeRef> onodes;     ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs;  ///< these need to be updated/written
-    set<SharedBlobRef> shared_blobs_written; ///< update these on io completion
+    set<SharedBlobRef> shared_blobs_written; ///< update these on io completion //记录那些blobs被写了
 
     KeyValueDB::Transaction t; ///< then we will commit this
     Context *oncommit;         ///< signal on commit
     Context *onreadable;         ///< signal on readable
     Context *onreadable_sync;         ///< signal on readable
     list<Context*> oncommits;  ///< more commit completions
-    list<CollectionRef> removed_collections; ///< colls we removed
+    list<CollectionRef> removed_collections; ///< colls we removed　//标记哪些collection被删除
 
     boost::intrusive::list_member_hook<> wal_queue_item;
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
@@ -1344,7 +1345,7 @@ public:
         TransContext,
 	boost::intrusive::list_member_hook<>,
 	&TransContext::sequencer_item> > q_list_t;
-    q_list_t q;  ///< transactions　//事务上下文队列
+    q_list_t q;  ///< transactions　//事务上下文队列（保证有序）
 
     typedef boost::intrusive::list<
       TransContext,
@@ -1518,7 +1519,7 @@ private:
   RWLock coll_lock;    ///< rwlock to protect coll_map
   mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;//记录collection的map,通过cid映射map
 
-  vector<Cache*> cache_shards;
+  vector<Cache*> cache_shards;//cache与collection之间是１对多关系，创建collection时，注入
 
   std::atomic<uint64_t> nid_last = {0};
   std::atomic<uint64_t> nid_max = {0};
@@ -1710,6 +1711,7 @@ private:
     boost::dynamic_bitset<> &used_blocks,
     store_statfs_t& expected_statfs);
 
+  //将数据交给cache或者放在writing中
   void _buffer_cache_write(
     TransContext *txc,
     BlobRef b,
@@ -1963,7 +1965,7 @@ public:
     debug_mdata_error_objects.insert(o);
   }
 private:
-  bool _debug_data_eio(const ghobject_t& o) {
+  bool _debug_data_eio(const ghobject_t& o) {//故障注入
     if (!g_conf->bluestore_debug_inject_read_err) {
       return false;
     }

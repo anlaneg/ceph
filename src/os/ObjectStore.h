@@ -857,7 +857,7 @@ public:
       return data.ops;
     }
 
-    void set_osr(void *s) {
+    void set_osr(void *s) {//设置其对应的排队器
       osr = s;
     }
 

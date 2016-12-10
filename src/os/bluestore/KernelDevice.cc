@@ -118,7 +118,7 @@ int KernelDevice::open(string p)//打开指定块设备或者普通文件
     }
 
     rotational = block_device_is_rotational(path.c_str());
-    size = s;
+    size = s;//填充磁盘大小
   } else {//采用规则文件
     size = st.st_size;
     //regular file is rotational device

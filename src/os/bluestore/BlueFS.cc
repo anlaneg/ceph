@@ -117,7 +117,7 @@ int BlueFS::add_block_device(unsigned id, string path)
   assert(id < bdev.size());
   assert(bdev[id] == NULL);
   BlockDevice *b = BlockDevice::create(path, NULL, NULL);//不aio设置回调
-  int r = b->open(path);
+  int r = b->open(path);//对kernelblock而言，打开操作句柄
   if (r < 0) {
     delete b;
     return r;

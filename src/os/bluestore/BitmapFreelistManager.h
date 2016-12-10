@@ -18,16 +18,16 @@ class BitmapFreelistManager : public FreelistManager {
   ceph::shared_ptr<KeyValueDB::MergeOperator> merge_op;
   std::mutex lock;
 
-  uint64_t size;            ///< size of device (bytes)
-  uint64_t bytes_per_block; ///< bytes per block (bdev_block_size)
-  uint64_t blocks_per_key;  ///< blocks (bits) per key/value pair
-  uint64_t bytes_per_key;   ///< bytes per key/value pair
-  uint64_t blocks;          ///< size of device (blocks, size rounded up)
+  uint64_t size;            ///< size of device (bytes)　//设备大小
+  uint64_t bytes_per_block; ///< bytes per block (bdev_block_size)　//块大小
+  uint64_t blocks_per_key;  ///< blocks (bits) per key/value pair　//每个key占多少块
+  uint64_t bytes_per_key;   ///< bytes per key/value pair　　　　　　　　　//每个key占多少字节
+  uint64_t blocks;          ///< size of device (blocks, size rounded up)　//设备总块数
 
-  uint64_t block_mask;  ///< mask to convert byte offset to block offset
-  uint64_t key_mask;    ///< mask to convert offset to key offset
+  uint64_t block_mask;  ///< mask to convert byte offset to block offset　//块的mask
+  uint64_t key_mask;    ///< mask to convert offset to key offset　　　　　　　　//key的mask
 
-  bufferlist all_set_bl;
+  bufferlist all_set_bl;//全１的集合
 
   KeyValueDB::Iterator enumerate_p;
   uint64_t enumerate_offset; ///< logical offset; position

@@ -5,6 +5,7 @@
 #include "ExtentFreelistManager.h"
 #include "BitmapFreelistManager.h"
 
+//依据类型创建不同的空闲链管理
 FreelistManager *FreelistManager::create(
   string type,
   KeyValueDB *kvdb,
@@ -17,7 +18,7 @@ FreelistManager *FreelistManager::create(
   assert(prefix == "B");
   if (type == "extent")
     return new ExtentFreelistManager(kvdb, "B");
-  if (type == "bitmap")
+  if (type == "bitmap")//默认此类型
     return new BitmapFreelistManager(kvdb, "B", "b");
   return NULL;
 }

@@ -115,6 +115,7 @@ int ObjectStore::probe_block_device_fsid(
   return -EINVAL;
 }
 
+//写key指明的文件，文件内容由value指出
 int ObjectStore::write_meta(const std::string& key,
 			    const std::string& value)
 {

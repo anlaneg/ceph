@@ -14,7 +14,7 @@
 void make_offset_key(uint64_t offset, std::string *key)
 {
   key->reserve(10);
-  _key_encode_u64(offset, key);
+  _key_encode_u64(offset, key);//将offset编成key
 }
 
 struct XorMergeOperator : public KeyValueDB::MergeOperator {
@@ -54,18 +54,19 @@ BitmapFreelistManager::BitmapFreelistManager(KeyValueDB *db,
 {
 }
 
+//创建bfm
 int BitmapFreelistManager::create(uint64_t new_size, KeyValueDB::Transaction txn)
 {
   bytes_per_block = g_conf->bdev_block_size;
   assert(ISP2(bytes_per_block));
-  size = P2ALIGN(new_size, bytes_per_block);
+  size = P2ALIGN(new_size, bytes_per_block);//规范size是其按bdev_block_size对齐
   blocks_per_key = g_conf->bluestore_freelist_blocks_per_key;
 
   _init_misc();
 
   blocks = size / bytes_per_block;
   if (blocks / blocks_per_key * blocks_per_key != blocks) {
-    blocks = (blocks / blocks_per_key + 1) * blocks_per_key;
+    blocks = (blocks / blocks_per_key + 1) * blocks_per_key;//为什么这样计算blocks的数量不会被放大？
     dout(10) << __func__ << " rounding blocks up from 0x" << std::hex << size
 	     << " to 0x" << (blocks * bytes_per_block)
 	     << " (0x" << blocks << " blocks)" << std::dec << dendl;
@@ -81,7 +82,7 @@ int BitmapFreelistManager::create(uint64_t new_size, KeyValueDB::Transaction txn
   {
     bufferlist bl;
     ::encode(bytes_per_block, bl);
-    txn->set(meta_prefix, "bytes_per_block", bl);
+    txn->set(meta_prefix, "bytes_per_block", bl);//存块大小
   }
   {
     bufferlist bl;
@@ -101,6 +102,7 @@ int BitmapFreelistManager::create(uint64_t new_size, KeyValueDB::Transaction txn
   return 0;
 }
 
+//通过create时写入的数据完成初始化
 int BitmapFreelistManager::init()
 {
   dout(1) << __func__ << dendl;
@@ -109,7 +111,7 @@ int BitmapFreelistManager::init()
   it->lower_bound(string());
 
   // load meta
-  while (it->valid()) {
+  while (it->valid()) {//读取create时写入的数据
     string k = it->key();
     if (k == "bytes_per_block") {
       bufferlist bl = it->value();
@@ -211,12 +213,13 @@ int get_next_set_bit(bufferlist& bl, int start)
   return -1; // not found
 }
 
+//遍历每个未用的段
 bool BitmapFreelistManager::enumerate_next(uint64_t *offset, uint64_t *length)
 {
   std::lock_guard<std::mutex> l(lock);
 
   // initial base case is a bit awkward
-  if (enumerate_offset == 0 && enumerate_bl_pos == 0) {
+  if (enumerate_offset == 0 && enumerate_bl_pos == 0) {//第一次
     dout(10) << __func__ << " start" << dendl;
     enumerate_p = kvdb->get_iterator(bitmap_prefix);
     enumerate_p->lower_bound(string());
@@ -231,7 +234,7 @@ bool BitmapFreelistManager::enumerate_next(uint64_t *offset, uint64_t *length)
     assert(get_next_set_bit(enumerate_bl, 0) == 0);
   }
 
-  if (enumerate_offset >= size) {
+  if (enumerate_offset >= size) {//最后一次
     dout(10) << __func__ << " end" << dendl;
     return false;
   }
@@ -456,7 +459,7 @@ void BitmapFreelistManager::allocate(
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
   if (g_conf->bluestore_debug_freelist)
-    _verify_range(offset, length, 0);
+    _verify_range(offset, length, 0);//校验这些值均没有被占用
   _xor(offset, length, txn);
 }
 
@@ -467,10 +470,11 @@ void BitmapFreelistManager::release(
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
   if (g_conf->bluestore_debug_freelist)
-    _verify_range(offset, length, 1);
+    _verify_range(offset, length, 1);//校验这些值均被占用
   _xor(offset, length, txn);
 }
 
+//这个函数写的太长了，实际上逻辑能合并
 void BitmapFreelistManager::_xor(
   uint64_t offset, uint64_t length,
   KeyValueDB::Transaction txn)
@@ -489,7 +493,7 @@ void BitmapFreelistManager::_xor(
     p.zero();
     unsigned s = (offset & ~key_mask) / bytes_per_block;
     unsigned e = ((offset + length - 1) & ~key_mask) / bytes_per_block;
-    for (unsigned i = s; i <= e; ++i) {
+    for (unsigned i = s; i <= e; ++i) {//从s块到e块每个block占一个bit,填充在p中
       p[i >> 3] ^= 1ull << (i & 7);
     }
     string k;
@@ -499,11 +503,11 @@ void BitmapFreelistManager::_xor(
     dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
     bl.hexdump(*_dout, false);
     *_dout << dendl;
-    txn->merge(bitmap_prefix, k, bl);
+    txn->merge(bitmap_prefix, k, bl);//将p的值，合入
   } else {
     // first key
     {
-      bufferptr p(blocks_per_key >> 3);
+      bufferptr p(blocks_per_key >> 3);//blocks_per_key可以占用多少个byte
       p.zero();
       unsigned s = (offset & ~key_mask) / bytes_per_block;
       unsigned e = blocks_per_key;
@@ -517,7 +521,7 @@ void BitmapFreelistManager::_xor(
       dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
       bl.hexdump(*_dout, false);
       *_dout << dendl;
-      txn->merge(bitmap_prefix, k, bl);
+      txn->merge(bitmap_prefix, k, bl);//同前面的first_key == last_key处理
       first_key += bytes_per_key;
     }
     // middle keys
@@ -528,10 +532,10 @@ void BitmapFreelistManager::_xor(
       	 << ": ";
       all_set_bl.hexdump(*_dout, false);
       *_dout << dendl;
-      txn->merge(bitmap_prefix, k, all_set_bl);
+      txn->merge(bitmap_prefix, k, all_set_bl);//这个全部要合入all_set_bl
       first_key += bytes_per_key;
     }
-    assert(first_key == last_key);
+    assert(first_key == last_key);//同first_key的处理
     {
       bufferptr p(blocks_per_key >> 3);
       p.zero();

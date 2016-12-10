@@ -981,7 +981,7 @@ OPTION(bluefs_compact_log_sync, OPT_BOOL, false)  // sync or async log compactio
 OPTION(bluefs_buffered_io, OPT_BOOL, false)
 OPTION(bluefs_allocator, OPT_STR, "stupid")     // stupid | bitmap
 
-OPTION(bluestore_bluefs, OPT_BOOL, true)
+OPTION(bluestore_bluefs, OPT_BOOL, true)//是否使用bluefs
 OPTION(bluestore_bluefs_env_mirror, OPT_BOOL, false) // mirror to normal Env for debug
 OPTION(bluestore_bluefs_min, OPT_U64, 1*1024*1024*1024) // 1gb
 OPTION(bluestore_bluefs_min_ratio, OPT_FLOAT, .02)  // min fs free / total free

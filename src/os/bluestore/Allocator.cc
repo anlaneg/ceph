@@ -14,7 +14,7 @@ Allocator *Allocator::create(string type,
 {
   if (type == "stupid") {
     return new StupidAllocator;
-  } else if (type == "bitmap") {
+  } else if (type == "bitmap") {//默认项
     return new BitMapAllocator(size, block_size);
   }
   derr << "Allocator::" << __func__ << " unknown alloc type " << type << dendl;

@@ -618,7 +618,7 @@ ostream& operator<<(ostream& out, const pg_t &pg)
 void coll_t::calc_str()
 {
   switch (type) {
-  case TYPE_META:
+  case TYPE_META://对于meta直接格式化为"meta"，即可返回
     strcpy(_str_buff, "meta");
     _str = _str_buff;
     break;
@@ -637,7 +637,7 @@ void coll_t::calc_str()
 
 bool coll_t::parse(const std::string& s)
 {
-  if (s == "meta") {
+  if (s == "meta") {//仅设置类型即可
     type = TYPE_META;
     pgid = spg_t();
     removal_seq = 0;
@@ -646,8 +646,8 @@ bool coll_t::parse(const std::string& s)
     return true;
   }
   if (s.find("_head") == s.length() - 5 &&
-      pgid.parse(s.substr(0, s.length() - 5))) {
-    type = TYPE_PG;
+      pgid.parse(s.substr(0, s.length() - 5))) {//填充pgid
+    type = TYPE_PG;//pg类型
     removal_seq = 0;
     calc_str();
     assert(s == _str);

@@ -440,7 +440,7 @@ namespace std {
 //可共享的pg
 struct spg_t {
   pg_t pgid;
-  shard_id_t shard;
+  shard_id_t shard;//共享id
   spg_t() : shard(shard_id_t::NO_SHARD) {}
   spg_t(pg_t pgid, shard_id_t shard) : pgid(pgid), shard(shard) {}
   explicit spg_t(pg_t pgid) : pgid(pgid), shard(shard_id_t::NO_SHARD) {}
@@ -541,19 +541,20 @@ ostream& operator<<(ostream& out, const spg_t &pg);
 
 // ----------------------
 
+//coll指明了collection的类型，如果恰好为pg或者pg_temp，则pgid指出oid等
 class coll_t {
   enum type_t {
-    TYPE_META = 0,
+    TYPE_META = 0,//meta
     TYPE_LEGACY_TEMP = 1,  /* no longer used */
-    TYPE_PG = 2,
-    TYPE_PG_TEMP = 3,
+    TYPE_PG = 2,//pg
+    TYPE_PG_TEMP = 3,//pg_temp
   };
   type_t type;
   spg_t pgid;
   uint64_t removal_seq;  // note: deprecated, not encoded
 
-  char _str_buff[spg_t::calc_name_buf_size];
-  char *_str;
+  char _str_buff[spg_t::calc_name_buf_size];//为calc_str后的名称提供内存
+  char *_str;//pg或者pg_temp或者meta文件夹的对应名称，指向_str_buff
 
   void calc_str();
 
