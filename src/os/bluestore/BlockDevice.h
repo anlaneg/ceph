@@ -37,10 +37,10 @@ struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层
   std::mutex lock;
   std::condition_variable cond;
 
-  list<FS::aio_t> pending_aios;    ///< not yet submitted
-  list<FS::aio_t> running_aios;    ///< submitting or submitted
-  std::atomic_int num_pending = {0};
-  std::atomic_int num_running = {0};
+  list<FS::aio_t> pending_aios;    ///< not yet submitted //还没有提交的aio
+  list<FS::aio_t> running_aios;    ///< submitting or submitted //已经提交的或者正在提交的aio
+  std::atomic_int num_pending = {0}; //还没有提交的aio有多少个
+  std::atomic_int num_running = {0}; //正在提交的aio或者已提提交的aio
   std::atomic_int num_reading = {0};
   std::atomic_int num_waiting = {0};
 
@@ -52,7 +52,7 @@ struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层
   IOContext(const IOContext& other);
   IOContext &operator=(const IOContext& other);
 
-  bool has_pending_aios() {
+  bool has_pending_aios() {//是否有未绝aio
     return num_pending.load();
   }
 

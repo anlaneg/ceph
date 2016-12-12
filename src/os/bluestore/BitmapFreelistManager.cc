@@ -452,6 +452,7 @@ void BitmapFreelistManager::_verify_range(uint64_t offset, uint64_t length,
   }
 }
 
+//申请空间
 void BitmapFreelistManager::allocate(
   uint64_t offset, uint64_t length,
   KeyValueDB::Transaction txn)
@@ -463,6 +464,7 @@ void BitmapFreelistManager::allocate(
   _xor(offset, length, txn);
 }
 
+//释放空间
 void BitmapFreelistManager::release(
   uint64_t offset, uint64_t length,
   KeyValueDB::Transaction txn)
@@ -474,7 +476,7 @@ void BitmapFreelistManager::release(
   _xor(offset, length, txn);
 }
 
-//这个函数写的太长了，实际上逻辑能合并
+//这个函数写的太长了，实际上逻辑能合并(设置bitmap,如果是０，就改为１，如果是１就改为０,解决申请释放）
 void BitmapFreelistManager::_xor(
   uint64_t offset, uint64_t length,
   KeyValueDB::Transaction txn)

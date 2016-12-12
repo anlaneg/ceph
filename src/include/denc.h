@@ -231,17 +231,18 @@ WRITE_INT_DENC(int64_t, __le64);
 //
 // high bit of each byte indicates another byte follows.
 template<typename T>
-inline void denc_varint(T v, size_t& p) {
+inline void denc_varint(T v, size_t& p) {//使p跳过sizeof(v)＋１大小，一般用于求编码长度
   p += sizeof(T) + 1;
 }
 
+
 template<typename T>
-inline void denc_varint(T v, bufferlist::contiguous_appender& p) {
-  uint8_t byte = v & 0x7f;
+inline void denc_varint(T v, bufferlist::contiguous_appender& p) {//将v数据按字节拆分，每７bit存入一个字节，最高位置１
+  uint8_t byte = v & 0x7f;//取后７位
   v >>= 7;
   while (v) {
     byte |= 0x80;
-    *(__u8*)p.get_pos_add(1) = byte;
+    *(__u8*)p.get_pos_add(1) = byte;//填充byte
     byte = (v & 0x7f);
     v >>= 7;
   }
@@ -249,7 +250,7 @@ inline void denc_varint(T v, bufferlist::contiguous_appender& p) {
 }
 
 template<typename T>
-inline void denc_varint(T& v, bufferptr::iterator& p) {
+inline void denc_varint(T& v, bufferptr::iterator& p) {//解码
   uint8_t byte = *(__u8*)p.get_pos_add(1);
   v = byte & 0x7f;
   int shift = 7;

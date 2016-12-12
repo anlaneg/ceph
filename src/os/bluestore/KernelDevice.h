@@ -37,7 +37,7 @@ class KernelDevice : public BlockDevice {
   Mutex flush_lock;
   atomic_t io_since_flush;
 
-  FS::aio_queue_t aio_queue;//aio队列
+  FS::aio_queue_t aio_queue;//(仅向kernel提交aio,暂没有队列)
   aio_callback_t aio_callback;//aio完成时的回调函数
   void *aio_callback_priv;//aio完成时回主财函数的第一个参数
   bool aio_stop;//aio线程停止标记

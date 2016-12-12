@@ -38,7 +38,7 @@ KernelDevice::KernelDevice(aio_callback_t cb, void *cbpriv)
     debug_lock("KernelDevice::debug_lock"),
     flush_lock("KernelDevice::flush_lock"),
     aio_queue(g_conf->bdev_aio_max_queue_depth),
-    aio_callback(cb),
+    aio_callback(cb),//设置回调
     aio_callback_priv(cbpriv),
     aio_stop(false),
     aio_thread(this),
@@ -249,7 +249,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
     int max = 16;
     FS::aio_t *aio[max];
     int r = aio_queue.get_next_completed(g_conf->bdev_aio_poll_ms,
-					 aio, max);
+					 aio, max);//获取kernel　aio完成情况
     if (r < 0) {
       derr << __func__ << " got " << cpp_strerror(r) << dendl;
     }
@@ -257,7 +257,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
       dout(30) << __func__ << " got " << r << " completed aios" << dendl;
       for (int i = 0; i < r; ++i) {
 	IOContext *ioc = static_cast<IOContext*>(aio[i]->priv);
-	_aio_log_finish(ioc, aio[i]->offset, aio[i]->length);
+	_aio_log_finish(ioc, aio[i]->offset, aio[i]->length);//调试代码不关心
 	if (aio[i]->queue_item.is_linked()) {
 	  std::lock_guard<std::mutex> l(debug_queue_lock);
 	  debug_aio_unlink(*aio[i]);
@@ -267,7 +267,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 	dout(10) << __func__ << " finished aio " << aio[i] << " r " << r
 		 << " ioc " << ioc
 		 << " with " << left << " aios left" << dendl;
-	assert(r >= 0);
+	assert(r >= 0);//必须成功,不成功，挂
 	if (left == 0) {
 	  // check waiting count before doing callback (which may
 	  // destroy this ioc).
@@ -278,7 +278,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 	}
       }
     }
-    if (g_conf->bdev_debug_aio) {
+    if (g_conf->bdev_debug_aio) {//调试代码
       utime_t now = ceph_clock_now(NULL);
       std::lock_guard<std::mutex> l(debug_queue_lock);
       if (debug_oldest) {
@@ -298,7 +298,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
       }
     }
     reap_ioc();
-    if (g_conf->bdev_inject_crash) {
+    if (g_conf->bdev_inject_crash) {//调试代码
       ++inject_crash_count;
       if (inject_crash_count * g_conf->bdev_aio_poll_ms / 1000 >
 	  g_conf->bdev_inject_crash + g_conf->bdev_inject_crash_flush_delay) {
@@ -369,6 +369,7 @@ void KernelDevice::_aio_log_finish(//调试代码
   }
 }
 
+//将所有未绝aio加入到aio_queue
 void KernelDevice::aio_submit(IOContext *ioc)
 {
   dout(20) << __func__ << " ioc " << ioc
@@ -382,12 +383,12 @@ void KernelDevice::aio_submit(IOContext *ioc)
   // aios might complete as soon as they are submitted and queue more
   // wal aio's.
   list<FS::aio_t>::iterator e = ioc->running_aios.begin();
-  ioc->running_aios.splice(e, ioc->pending_aios);
+  ioc->running_aios.splice(e, ioc->pending_aios);//将pending_aios加入到running_aios中
   list<FS::aio_t>::iterator p = ioc->running_aios.begin();
 
   int pending = ioc->num_pending.load();
   ioc->num_running += pending;
-  ioc->num_pending -= pending;
+  ioc->num_pending -= pending;//清０
   assert(ioc->num_pending.load() == 0);  // we should be only thread doing this
 
   bool done = false;
@@ -415,7 +416,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
       std::lock_guard<std::mutex> l(debug_queue_lock);
       debug_aio_link(*cur);
     }
-    int r = aio_queue.submit(*cur, &retries);
+    int r = aio_queue.submit(*cur, &retries);//提交一个io
     if (retries)
       derr << __func__ << " retries " << retries << dendl;
     if (r) {

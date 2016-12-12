@@ -1096,6 +1096,7 @@ void BlueStore::BufferSpace::read(
   cache->logger->inc(l_bluestore_buffer_miss_bytes, miss_bytes);
 }
 
+//放入writing中的数据已写完成，检查如果需要缓存就缓存，不需要缓存的移除掉
 void BlueStore::BufferSpace::finish_write(uint64_t seq)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
@@ -1105,7 +1106,7 @@ void BlueStore::BufferSpace::finish_write(uint64_t seq)
     if (i->seq > seq) {//后面的seq将比这个seq还要大，不用再尝试了
       break;
     }
-    if (i->seq < seq) {//i不是我们需要的seq
+    if (i->seq < seq) {//i不是我们需要的seq（这里有个问题需要确认？按理不应存在小于seq的数据项，可能与cache的工作原理有关）
       ++i;
       continue;
     }
@@ -1114,13 +1115,13 @@ void BlueStore::BufferSpace::finish_write(uint64_t seq)
     dout(20) << __func__ << " " << *b << dendl;
     assert(b->is_writing());
 
-    if (b->flags & Buffer::FLAG_NOCACHE) {//移除
+    if (b->flags & Buffer::FLAG_NOCACHE) {//要求不缓存，我们自buffer_map中移除
       writing.erase(i++);
       buffer_map.erase(b->offset);
     } else {
-      b->state = Buffer::STATE_CLEAN;
+      b->state = Buffer::STATE_CLEAN;//已写完成
       writing.erase(i++);
-      cache->_add_buffer(b, 1, nullptr);
+      cache->_add_buffer(b, 1, nullptr);//交给缓存
     }
   }
 
@@ -1597,16 +1598,16 @@ BlueStore::ExtentMap::ExtentMap(Onode *o)
     inline_bl(g_conf->bluestore_extent_map_inline_shard_prealloc_size) {
 }
 
-
+//如果强制更新，则将此对象所有extent写入t,如果非强制更新，则此对象extent最多更新bluestore....max_size字节，写入到t
 bool BlueStore::ExtentMap::update(Onode *o, KeyValueDB::Transaction t,
 				  bool force)
 {
-  assert(!needs_reshard);
+  assert(!needs_reshard);//只有需要的才能进来
   if (o->onode.extent_map_shards.empty()) {
     if (inline_bl.length() == 0) {
       unsigned n;
       // we need to encode inline_bl to measure encoded length
-      bool never_happen = encode_some(0, OBJECT_MAX_SIZE, inline_bl, &n);
+      bool never_happen = encode_some(0, OBJECT_MAX_SIZE, inline_bl, &n);//将extent_map编码进inline_bl
       assert(!never_happen);
       size_t len = inline_bl.length();
       dout(20) << __func__ << " inline shard "
@@ -1630,7 +1631,7 @@ bool BlueStore::ExtentMap::update(Onode *o, KeyValueDB::Transaction t,
 	}
 	bufferlist bl;
 	unsigned n;
-	if (encode_some(p->offset, endoff - p->offset, bl, &n)) {
+	if (encode_some(p->offset, endoff - p->offset, bl, &n)) {//返回false表示已编码
 	  return true;
 	}
         size_t len = bl.length();
@@ -1646,10 +1647,10 @@ bool BlueStore::ExtentMap::update(Onode *o, KeyValueDB::Transaction t,
 	assert(p->shard_info->offset == p->offset);
 	p->shard_info->bytes = len;
 	p->shard_info->extents = n;
-	t->set(PREFIX_OBJ, p->key, bl);
+	t->set(PREFIX_OBJ, p->key, bl);//写入prefix_obj
 	p->dirty = false;
       }
-      p = n;
+      p = n;//向下一个移动
     }
   }
   return false;
@@ -1800,10 +1801,10 @@ void BlueStore::ExtentMap::reshard(Onode *o, uint64_t min_alloc_size)
 }
 
 bool BlueStore::ExtentMap::encode_some(uint32_t offset, uint32_t length,
-				       bufferlist& bl, unsigned *pn)
+				       bufferlist& bl, unsigned *pn)//将数据编码进bl,pn返回编码的extent_map的数量
 {
   Extent dummy(offset);
-  auto start = extent_map.lower_bound(dummy);
+  auto start = extent_map.lower_bound(dummy);//查找大于等于offset的extent
   uint32_t end = offset + length;
 
   unsigned n = 0;
@@ -1827,8 +1828,8 @@ bool BlueStore::ExtentMap::encode_some(uint32_t offset, uint32_t length,
   }
 
   {
-    auto app = bl.get_contiguous_appender(bound);
-    denc_varint(n, app);
+    auto app = bl.get_contiguous_appender(bound);//在bl中开拓一块长度为bound的内存
+    denc_varint(n, app);//编入，自offset开始extent_map的数目
     if (pn) {
       *pn = n;
     }
@@ -1862,18 +1863,18 @@ bool BlueStore::ExtentMap::encode_some(uint32_t offset, uint32_t length,
       } else {
 	prev_len = p->length;
       }
-      denc_varint(blobid, app);
-      if ((blobid & BLOBID_FLAG_CONTIGUOUS) == 0) {
+      denc_varint(blobid, app);//编码blobid
+      if ((blobid & BLOBID_FLAG_CONTIGUOUS) == 0) {//编入logic_offset
 	denc_varint_lowz(p->logical_offset - pos, app);
       }
       if ((blobid & BLOBID_FLAG_ZEROOFFSET) == 0) {
-	denc_varint_lowz(p->blob_offset, app);
+	denc_varint_lowz(p->blob_offset, app);//blob_offset
       }
       if ((blobid & BLOBID_FLAG_SAMELENGTH) == 0) {
-	denc_varint_lowz(p->length, app);
+	denc_varint_lowz(p->length, app);//length
       }
       pos = p->logical_end();
-      if (include_blob) {
+      if (include_blob) {//需要编入blob
 	p->blob->encode(app, false);
       }
     }
@@ -2242,7 +2243,7 @@ BlueStore::Extent *BlueStore::ExtentMap::set_lextent(
   b->get_ref(blob_offset, length);
   Extent *le = new Extent(logical_offset, blob_offset, length, b);
   extent_map.insert(*le);//将此范围加入
-  if (!needs_reshard && spans_shard(logical_offset, length)) {
+  if (!needs_reshard && spans_shard(logical_offset, length)) {//新加入的段分布在两个extent之间
     needs_reshard = true;
   }
   return le;
@@ -2492,10 +2493,10 @@ void *BlueStore::MempoolThread::entry()
 #define dout_prefix *_dout << "bluestore(" << path << ") "
 
 
-static void aio_cb(void *priv, void *priv2)
+static void aio_cb(void *priv, void *priv2)//块设备完成时回调（bluestore无回调，/block设备回调
 {
   BlueStore *store = static_cast<BlueStore*>(priv);
-  store->_txc_aio_finish(priv2);
+  store->_txc_aio_finish(priv2);//标明aio完成
 }
 
 BlueStore::BlueStore(CephContext *cct, const string& path)
@@ -2938,7 +2939,7 @@ int BlueStore::_open_bdev(bool create)
   bluestore_bdev_label_t label;
   assert(bdev == NULL);
   string p = path + "/block";
-  bdev = BlockDevice::create(p, aio_cb, static_cast<void*>(this));//打开'block'设备
+  bdev = BlockDevice::create(p, aio_cb, static_cast<void*>(this));//打开'block'设备，设置回调为aio_cb
   int r = bdev->open(p);
   if (r < 0)
     goto fail;
@@ -6234,6 +6235,7 @@ BlueStore::TransContext *BlueStore::_txc_create(OpSequencer *osr)
   return txc;
 }
 
+//更新文件系统统计计数
 void BlueStore::_txc_update_store_statfs(TransContext *txc)
 {
   if (txc->statfs_delta.is_empty())
@@ -6261,17 +6263,17 @@ void BlueStore::_txc_state_proc(TransContext *txc)
     switch (txc->state) {
     case TransContext::STATE_PREPARE:
       txc->log_state_latency(logger, l_bluestore_state_prepare_lat);
-      if (txc->ioc.has_pending_aios()) {
+      if (txc->ioc.has_pending_aios()) {//如果有未提交的aio,提交aio
 	txc->state = TransContext::STATE_AIO_WAIT;//下一步aio_wait
 	txc->had_ios = true;
-	_txc_aio_submit(txc);//提交aio
+	_txc_aio_submit(txc);//提交aio（等kernel完成后，再由state_aio_wait状态进入）
 	return;
       }
       // ** fall-thru **
 
-    case TransContext::STATE_AIO_WAIT:
+    case TransContext::STATE_AIO_WAIT://kernel已完成写
       txc->log_state_latency(logger, l_bluestore_state_aio_wait_lat);
-      _txc_finish_io(txc);  // may trigger blocked txc's too
+      _txc_finish_io(txc);  // may trigger blocked txc's too　//暂态，置为io_done,考虑前面io未完成情况
       return;
 
     case TransContext::STATE_IO_DONE:
@@ -6280,13 +6282,13 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	++txc->osr->txc_with_unstable_io;
       }
       txc->log_state_latency(logger, l_bluestore_state_io_done_lat);
-      txc->state = TransContext::STATE_KV_QUEUED;
-      for (auto& sb : txc->shared_blobs_written) {
-        sb->bc.finish_write(txc->seq);
+      txc->state = TransContext::STATE_KV_QUEUED;//置状态为state_kv_queued
+      for (auto& sb : txc->shared_blobs_written) {//遍历这个事务中受影响变dirty的blobs
+        sb->bc.finish_write(txc->seq);//确定是否要加入缓存
       }
       txc->shared_blobs_written.clear();
       if (g_conf->bluestore_sync_submit_transaction &&
-	  fm->supports_parallel_transactions()) {
+	  fm->supports_parallel_transactions()) {//默认配置会进入
 	if (txc->last_nid >= nid_max ||
 	    txc->last_blobid >= blobid_max) {
 	  dout(20) << __func__
@@ -6308,15 +6310,15 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	  dout(20) << __func__ << " DEBUG randomly forcing submit via kv thread"
 		   << dendl;
 	} else {
-	  _txc_finalize_kv(txc, txc->t);
+	  _txc_finalize_kv(txc, txc->t);//完成kv书写操作
 	  txc->state = TransContext::STATE_KV_SUBMITTED;
-	  int r = db->submit_transaction(txc->t);
+	  int r = db->submit_transaction(txc->t);//提交kv事务
 	  assert(r == 0);
 	}
       }
       {
 	std::lock_guard<std::mutex> l(kv_lock);
-	kv_queue.push_back(txc);
+	kv_queue.push_back(txc);//入队，在这里等待同步线程处理完成，再进入
 	kv_cond.notify_one();
 	if (txc->state != TransContext::STATE_KV_SUBMITTED) {
 	  kv_queue_unsubmitted.push_back(txc);
@@ -6326,8 +6328,8 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       return;
     case TransContext::STATE_KV_SUBMITTED:
       txc->log_state_latency(logger, l_bluestore_state_kv_committing_lat);
-      txc->state = TransContext::STATE_KV_DONE;
-      _txc_finish_kv(txc);
+      txc->state = TransContext::STATE_KV_DONE;//元数据处理完成
+      _txc_finish_kv(txc);//执行用户所需要的回调。
       // ** fall-thru **
 
     case TransContext::STATE_KV_DONE:
@@ -6377,7 +6379,7 @@ void BlueStore::_txc_state_proc(TransContext *txc)
   }
 }
 
-void BlueStore::_txc_finish_io(TransContext *txc)
+void BlueStore::_txc_finish_io(TransContext *txc)//事务的io完成后，调用
 {
   dout(20) << __func__ << " " << txc << dendl;
 
@@ -6391,20 +6393,20 @@ void BlueStore::_txc_finish_io(TransContext *txc)
   txc->state = TransContext::STATE_IO_DONE;
 
   OpSequencer::q_list_t::iterator p = osr->q.iterator_to(*txc);
-  while (p != osr->q.begin()) {
+  while (p != osr->q.begin()) {//前面还有事务未处理完。
     --p;
-    if (p->state < TransContext::STATE_IO_DONE) {
+    if (p->state < TransContext::STATE_IO_DONE) {//当一个事务还未io还未执行完，需要保证事务顺序，等前一个事务，返回
       dout(20) << __func__ << " " << txc << " blocked by " << &*p << " "
 	       << p->get_state_name() << dendl;
       return;
     }
-    if (p->state > TransContext::STATE_IO_DONE) {
+    if (p->state > TransContext::STATE_IO_DONE) {//前一个事务，io已执行完成，可以继续
       ++p;
       break;
     }
   }
   do {
-    _txc_state_proc(&*p++);
+    _txc_state_proc(&*p++);//可能存在我们后面的先到达io_done,故这里需要遍历提交。
   } while (p != osr->q.end() &&
 	   p->state == TransContext::STATE_IO_DONE);
 }
@@ -6417,7 +6419,7 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
 	   << dendl;
 
   // finalize onodes
-  for (auto o : txc->onodes) {
+  for (auto o : txc->onodes) {//遍历本次事务所有受影响的object
     // finalize extent_map shards
     bool reshard = o->extent_map.needs_reshard;
     if (!reshard) {
@@ -6430,7 +6432,7 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
       }
       o->extent_map.fault_range(db, 0, o->onode.size);
       o->extent_map.reshard(o.get(), min_alloc_size);
-      reshard = o->extent_map.update(o.get(), t, true);
+      reshard = o->extent_map.update(o.get(), t, true);//更新extent_map
       if (reshard) {
 	dout(20) << __func__ << " warning: still wants reshard, check options?"
 		 << dendl;
@@ -6469,7 +6471,7 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
     t->set(PREFIX_OBJ, o->key, bl);
 
     std::lock_guard<std::mutex> l(o->flush_lock);
-    o->flush_txns.insert(txc);
+    o->flush_txns.insert(txc);//加入需要flush事务
   }
 
   // finalize shared_blobs
@@ -6598,6 +6600,7 @@ void BlueStore::_osr_reap_done(OpSequencer *osr)
   }
 }
 
+//完成物理磁盘空间的申请释放，完成统计计数的更新
 void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
 {
   dout(20) << __func__ << " txc " << txc << std::hex
@@ -6615,17 +6618,19 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
   if (!txc->allocated.empty() && !txc->released.empty()) {
     interval_set<uint64_t> overlap;
     overlap.intersection_of(txc->allocated, txc->released);
-    if (!overlap.empty()) {
+    if (!overlap.empty()) {//如果有重叠
       tmp_allocated = txc->allocated;
-      tmp_allocated.subtract(overlap);
+      tmp_allocated.subtract(overlap);//求差集
       tmp_released = txc->released;
       tmp_released.subtract(overlap);
       dout(20) << __func__ << "  overlap 0x" << std::hex << overlap
 	       << ", new allocated 0x" << tmp_allocated
 	       << " released 0x" << tmp_released << std::dec
 	       << dendl;
-      pallocated = &tmp_allocated;
+      pallocated = &tmp_allocated;//求差集合赋值
       preleased = &tmp_released;
+
+      //注：在这里没有处理overlap，原因是它没有发生变化，保持原状
     }
   }
 
@@ -6633,14 +6638,14 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
   for (interval_set<uint64_t>::iterator p = pallocated->begin();
        p != pallocated->end();
        ++p) {
-    fm->allocate(p.get_start(), p.get_len(), t);
+    fm->allocate(p.get_start(), p.get_len(), t);//自fm中申请
   }
   for (interval_set<uint64_t>::iterator p = preleased->begin();
        p != preleased->end();
        ++p) {
     dout(20) << __func__ << " release 0x" << std::hex << p.get_start()
 	     << "~" << p.get_len() << std::dec << dendl;
-    fm->release(p.get_start(), p.get_len(), t);
+    fm->release(p.get_start(), p.get_len(), t);//向fm中释放
   }
 
   _txc_update_store_statfs(txc);
@@ -6661,7 +6666,7 @@ void BlueStore::_txc_release_alloc(TransContext *txc)
   txc->released.clear();
 }
 
-void BlueStore::_kv_sync_thread()
+void BlueStore::_kv_sync_thread()//kv数据同步
 {
   dout(10) << __func__ << " start" << dendl;
   std::unique_lock<std::mutex> l(kv_lock);
@@ -7006,11 +7011,11 @@ int BlueStore::queue_transactions(
   logger->inc(l_bluestore_txc);
 
   // execute (start)
-  _txc_state_proc(txc);
+  _txc_state_proc(txc);//开始处理事务
   return 0;
 }
 
-void BlueStore::_txc_aio_submit(TransContext *txc)
+void BlueStore::_txc_aio_submit(TransContext *txc)//提交所有aio
 {
   dout(10) << __func__ << " txc " << txc << dendl;
   bdev->aio_submit(&txc->ioc);
@@ -7907,7 +7912,7 @@ int BlueStore::_do_alloc_write(
     assert(count > 0);
     hint = extents[count - 1].end();
 
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count; i++) {//将每个申请的空间记录在txc中
       bluestore_pextent_t e = bluestore_pextent_t(extents[i]);
       txc->allocated.insert(e.offset, e.length);
       dblob.extents.push_back(e);
@@ -7998,7 +8003,7 @@ void BlueStore::_wctx_finish(
     b->discard_unallocated();
     for (auto e : r) {
       dout(20) << __func__ << "  release " << e << dendl;
-      txc->released.insert(e.offset, e.length);
+      txc->released.insert(e.offset, e.length);//加入释放的物理磁盘范围
       txc->statfs_delta.allocated() -= e.length;
       if (blob.is_compressed()) {
         txc->statfs_delta.compressed_allocated() -= e.length;

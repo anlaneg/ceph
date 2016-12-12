@@ -189,7 +189,7 @@ namespace buffer CEPH_BUFFER_API {
       friend class ptr;
 
     public:
-      const char *get_pos_add(size_t n) {
+      const char *get_pos_add(size_t n) {//pos跳n字节
 	const char *r = pos;
 	pos += n;
 	if (pos > end_ptr)
@@ -462,9 +462,9 @@ namespace buffer CEPH_BUFFER_API {
     };
 
     class contiguous_appender {
-      bufferlist *pbl;
-      char *pos;
-      ptr bp;
+      bufferlist *pbl;//组装已填充好的
+      char *pos;//指向bp的某处，表示读写位置
+      ptr bp;//正在写入的内存
       bool deep;
 
       /// running count of bytes appended that are not reflected by @pos
@@ -474,7 +474,7 @@ namespace buffer CEPH_BUFFER_API {
 	: pbl(l),
 	  deep(d) {
 	size_t unused = pbl->append_buffer.unused_tail_length();
-	if (len > unused) {
+	if (len > unused) {//后面剩的不够用
 	  // note: if len < the normal append_buffer size it *might*
 	  // be better to allocate a normal-sized append_buffer and
 	  // use part of it.  however, that optimizes for the case of

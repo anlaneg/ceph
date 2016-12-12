@@ -719,7 +719,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     return r;
   }
 
-  buffer::raw* buffer::create(unsigned len) {
+  buffer::raw* buffer::create(unsigned len) {//创建一块len长度buffer
     return buffer::create_aligned(len, sizeof(size_t));
   }
   buffer::raw* buffer::claim_char(unsigned len, char *buf) {
@@ -928,7 +928,7 @@ static simple_spinlock_t buffer_debug_lock = SIMPLE_SPINLOCK_INITIALIZER;
     return _raw->get_data() + _off + _len;
   }
 
-  unsigned buffer::ptr::unused_tail_length() const
+  unsigned buffer::ptr::unused_tail_length() const//返回还没有使用的长度
   {
     if (_raw)
       return _raw->len - (_off+_len);

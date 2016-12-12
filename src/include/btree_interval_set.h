@@ -440,6 +440,7 @@ class btree_interval_set {
   }
 
 
+  //将自身与a求差集，将结果赋给自已
   void subtract(const btree_interval_set &a) {
     for (typename map_t::const_iterator p = a.m.begin();
          p != a.m.end();
@@ -447,6 +448,7 @@ class btree_interval_set {
       erase(p->first, p->second);
   }
 
+  //将a集合插入（要求不重合的）
   void insert(const btree_interval_set &a) {
     for (typename map_t::const_iterator p = a.m.begin();
          p != a.m.end();
@@ -455,6 +457,7 @@ class btree_interval_set {
   }
 
 
+  //求两个集合中数据的交集，将结果赋给自身
   void intersection_of(const btree_interval_set &a, const btree_interval_set &b) {
     assert(&a != this);
     assert(&b != this);
@@ -463,28 +466,33 @@ class btree_interval_set {
     typename map_t::const_iterator pa = a.m.begin();
     typename map_t::const_iterator pb = b.m.begin();
 
+    //左右两个set
     while (pa != a.m.end() && pb != b.m.end()) {
       // passing?
-      if (pa->first + pa->second <= pb->first)
-        { pa++;  continue; }
-      if (pb->first + pb->second <= pa->first)
-        { pb++;  continue; }
-      T start = MAX(pa->first, pb->first);
-      T en = MIN(pa->first+pa->second, pb->first+pb->second);
+      if (pa->first + pa->second <= pb->first)//左侧的比右侧的offset小
+        { pa++;  continue; }//左侧向前移，右侧不动
+      if (pb->first + pb->second <= pa->first)//右侧的比左侧的offset小
+        { pb++;  continue; }//右侧移动，左侧不动
+      //左右两侧有重合（下面取出重合范围（start,end)
+      T start = MAX(pa->first, pb->first);//取最大的offset
+      T en = MIN(pa->first+pa->second, pb->first+pb->second);//取最小的长度
       assert(en > start);
-      insert(start, en-start);
+      insert(start, en-start);//插入时，会进行合并
+      //检查pa或者pa应移动
       if (pa->first+pa->second > pb->first+pb->second)
         pb++;
       else
         pa++;
     }
   }
+  //求取自身与b之间的并集，并将结果赋给自身
   void intersection_of(const btree_interval_set& b) {
     btree_interval_set a;
     swap(a);
     intersection_of(a, b);
   }
 
+  //求ab集合的合集，将结果赋给自身
   void union_of(const btree_interval_set &a, const btree_interval_set &b) {
     assert(&a != this);
     assert(&b != this);
@@ -498,13 +506,14 @@ class btree_interval_set {
 
     // - (a*b)
     btree_interval_set ab;
-    ab.intersection_of(a, b);
-    subtract(ab);
+    ab.intersection_of(a, b);//求并集
+    subtract(ab);//删除并集
 
     // + b
-    insert(b);
+    insert(b);//插入b
     return;
   }
+  //与b集合求并集，将求得的结果赋给自已
   void union_of(const btree_interval_set &b) {
     btree_interval_set a;
     swap(a);

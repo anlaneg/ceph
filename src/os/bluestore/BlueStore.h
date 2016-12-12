@@ -446,7 +446,7 @@ public:
     const bluestore_extent_ref_map_t& get_ref_map() const {
       return ref_map;
     }
-    bool is_spanning() const {
+    bool is_spanning() const {//如果大于等于０，则表示在spanning
       return id >= 0;
     }
 
@@ -569,9 +569,9 @@ public:
   struct Extent : public ExtentBase {
     MEMPOOL_CLASS_HELPERS();
 
-    uint32_t logical_offset = 0;      ///< logical offset
-    uint32_t blob_offset = 0;         ///< blob offset
-    uint32_t length = 0;              ///< length
+    uint32_t logical_offset = 0;      ///< logical offset //一个对象的逻辑的offset
+    uint32_t blob_offset = 0;         ///< blob offset    //这段数据在blob中起始的偏移量
+    uint32_t length = 0;              ///< length　　　　　　　　　//这段数据存在哪个blob中
     BlobRef  blob;                    ///< the blob with our data
 
     /// ctor for lookup only
@@ -1243,7 +1243,7 @@ public:
     boost::intrusive::list_member_hook<> wal_queue_item;
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
 
-    interval_set<uint64_t> allocated, released;
+    interval_set<uint64_t> allocated, released;//记录事务中申请释放的物理磁盘范围
     //记录统计数据
     struct volatile_statfs{
       enum {
@@ -1539,7 +1539,7 @@ private:
   int m_finisher_num;
   vector<Finisher*> finishers;
 
-  KVSyncThread kv_sync_thread;//key-value同步线程
+  KVSyncThread kv_sync_thread;//key-value同步线程（负责将kv数据落盘)
   std::mutex kv_lock;
   std::condition_variable kv_cond, kv_sync_cond;
   bool kv_stop;
@@ -1675,7 +1675,7 @@ private:
   void _txc_state_proc(TransContext *txc);
   void _txc_aio_submit(TransContext *txc);
 public:
-  void _txc_aio_finish(void *p) {//aiop完成后进入
+  void _txc_aio_finish(void *p) {//aio完成后进入（在aio被kernel完成后调用）
     _txc_state_proc(static_cast<TransContext*>(p));
   }
 private:

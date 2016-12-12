@@ -186,14 +186,14 @@ int FS::zero(int fd, uint64_t offset, uint64_t length)
 // ---------------
 
 #if defined(HAVE_LIBAIO)
-int FS::aio_queue_t::submit(aio_t &aio, int *retries)
+int FS::aio_queue_t::submit(aio_t &aio, int *retries)//简单提交aio
 {
   // 2^16 * 125us = ~8 seconds, so max sleep is ~16 seconds
   int attempts = 16;
   int delay = 125;
   iocb *piocb = &aio.iocb;
   while (true) {
-    int r = io_submit(ctx, 1, &piocb);
+    int r = io_submit(ctx, 1, &piocb);//提交aio
     if (r < 0) {
       if (r == -EAGAIN && attempts-- > 0) {
 	usleep(delay);
@@ -209,7 +209,7 @@ int FS::aio_queue_t::submit(aio_t &aio, int *retries)
   return 0;
 }
 
-int FS::aio_queue_t::get_next_completed(int timeout_ms, aio_t **paio, int max)
+int FS::aio_queue_t::get_next_completed(int timeout_ms, aio_t **paio, int max)//简单的aio封闭，获取aio完成情况
 {
   io_event event[max];
   struct timespec t = {

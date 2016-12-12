@@ -366,7 +366,7 @@ void RocksDBStore::close()
     cct->get_perfcounters_collection()->remove(logger);
 }
 
-int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)
+int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)//写数据库
 {
   utime_t start = ceph_clock_now(g_ceph_context);
   // enable rocksdb breakdown
