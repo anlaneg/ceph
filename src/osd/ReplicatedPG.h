@@ -645,6 +645,7 @@ public:
     int nref;//引入计数
 
     eversion_t v;
+    int r = 0;
 
     ceph_tid_t rep_tid;//事务id
 
@@ -652,6 +653,7 @@ public:
 
     bool all_applied;
     bool all_committed;
+    const bool applies_with_commit;
     
     utime_t   start;//起始时间
     
@@ -665,8 +667,10 @@ public:
     list<std::function<void()>> on_success;
     list<std::function<void()>> on_finish;
     
-    RepGather(OpContext *c, ceph_tid_t rt,
-	      eversion_t lc) :
+    RepGather(
+      OpContext *c, ceph_tid_t rt,
+      eversion_t lc,
+      bool applies_with_commit) :
       hoid(c->obc->obs.oi.soid),
       op(c->op),
       queue_item(this),
@@ -674,6 +678,7 @@ public:
       rep_tid(rt), 
       rep_aborted(false), rep_done(false),
       all_applied(false), all_committed(false),
+      applies_with_commit(applies_with_commit),
       pg_local_last_complete(lc),
       lock_manager(std::move(c->lock_manager)),
       on_applied(std::move(c->on_applied)),
@@ -686,13 +691,17 @@ public:
       OpRequestRef &&o,
       boost::optional<std::function<void(void)> > &&on_complete,
       ceph_tid_t rt,
-      eversion_t lc) :
+      eversion_t lc,
+      bool applies_with_commit,
+      int r) :
       op(o),
       queue_item(this),
       nref(1),
+      r(r),
       rep_tid(rt),
       rep_aborted(false), rep_done(false),
       all_applied(false), all_committed(false),
+      applies_with_commit(applies_with_commit),
       pg_local_last_complete(lc),
       lock_manager(std::move(manager)) {
       if (on_complete) {
@@ -830,6 +839,8 @@ protected:
     ObjectContextRef obc,
     ceph_tid_t rep_tid);
   boost::intrusive_ptr<RepGather> new_repop(
+    eversion_t version,
+    int r,
     ObcLockManager &&manager,
     OpRequestRef &&op,
     boost::optional<std::function<void(void)> > &&on_complete);
@@ -848,7 +859,8 @@ protected:
     const mempool::osd::list<pg_log_entry_t> &entries,
     ObcLockManager &&manager,
     boost::optional<std::function<void(void)> > &&on_complete,
-    OpRequestRef op = OpRequestRef());
+    OpRequestRef op = OpRequestRef(),
+    int r = 0);
   struct LogUpdateCtx {
     boost::intrusive_ptr<RepGather> repop;
     set<pg_shard_t> waiting_on;
@@ -909,36 +921,9 @@ protected:
   void agent_choose_mode_restart() override;
 
   /// true if we can send an ondisk/commit for v
-  /// 检查v版本是否已完成{ondisk&&commit},检查方法是通过repop_queue来进行检查.
-  bool already_complete(eversion_t v) {
-    for (xlist<RepGather*>::iterator i = repop_queue.begin();
-	 !i.end();
-	 ++i) {
-      // skip copy from temp object ops
-      if ((*i)->v == eversion_t())
-	continue;
-      if ((*i)->v > v)
-        break;
-      if (!(*i)->all_committed)//commit操作
-	return false;//如果repop_queue中恰好有一个版本比它小,恰没有全部完成,说明这个v是没有做过完的,它还在排队.
-    }
-    return true;
-  }
+  bool already_complete(eversion_t v);
   /// true if we can send an ack for v
-  bool already_ack(eversion_t v) {
-    for (xlist<RepGather*>::iterator i = repop_queue.begin();
-	 !i.end();
-	 ++i) {
-      // skip copy from temp object ops
-      if ((*i)->v == eversion_t())
-	continue;
-      if ((*i)->v > v)
-        break;
-      if (!(*i)->all_applied)//applied操作
-	return false;
-    }
-    return true;
-  }
+  bool already_ack(eversion_t v);
 
   // projected object info
   //这两个缓存是为了减小磁盘读写
@@ -1100,15 +1085,11 @@ protected:
     const hobject_t& head, const hobject_t& coid,
     object_info_t *poi);
   void execute_ctx(OpContext *ctx);
-  void finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc=true,
-		  bool scrub_ok=false);
+  void finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc=true);
   void reply_ctx(OpContext *ctx, int err);
   void reply_ctx(OpContext *ctx, int err, eversion_t v, version_t uv);
   void make_writeable(OpContext *ctx);
   void log_op_stats(OpContext *ctx);
-  void apply_ctx_scrub_stats(
-    OpContext *ctx,
-    bool scrub_ok=false); ///< true if we should skip scrub stat update
 
   void write_update_size_and_usage(object_stat_sum_t& stats, object_info_t& oi,
 				   interval_set<uint64_t>& modified, uint64_t offset,
@@ -1658,8 +1639,9 @@ inline ostream& operator<<(ostream& out, const ReplicatedPG::RepGather& repop)
       << " " << repop.v
       << " rep_tid=" << repop.rep_tid 
       << " committed?=" << repop.all_committed
-      << " applied?=" << repop.all_applied;
-  out << ")";
+      << " applied?=" << repop.all_applied
+      << " r=" << repop.r
+      << ")";
   return out;
 }
 

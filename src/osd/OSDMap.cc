@@ -1161,8 +1161,8 @@ void OSDMap::dedup(const OSDMap *o, OSDMap *n)
 
   // does crush match?
   bufferlist oc, nc;
-  ::encode(*o->crush, oc);
-  ::encode(*n->crush, nc);
+  ::encode(*o->crush, oc, CEPH_FEATURES_SUPPORTED_DEFAULT);
+  ::encode(*n->crush, nc, CEPH_FEATURES_SUPPORTED_DEFAULT);
   if (oc.contents_equal(nc)) {
     n->crush = o->crush;
   }
@@ -1739,20 +1739,24 @@ void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_prim
   int _up_primary;//主
   int _acting_primary;
   ps_t pps;
-  _pg_to_raw_osds(*pool, pg, &raw, &_up_primary, &pps);
-  _raw_to_up_osds(*pool, raw, &_up, &_up_primary);//重置_up_primary
-  _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
-  if (_acting.empty()) {//acting如果为空,acting与up相同
-    _acting = _up;
-    if (_acting_primary == -1) {
-      _acting_primary = _up_primary;
+  if (_acting.empty() || up || up_primary) {
+    _pg_to_raw_osds(*pool, pg, &raw, &_up_primary, &pps);
+    _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
+    _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
+    if (_acting.empty()) {//acting如果为空,acting与up相同
+      _acting = _up;
+      if (_acting_primary == -1) {
+        _acting_primary = _up_primary;
+      }
     }
+  
+    if (up)
+      up->swap(_up);//如果上层需要,就给人返回
+    if (up_primary)
+      *up_primary = _up_primary;//如果上层需要,就给返回,呵呵.
   }
-  if (up)
-    up->swap(_up);//如果上层需要,就给人返回
-  if (up_primary)
-    *up_primary = _up_primary;//如果上层需要,就给返回,呵呵.
+
   if (acting)
     acting->swap(_acting);
   if (acting_primary)
@@ -1851,7 +1855,7 @@ void OSDMap::encode_client_old(bufferlist& bl) const
 
   // crush
   bufferlist cbl;
-  crush->encode(cbl);
+  crush->encode(cbl, 0 /* legacy (no) features */);
   ::encode(cbl, bl);
 }
 
@@ -1886,7 +1890,7 @@ void OSDMap::encode_classic(bufferlist& bl, uint64_t features) const
 
   // crush
   bufferlist cbl;
-  crush->encode(cbl);
+  crush->encode(cbl, 0 /* legacy (no) features */);
   ::encode(cbl, bl);
 
   // extended
@@ -1954,7 +1958,7 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
 
     // crush
     bufferlist cbl;
-    crush->encode(cbl);
+    crush->encode(cbl, features);
     ::encode(cbl, bl);
     ::encode(erasure_code_profiles, bl);
     ENCODE_FINISH(bl); // client-usable data

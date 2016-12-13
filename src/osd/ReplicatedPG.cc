@@ -16,6 +16,7 @@
  */
 
 #include "boost/tuple/tuple.hpp"
+#include "boost/intrusive_ptr.hpp"
 #include "PG.h"
 #include "ReplicatedPG.h"
 #include "OSD.h"
@@ -1755,8 +1756,11 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   m->finish_decode();
   m->clear_payload();
 
+  dout(20) << __func__ << ": op " << *m << dendl;
+
   if (m->has_flag(CEPH_OSD_FLAG_PARALLELEXEC)) {//暂不支持此标记,收到后丢错误回去
     // not implemented.
+    dout(20) << __func__ << ": PARALLELEXEC not implemented " << *m << dendl;
     osd->reply_op_error(op, -EINVAL);
     return;
   }
@@ -1888,6 +1892,8 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 
     // invalid?
     if (m->get_snapid() != CEPH_NOSNAP) {//写操作时,不能指定snapid,不能对快照执行写操作.
+
+      dout(20) << __func__ << ": write to clone not valid " << *m << dendl;
       osd->reply_op_error(op, -EINVAL);
       return;
     }
@@ -1972,6 +1978,7 @@ void ReplicatedPG::do_op(OpRequestRef& op)
  
   // asking for SNAPDIR is only ok for reads
   if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {//快照目录仅可读.当前是写操作,报错
+    dout(20) << __func__ << ": write to snapdir not valid " << *m << dendl;
     osd->reply_op_error(op, -EINVAL);
     return;
   }
@@ -1992,8 +1999,8 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     if (got) {
       dout(3) << __func__ << " dup " << m->get_reqid()
 	      << " was " << replay_version << dendl;
-      if (return_code < 0 || already_complete(replay_version)) {
-      //返回值<0或者之前已回应过已完成,现重复回应.{commit已处理}
+      if (already_complete(replay_version)) {
+      //之前已回应过已完成,现重复回应.{commit已处理}
 	osd->reply_op_error(op, return_code, replay_version, user_version);
       } else {
 	if (m->wants_ack()) {
@@ -2041,12 +2048,9 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   if (r == -EAGAIN) {
 	  //如果返回此值,说明对象在missing列表中,当前正处于恢复,需要等待
 	  //按作者下面的注释,说明只有"从"会返回此值.
-    // If we're not the primary of this OSD, and we have
-    // CEPH_OSD_FLAG_LOCALIZE_READS set, we just return -EAGAIN. Otherwise,
+    // If we're not the primary of this OSD, we just return -EAGAIN. Otherwise,
     // we have to wait for the object.
-    if (is_primary() ||
-	(!(m->has_flag(CEPH_OSD_FLAG_BALANCE_READS)) &&
-	 !(m->has_flag(CEPH_OSD_FLAG_LOCALIZE_READS)))) {
+    if (is_primary()) {
       // missing the specific snap we need; requeue and wait.
       assert(!op->may_write()); // only happens on a read/cache
       wait_for_unreadable_object(missing_oid, op);
@@ -2366,26 +2370,42 @@ void ReplicatedPG::record_write_error(OpRequestRef op, const hobject_t &soid,
   entries.push_back(pg_log_entry_t(pg_log_entry_t::ERROR, soid,
 				   get_next_version(), eversion_t(), 0,
 				   reqid, utime_t(), r));
+
+  struct OnComplete {
+    ReplicatedPG *pg;
+    OpRequestRef op;
+    boost::intrusive_ptr<MOSDOpReply> orig_reply;
+    int r;
+    OnComplete(
+      ReplicatedPG *pg,
+      OpRequestRef op,
+      MOSDOpReply *orig_reply,
+      int r)
+      : pg(pg), op(op),
+	orig_reply(orig_reply, false /* take over ref */), r(r)
+      {}
+    void operator()() {
+      ldpp_dout(pg, 20) << "finished " << __func__ << " r=" << r << dendl;
+      MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
+      int flags = m->get_flags() & (CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+      MOSDOpReply *reply = orig_reply.detach();
+      if (reply == nullptr) {
+	reply = new MOSDOpReply(m, r, pg->get_osdmap()->get_epoch(),
+				flags, true);
+      }
+      ldpp_dout(pg, 10) << " sending commit on " << *m << " " << reply << dendl;
+      pg->osd->send_message_osd_client(reply, m->get_connection());
+    }
+  };
+
   ObcLockManager lock_manager;
   submit_log_entries(
     entries,
     std::move(lock_manager),
     boost::optional<std::function<void(void)> >(
-      [=]() {
-	dout(20) << "finished " << __func__ << " r=" << r << dendl;
-	int flags = CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK;
-	MOSDOp *m = static_cast<MOSDOp*>(op->get_req());
-	MOSDOpReply *reply = orig_reply;
-	if (reply == nullptr) {
-	  reply = new MOSDOpReply(m, r, get_osdmap()->get_epoch(),
-				  flags, true);
-	}
-	dout(10) << " sending commit on " << *m << " " << reply << dendl;
-	osd->send_message_osd_client(reply, m->get_connection());
-      }
-      ),
-    op
-  );
+      OnComplete(this, op, orig_reply, r)),
+    op,
+    r);
 }
 
 ReplicatedPG::cache_result_t ReplicatedPG::maybe_handle_cache_detail(
@@ -3257,8 +3277,10 @@ void ReplicatedPG::execute_ctx(OpContext *ctx)
   }
 
   if (ctx->update_log_only) {
+    if (result >= 0)
+      do_osd_op_effects(ctx, m->get_connection());
+
     dout(20) << __func__ << " update_log_only -- result=" << result << dendl;
-    assert(result < 0);
     // save just what we need from ctx
     MOSDOpReply *reply = ctx->reply;
     ctx->reply = nullptr;
@@ -5541,6 +5563,9 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  dout(10) << " found existing watch " << w << " by " << entity << dendl;
 	  ctx->watch_connects.push_back(make_pair(w, true));
         } else if (op.watch.op == CEPH_OSD_WATCH_OP_PING) {
+	  /* Note: WATCH with PING doesn't cause may_write() to return true,
+	   * so if there is nothing else in the transaction, this is going
+	   * to run do_osd_op_effects, but not write out a log entry */
 	  if (!oi.watchers.count(make_pair(cookie, entity))) {
 	    result = -ENOTCONN;
 	    break;
@@ -6802,9 +6827,13 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
     return result;
   }
 
-  // read-op?  done?
+  // read-op?  write-op noop? done?
   if (ctx->op_t->empty() && !ctx->modify) {
     unstable_stats.add(ctx->delta_stats);
+    if (ctx->op->may_write() &&
+	get_osdmap()->test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {
+      ctx->update_log_only = true;
+    }
     return result;
   }
 
@@ -6840,8 +6869,7 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
   return result;
 }
 
-void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc,
-			      bool scrub_ok)
+void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc)
 {
   const hobject_t& soid = ctx->obs->oi.soid;
   dout(20) << __func__ << " " << soid << " " << ctx
@@ -7003,8 +7031,6 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
     ctx->obc->ssc->exists = true;
     ctx->obc->ssc->snapset = ctx->new_snapset;
   }
-
-  apply_ctx_scrub_stats(ctx, scrub_ok);
 }
 
 void ReplicatedPG::apply_stats(
@@ -7023,16 +7049,11 @@ void ReplicatedPG::apply_stats(
     else if (cmp(soid, last_backfill_started, get_sort_bitwise()) <= 0)
       pending_backfill_updates[soid].stats.add(delta_stats);
   }
-}
 
-void ReplicatedPG::apply_ctx_scrub_stats(OpContext *ctx, bool scrub_ok)
-{
-  const hobject_t& soid = ctx->obs->oi.soid;
-  if (!scrub_ok && scrubber.active) {
-    assert(cmp(soid, scrubber.start, get_sort_bitwise()) < 0 ||
-	   cmp(soid, scrubber.end, get_sort_bitwise()) >= 0);
-    if (cmp(soid, scrubber.start, get_sort_bitwise()) < 0)
-      scrub_cstat.add(ctx->delta_stats);
+  if (is_primary() && scrubber.active) {
+    if (cmp(soid, scrubber.start, get_sort_bitwise()) < 0) {
+      scrub_cstat.add(delta_stats);
+    }
   }
 }
 
@@ -8462,6 +8483,7 @@ void ReplicatedPG::repop_all_applied(RepGather *repop)
 {
   dout(10) << __func__ << ": repop tid " << repop->rep_tid << " all applied "
 	   << dendl;
+  assert(!repop->applies_with_commit);
   repop->all_applied = true;
   if (!repop->rep_aborted) {
     eval_repop(repop);
@@ -8485,6 +8507,10 @@ void ReplicatedPG::repop_all_committed(RepGather *repop)
   dout(10) << __func__ << ": repop tid " << repop->rep_tid << " all committed "
 	   << dendl;
   repop->all_committed = true;
+  if (repop->applies_with_commit) {
+    assert(!repop->all_applied);
+    repop->all_applied = true;
+  }
 
   if (!repop->rep_aborted) {
     if (repop->v != eversion_t()) {
@@ -8560,7 +8586,7 @@ void ReplicatedPG::eval_repop(RepGather *repop)
 	     waiting_for_ondisk[repop->v].begin();
 	   i != waiting_for_ondisk[repop->v].end();
 	   ++i) {
-	osd->reply_op_error(i->first, 0, repop->v,
+	osd->reply_op_error(i->first, repop->r, repop->v,
 			    i->second);
       }
       waiting_for_ondisk.erase(repop->v);
@@ -8571,33 +8597,18 @@ void ReplicatedPG::eval_repop(RepGather *repop)
       assert(waiting_for_ack.begin()->first == repop->v);
       waiting_for_ack.erase(repop->v);
     }
-
   }
 
   // applied?
   if (repop->all_applied) {
+    if (repop->applies_with_commit) {
+      assert(repop->on_applied.empty());
+    }
     dout(10) << " applied: " << *repop << " " << dendl;
     for (auto p = repop->on_applied.begin();
 	 p != repop->on_applied.end();
 	 repop->on_applied.erase(p++)) {
       (*p)();//触发on_applied回调
-    }
-
-    // send dup acks, in order
-    if (waiting_for_ack.count(repop->v)) {
-      assert(waiting_for_ack.begin()->first == repop->v);
-      for (list<pair<OpRequestRef, version_t> >::iterator i =
-	     waiting_for_ack[repop->v].begin();
-	   i != waiting_for_ack[repop->v].end();
-	   ++i) {
-	MOSDOp *m = static_cast<MOSDOp*>(i->first->get_req());
-	MOSDOpReply *reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
-	reply->set_reply_versions(repop->v,
-				  i->second);
-	reply->add_flags(CEPH_OSD_FLAG_ACK);
-	osd->send_message_osd_client(reply, m->get_connection());
-      }
-      waiting_for_ack.erase(repop->v);
     }
   }
 
@@ -8609,22 +8620,28 @@ void ReplicatedPG::eval_repop(RepGather *repop)
     publish_stats_to_osd();//增加pg的统计信息（重要）
     calc_min_last_complete_ondisk();//计算最小的已完成version
 
-    for (auto p = repop->on_success.begin();
-	 p != repop->on_success.end();
-	 repop->on_success.erase(p++)) {
-      (*p)();//触发on_success回调
-    }
-
     dout(10) << " removing " << *repop << dendl;
     assert(!repop_queue.empty());
     dout(20) << "   q front is " << *repop_queue.front() << dendl; 
     if (repop_queue.front() != repop) {//异常情况{事务未按顺序提交}
-      dout(0) << " removing " << *repop << dendl;
-      dout(0) << "   q front is " << *repop_queue.front() << dendl; 
-      assert(repop_queue.front() == repop);//强挂
+      if (!repop->applies_with_commit) {
+	dout(0) << " removing " << *repop << dendl;
+	dout(0) << "   q front is " << *repop_queue.front() << dendl;
+	assert(repop_queue.front() == repop);//强挂
+      }
+    } else {
+      RepGather *to_remove = nullptr;
+      while (!repop_queue.empty() &&
+	     (to_remove = repop_queue.front())->rep_done) {
+	repop_queue.pop_front();
+	for (auto p = to_remove->on_success.begin();
+	     p != to_remove->on_success.end();
+	     to_remove->on_success.erase(p++)) {
+	  (*p)();//触发on_success回调
+	}
+	remove_repop(to_remove);
+      }
     }
-    repop_queue.pop_front();
-    remove_repop(repop);
   }
 }
 
@@ -8703,7 +8720,8 @@ ReplicatedPG::RepGather *ReplicatedPG::new_repop(
   else
     dout(10) << "new_repop rep_tid " << rep_tid << " (no op)" << dendl;
 
-  RepGather *repop = new RepGather(ctx, rep_tid, info.last_complete);
+  RepGather *repop = new RepGather(
+    ctx, rep_tid, info.last_complete, false);
 
   repop->start = ceph_clock_now(cct);
 
@@ -8712,10 +8730,13 @@ ReplicatedPG::RepGather *ReplicatedPG::new_repop(
 
   osd->logger->inc(l_osd_op_wip);
 
+  dout(10) << __func__ << ": " << *repop << dendl;
   return repop;
 }
 
 boost::intrusive_ptr<ReplicatedPG::RepGather> ReplicatedPG::new_repop(
+  eversion_t version,
+  int r,
   ObcLockManager &&manager,
   OpRequestRef &&op,
   boost::optional<std::function<void(void)> > &&on_complete)
@@ -8725,7 +8746,10 @@ boost::intrusive_ptr<ReplicatedPG::RepGather> ReplicatedPG::new_repop(
     std::move(op),
     std::move(on_complete),
     osd->get_tid(),
-    info.last_complete);
+    info.last_complete,
+    true,
+    r);
+  repop->v = version;
 
   repop->start = ceph_clock_now(cct);
 
@@ -8733,6 +8757,7 @@ boost::intrusive_ptr<ReplicatedPG::RepGather> ReplicatedPG::new_repop(
 
   osd->logger->inc(l_osd_op_wip);
 
+  dout(10) << __func__ << ": " << *repop << dendl;
   return boost::intrusive_ptr<RepGather>(repop);
 }
  
@@ -8779,20 +8804,24 @@ void ReplicatedPG::submit_log_entries(
   const mempool::osd::list<pg_log_entry_t> &entries,
   ObcLockManager &&manager,
   boost::optional<std::function<void(void)> > &&_on_complete,
-  OpRequestRef op)
+  OpRequestRef op,
+  int r)
 {
   dout(10) << __func__ << " " << entries << dendl;
   assert(is_primary());
 
+  eversion_t version;
   if (!entries.empty()) {
     assert(entries.rbegin()->version >= projected_last_update);
-    projected_last_update = entries.rbegin()->version;
+    version = projected_last_update = entries.rbegin()->version;
   }
 
   boost::intrusive_ptr<RepGather> repop;
   boost::optional<std::function<void(void)> > on_complete;
   if (get_osdmap()->test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
     repop = new_repop(
+      version,
+      r,
       std::move(manager),
       std::move(op),
       std::move(_on_complete));
@@ -8864,7 +8893,6 @@ void ReplicatedPG::submit_log_entries(
 	      assert(it2 != it->second.waiting_on.end());
 	      it->second.waiting_on.erase(it2);
 	      if (it->second.waiting_on.empty()) {
-		pg->repop_all_applied(it->second.repop.get());
 		pg->repop_all_committed(it->second.repop.get());
 		pg->log_entry_update_waiting_on.erase(it);
 	      }
@@ -8872,7 +8900,7 @@ void ReplicatedPG::submit_log_entries(
 	    pg->unlock();
 	  }
 	};
-	t.register_on_complete(
+	t.register_on_commit(
 	  new OnComplete{this, rep_tid, get_osdmap()->get_epoch()});
       } else {
 	if (on_complete) {
@@ -9878,12 +9906,19 @@ void ReplicatedPG::do_update_log_missing(OpRequestRef &op)
       unlock();
     });
 
-  /* Hack to work around the fact that ReplicatedBackend sends
-   * ack+commit if commit happens first */
-  if (pool.info.ec_pool()) {
-    t.register_on_complete(complete);
-  } else {
+  if (get_osdmap()->test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {
     t.register_on_commit(complete);
+  } else {
+    /* Hack to work around the fact that ReplicatedBackend sends
+     * ack+commit if commit happens first
+     *
+     * This behavior is no longer necessary, but we preserve it so old
+     * primaries can keep their repops in order */
+    if (pool.info.ec_pool()) {
+      t.register_on_complete(complete);
+    } else {
+      t.register_on_commit(complete);
+    }
   }
   t.register_on_applied(
     new C_OSD_OnApplied{this, get_osdmap()->get_epoch(), info.last_update});
@@ -9914,7 +9949,6 @@ void ReplicatedPG::do_update_log_missing_reply(OpRequestRef &op)
     }
 
     if (it->second.waiting_on.empty()) {
-      repop_all_applied(it->second.repop.get());
       repop_all_committed(it->second.repop.get());
       log_entry_update_waiting_on.erase(it);
     }
@@ -11709,7 +11743,6 @@ void ReplicatedPG::hit_set_remove_all()
     utime_t now = ceph_clock_now(cct);
     ctx->mtime = now;
     hit_set_trim(ctx, 0);
-    apply_ctx_scrub_stats(ctx.get());
     simple_opc_submit(std::move(ctx));
   }
 
@@ -11928,7 +11961,6 @@ void ReplicatedPG::hit_set_persist()
 
   hit_set_trim(ctx, max);
 
-  apply_ctx_scrub_stats(ctx.get());
   simple_opc_submit(std::move(ctx));
 }
 
@@ -12687,6 +12719,65 @@ void ReplicatedPG::agent_estimate_temp(const hobject_t& oid, int *temp)
   }
 }
 
+// Dup op detection
+
+bool ReplicatedPG::already_complete(eversion_t v)
+{
+  dout(20) << __func__ << ": " << v << dendl;
+  for (xlist<RepGather*>::iterator i = repop_queue.begin();
+       !i.end();
+       ++i) {
+    dout(20) << __func__ << ": " << **i << dendl;
+    // skip copy from temp object ops
+    if ((*i)->v == eversion_t()) {
+      dout(20) << __func__ << ": " << **i
+	       << " version is empty" << dendl;
+      continue;
+    }
+    if ((*i)->v > v) {
+      dout(20) << __func__ << ": " << **i
+	       << " (*i)->v past v" << dendl;
+      break;
+    }
+    if (!(*i)->all_committed) {
+      dout(20) << __func__ << ": " << **i
+	       << " not committed, returning false"
+	       << dendl;
+      return false;
+    }
+  }
+  dout(20) << __func__ << ": returning true" << dendl;
+  return true;
+}
+
+bool ReplicatedPG::already_ack(eversion_t v)
+{
+  dout(20) << __func__ << ": " << v << dendl;
+  for (xlist<RepGather*>::iterator i = repop_queue.begin();
+       !i.end();
+       ++i) {
+    // skip copy from temp object ops
+    if ((*i)->v == eversion_t()) {
+      dout(20) << __func__ << ": " << **i
+	       << " version is empty" << dendl;
+      continue;
+    }
+    if ((*i)->v > v) {
+      dout(20) << __func__ << ": " << **i
+	       << " (*i)->v past v" << dendl;
+      break;
+    }
+    if (!(*i)->all_applied) {
+      dout(20) << __func__ << ": " << **i
+	       << " not applied, returning false"
+	       << dendl;
+      return false;
+    }
+  }
+  dout(20) << __func__ << ": returning true" << dendl;
+  return true;
+}
+
 
 // ==========================================================================================
 // SCRUB
@@ -13103,7 +13194,7 @@ void ReplicatedPG::scrub_snapshot_metadata(
     ctx->mtime = utime_t();      // do not update mtime
     ctx->new_obs.oi.set_data_digest(p->second.first);
     ctx->new_obs.oi.set_omap_digest(p->second.second);
-    finish_ctx(ctx.get(), pg_log_entry_t::MODIFY, true, true);
+    finish_ctx(ctx.get(), pg_log_entry_t::MODIFY);
 
     ctx->register_on_success(
       [this]() {
@@ -13130,13 +13221,6 @@ void ReplicatedPG::_scrub_finish()
   bool repair = state_test(PG_STATE_REPAIR);
   bool deep_scrub = state_test(PG_STATE_DEEP_SCRUB);
   const char *mode = (repair ? "repair": (deep_scrub ? "deep-scrub" : "scrub"));
-
-  if (pool.info.is_hacky_ecoverwrites()) {
-    dout(10) << __func__
-	     << ": skipping stat comparisons since hacky_overwrites are enabled"
-	     << dendl;
-    return;
-  }
 
   if (info.stats.stats_invalid) {
     info.stats.stats = scrub_cstat;
@@ -13356,7 +13440,6 @@ boost::statechart::result ReplicatedPG::AwaitAsyncWork::react(const DoSnapWork&)
 	  pg->snap_trimmer_machine.process_event(RepopsComplete());
       });
 
-    pg->apply_ctx_scrub_stats(ctx.get());
     pg->simple_opc_submit(std::move(ctx));
   }
 

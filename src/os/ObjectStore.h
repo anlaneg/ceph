@@ -700,6 +700,7 @@ public:
         op->cid = cm[op->cid];
         op->oid = om[op->oid];
         op->dest_oid = om[op->dest_oid];
+	break;
 
       case OP_SPLIT_COLLECTION2:
         assert(op->cid < cm.size());
@@ -1167,7 +1168,8 @@ public:
      * The destination named object may already exist, in
      * which case its previous contents are discarded.
      */
-    void clone(const coll_t& cid, const ghobject_t& oid, ghobject_t noid) {
+    void clone(const coll_t& cid, const ghobject_t& oid,
+	       const ghobject_t& noid) {
       Op* _op = _get_next_op();
       _op->op = OP_CLONE;
       _op->cid = _get_coll_id(cid);
@@ -1187,7 +1189,8 @@ public:
      * The source range *must* overlap with the source object data. If it does
      * not the result is undefined.
      */
-    void clone_range(const coll_t& cid, const ghobject_t& oid, ghobject_t noid,
+    void clone_range(const coll_t& cid, const ghobject_t& oid,
+		     const ghobject_t& noid,
 		     uint64_t srcoff, uint64_t srclen, uint64_t dstoff) {
       Op* _op = _get_next_op();
       _op->op = OP_CLONERANGE2;
@@ -1504,6 +1507,8 @@ public:
   virtual int upgrade() {
     return 0;
   }
+
+  virtual void get_db_statistics(Formatter *f) { }
 
   virtual string get_type() = 0;
 
@@ -1841,11 +1846,12 @@ public:
    * @param next [out] next item sorts >= this value
    * @return zero on success, or negative error
    */
-  virtual int collection_list(const coll_t& c, ghobject_t start, ghobject_t end,
+  virtual int collection_list(const coll_t& c,
+			      const ghobject_t& start, const ghobject_t& end,
 			      bool sort_bitwise, int max,
 			      vector<ghobject_t> *ls, ghobject_t *next) = 0;
   virtual int collection_list(CollectionHandle &c,
-			      ghobject_t start, ghobject_t end,
+			      const ghobject_t& start, const ghobject_t& end,
 			      bool sort_bitwise, int max,
 			      vector<ghobject_t> *ls, ghobject_t *next) {
     return collection_list(c->get_cid(), start, end, sort_bitwise, max, ls, next);

@@ -100,7 +100,7 @@ void OSDMonitor::_get_pending_crush(CrushWrapper& newcrush)
   if (pending_inc.crush.length())
     bl = pending_inc.crush;
   else
-    osdmap.crush->encode(bl);
+    osdmap.crush->encode(bl, CEPH_FEATURES_SUPPORTED_DEFAULT);
 
   bufferlist::iterator p = bl.begin();
   newcrush.decode(p);
@@ -3009,21 +3009,25 @@ void OSDMonitor::get_health(list<pair<health_status_t,string> >& summary,
     }
 
     // warn about flags
-    if (osdmap.test_flag(CEPH_OSDMAP_FULL |
-			 CEPH_OSDMAP_PAUSERD |
-			 CEPH_OSDMAP_PAUSEWR |
-			 CEPH_OSDMAP_NOUP |
-			 CEPH_OSDMAP_NODOWN |
-			 CEPH_OSDMAP_NOIN |
-			 CEPH_OSDMAP_NOOUT |
-			 CEPH_OSDMAP_NOBACKFILL |
-			 CEPH_OSDMAP_NOREBALANCE |
-			 CEPH_OSDMAP_NORECOVER |
-			 CEPH_OSDMAP_NOSCRUB |
-			 CEPH_OSDMAP_NODEEP_SCRUB |
-			 CEPH_OSDMAP_NOTIERAGENT)) {
+    uint64_t warn_flags =
+      CEPH_OSDMAP_FULL |
+      CEPH_OSDMAP_PAUSERD |
+      CEPH_OSDMAP_PAUSEWR |
+      CEPH_OSDMAP_PAUSEREC |
+      CEPH_OSDMAP_NOUP |
+      CEPH_OSDMAP_NODOWN |
+      CEPH_OSDMAP_NOIN |
+      CEPH_OSDMAP_NOOUT |
+      CEPH_OSDMAP_NOBACKFILL |
+      CEPH_OSDMAP_NORECOVER |
+      CEPH_OSDMAP_NOSCRUB |
+      CEPH_OSDMAP_NODEEP_SCRUB |
+      CEPH_OSDMAP_NOTIERAGENT |
+      CEPH_OSDMAP_NOREBALANCE;
+    if (osdmap.test_flag(warn_flags)) {
       ostringstream ss;
-      ss << osdmap.get_flag_string() << " flag(s) set";
+      ss << osdmap.get_flag_string(osdmap.get_flags() & warn_flags)
+	 << " flag(s) set";
       summary.push_back(make_pair(HEALTH_WARN, ss.str()));
       if (detail)
 	detail->push_back(make_pair(HEALTH_WARN, ss.str()));
@@ -3332,7 +3336,7 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
       rdata.append(osdmap_bl);
       ss << "got osdmap epoch " << p->get_epoch();
     } else if (prefix == "osd getcrushmap") {
-      p->crush->encode(rdata);
+      p->crush->encode(rdata, mon->get_quorum_con_features());
       ss << "got crush map from osdmap epoch " << p->get_epoch();
     }
     if (p != &osdmap)
@@ -4524,7 +4528,7 @@ int OSDMonitor::crush_rename_bucket(const string& srcname,
     return ret;
 
   pending_inc.crush.clear();
-  newcrush.encode(pending_inc.crush);
+  newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
   *ss << "renamed bucket " << srcname << " into " << dstname;	
   return 0;
 }
@@ -4601,7 +4605,7 @@ int OSDMonitor::crush_ruleset_create_erasure(const string &name,
       return err;
     *ruleset = err;
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     return 0;
   }
 }
@@ -4677,7 +4681,7 @@ bool OSDMonitor::validate_crush_against_features(const CrushWrapper *newcrush,
                                                  stringstream& ss)
 {
   OSDMap::Incremental new_pending = pending_inc;
-  ::encode(*newcrush, new_pending.crush);
+  ::encode(*newcrush, new_pending.crush, mon->get_quorum_con_features());
   OSDMap newmap;
   newmap.deepish_copy_from(osdmap);
   newmap.apply_incremental(new_pending);
@@ -5779,7 +5783,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     }
 
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "added bucket " << name << " type " << typestr
        << " to crush map";
     goto update;
@@ -5858,7 +5862,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     }
 
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << action << " item id " << osdid << " name '" << name << "' weight "
       << weight << " at location " << loc << " to crush map";
     getline(ss, rs);
@@ -5903,7 +5907,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       }
       if (err > 0) {
 	pending_inc.crush.clear();
-	newcrush.encode(pending_inc.crush);
+	newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
 	ss << "create-or-move updating item name '" << name << "' weight " << weight
 	   << " at location " << loc << " to crush map";
 	getline(ss, rs);
@@ -5940,7 +5944,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 	if (err >= 0) {
 	  ss << "moved item id " << id << " name '" << name << "' to location " << loc << " in crush map";
 	  pending_inc.crush.clear();
-	  newcrush.encode(pending_inc.crush);
+	  newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
 	  getline(ss, rs);
 	  wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
 						   get_last_committed() + 1));
@@ -5994,7 +5998,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 	  ss << "linked item id " << id << " name '" << name
              << "' to location " << loc << " in crush map";
 	  pending_inc.crush.clear();
-	  newcrush.encode(pending_inc.crush);
+	  newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
 	} else {
 	  ss << "cannot link item id " << id << " name '" << name
              << "' to location " << loc;
@@ -6056,7 +6060,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       }
       if (err == 0) {
 	pending_inc.crush.clear();
-	newcrush.encode(pending_inc.crush);
+	newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
 	ss << "removed item id " << id << " name '" << name << "' from crush map";
 	getline(ss, rs);
 	wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -6072,7 +6076,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
 
     newcrush.reweight(g_ceph_context);
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "reweighted crush hierarchy";
     getline(ss, rs);
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -6109,7 +6113,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     if (err < 0)
       goto reply;
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "reweighted item id " << id << " name '" << name << "' to " << w
        << " in crush map";
     getline(ss, rs);
@@ -6147,7 +6151,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     if (err < 0)
       goto reply;
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "reweighted subtree id " << id << " name '" << name << "' to " << w
        << " in crush map";
     getline(ss, rs);
@@ -6187,7 +6191,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     }
 
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "adjusted tunables profile to " << profile;
     getline(ss, rs);
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -6227,7 +6231,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
     }
 
     pending_inc.crush.clear();
-    newcrush.encode(pending_inc.crush);
+    newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     ss << "adjusted tunable " << tunable << " to " << value;
     getline(ss, rs);
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -6268,7 +6272,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       }
 
       pending_inc.crush.clear();
-      newcrush.encode(pending_inc.crush);
+      newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     }
     getline(ss, rs);
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -6480,7 +6484,7 @@ bool OSDMonitor::prepare_command_impl(MonOpRequestRef op,
       }
 
       pending_inc.crush.clear();
-      newcrush.encode(pending_inc.crush);
+      newcrush.encode(pending_inc.crush, mon->get_quorum_con_features());
     }
     getline(ss, rs);
     wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,

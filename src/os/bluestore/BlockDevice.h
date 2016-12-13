@@ -73,7 +73,7 @@ class BlockDevice {
   std::atomic_int ioc_reap_count = {0};
 
 protected:
-  bool rotational;//是否可转动设备（普通硬盘）,如果是ssd，则此值为false
+  bool rotational = true;//是否可转动设备（普通硬盘）,如果是ssd，则此值为false
 
 public:
   BlockDevice() = default;

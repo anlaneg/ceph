@@ -4256,7 +4256,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被�
 	   * left end of the range if we are a tier because they may legitimately
 	   * not exist (see _scrub).
 	   */
-	  unsigned min = MAX(3, cct->_conf->osd_scrub_chunk_min);
+	  int min = MAX(3, cct->_conf->osd_scrub_chunk_min);
           hobject_t start = scrubber.start;
 	  hobject_t candidate_end;
 	  vector<hobject_t> objects;
