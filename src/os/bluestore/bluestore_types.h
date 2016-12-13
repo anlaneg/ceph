@@ -507,16 +507,17 @@ struct bluestore_blob_t {
     }
   }
 
+  //用f函数访问x_off,x_len之间的数据，由于数据可能分段存储，故f可能会调用多次
   int map(uint64_t x_off, uint64_t x_len,
 	   std::function<int(uint64_t,uint64_t)> f) const {
     auto p = extents.begin();
     assert(p != extents.end());
-    while (x_off >= p->length) {
+    while (x_off >= p->length) {//找到x_off对应的p
       x_off -= p->length;
       ++p;
       assert(p != extents.end());
     }
-    while (x_len > 0) {
+    while (x_len > 0) {//从x_off开始一直向前走x_len长度，将这段数据，按每个extents进行遍历，访问函数由f定义
       assert(p != extents.end());
       uint64_t l = MIN(p->length - x_off, x_len);
       int r = f(p->offset + x_off, l);
@@ -714,10 +715,10 @@ struct bluestore_wal_op_t {
   typedef enum {
     OP_WRITE = 1,
   } type_t;
-  __u8 op = 0;
+  __u8 op = 0;//操作
 
-  vector<bluestore_pextent_t> extents;
-  bufferlist data;
+  vector<bluestore_pextent_t> extents;//写的范围
+  bufferlist data;//要写入的数据
 
   DENC(bluestore_wal_op_t, v, p) {
     DENC_START(1, 1, p);
@@ -734,8 +735,8 @@ WRITE_CLASS_DENC(bluestore_wal_op_t)
 
 /// writeahead-logged transaction
 struct bluestore_wal_transaction_t {
-  uint64_t seq = 0;
-  list<bluestore_wal_op_t> ops;
+  uint64_t seq = 0;//wal事务编号
+  list<bluestore_wal_op_t> ops;//记录事务需要的操作
   interval_set<uint64_t> released;  ///< allocations to release after wal
 
   bluestore_wal_transaction_t() : seq(0) {}

@@ -6310,9 +6310,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	  dout(20) << __func__ << " DEBUG randomly forcing submit via kv thread"
 		   << dendl;
 	} else {
-	  _txc_finalize_kv(txc, txc->t);//完成kv书写操作
+	  _txc_finalize_kv(txc, txc->t);//完成磁盘空间的申请释放，更新磁盘的统计信息
 	  txc->state = TransContext::STATE_KV_SUBMITTED;
-	  int r = db->submit_transaction(txc->t);//提交kv事务
+	  int r = db->submit_transaction(txc->t);//提交kv事务(可以更解为写操作）
 	  assert(r == 0);
 	}
       }
@@ -6336,8 +6336,8 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       txc->log_state_latency(logger, l_bluestore_state_kv_done_lat);
       if (txc->wal_txn) {
 	txc->state = TransContext::STATE_WAL_QUEUED;
-	if (sync_wal_apply) {
-	  _wal_apply(txc);
+	if (sync_wal_apply) {//默认为true
+	  _wal_apply(txc);//通过aio写wal(aio未提交kernel)，将状态变更为state_wal_applying,并主动调用本函数
 	} else {
 	  wal_wq.queue(txc);
 	}
@@ -6346,28 +6346,29 @@ void BlueStore::_txc_state_proc(TransContext *txc)
       txc->state = TransContext::STATE_FINISHING;
       break;
 
+    //由_wal_apply进入
     case TransContext::STATE_WAL_APPLYING:
       txc->log_state_latency(logger, l_bluestore_state_wal_applying_lat);
       if (txc->ioc.has_pending_aios()) {
 	txc->state = TransContext::STATE_WAL_AIO_WAIT;
-	_txc_aio_submit(txc);
+	_txc_aio_submit(txc);//将aio提交给kernel处理
 	return;
       }
       // ** fall-thru **
 
-    case TransContext::STATE_WAL_AIO_WAIT:
+    case TransContext::STATE_WAL_AIO_WAIT://由aio　同步线程通过回调进入
       txc->log_state_latency(logger, l_bluestore_state_wal_aio_wait_lat);
       _wal_finish(txc);
       return;
 
     case TransContext::STATE_WAL_CLEANUP:
       txc->log_state_latency(logger, l_bluestore_state_wal_cleanup_lat);
-      txc->state = TransContext::STATE_FINISHING;
+      txc->state = TransContext::STATE_FINISHING;//暂态
       // ** fall-thru **
 
     case TransContext::STATE_FINISHING:
       txc->log_state_latency(logger, l_bluestore_state_finishing_lat);
-      _txc_finish(txc);
+      _txc_finish(txc);//事务处理完成
       return;
 
     default:
@@ -6490,7 +6491,7 @@ void BlueStore::_txc_write_nodes(TransContext *txc, KeyValueDB::Transaction t)
   }
 }
 
-void BlueStore::_txc_finish_kv(TransContext *txc)
+void BlueStore::_txc_finish_kv(TransContext *txc)//同时执行oncommit,onreadable回调
 {
   dout(20) << __func__ << " txc " << txc << dendl;
 
@@ -6499,7 +6500,7 @@ void BlueStore::_txc_finish_kv(TransContext *txc)
     txc->onreadable_sync->complete(0);
     txc->onreadable_sync = NULL;
   }
-  unsigned n = txc->osr->parent->shard_hint.hash_to_shard(m_finisher_num);
+  unsigned n = txc->osr->parent->shard_hint.hash_to_shard(m_finisher_num);//确定要放在哪个finish上
   if (txc->oncommit) {
     logger->tinc(l_bluestore_commit_lat, ceph_clock_now(g_ceph_context) - txc->start);
     finishers[n]->queue(txc->oncommit);
@@ -6695,10 +6696,10 @@ void BlueStore::_kv_sync_thread()//kv数据同步
       dout(30) << __func__ << " submitting txc " << kv_submitting << dendl;
       dout(30) << __func__ << " wal_cleaning txc " << wal_cleaning << dendl;
 
-      alloc->commit_start();
+      alloc->commit_start();//准备释放alloc中数据
 
       // flush/barrier on block device
-      bdev->flush();
+      bdev->flush();//数据盘同步
 
       // we will use one final transaction to force a sync
       KeyValueDB::Transaction synct = db->get_transaction();
@@ -6768,7 +6769,7 @@ void BlueStore::_kv_sync_thread()//kv数据同步
 	// cleanup the wal
 	string key;
 	get_wal_key(wt.seq, &key);
-	synct->rm_single_key(PREFIX_WAL, key);
+	synct->rm_single_key(PREFIX_WAL, key);//移除旧的wal中的seq
       }
 
       // submit synct synchronously (block and wait for it to commit)
@@ -6801,7 +6802,7 @@ void BlueStore::_kv_sync_thread()//kv数据同步
 	wal_cleaning.pop_front();
       }
 
-      alloc->commit_finish();
+      alloc->commit_finish();//alloc中数据释放
 
       // this is as good a place as any ...
       _reap_collections();
@@ -6834,7 +6835,7 @@ int BlueStore::_wal_apply(TransContext *txc)
   txc->log_state_latency(logger, l_bluestore_state_wal_queued_lat);
   txc->state = TransContext::STATE_WAL_APPLYING;
 
-  if (g_conf->bluestore_inject_wal_apply_delay) {
+  if (g_conf->bluestore_inject_wal_apply_delay) {//调试用代码
     dout(20) << __func__ << " bluestore_inject_wal_apply_delay "
 	     << g_conf->bluestore_inject_wal_apply_delay
 	     << dendl;
@@ -6845,10 +6846,10 @@ int BlueStore::_wal_apply(TransContext *txc)
   }
 
   assert(txc->ioc.pending_aios.empty());
-  for (list<bluestore_wal_op_t>::iterator p = wt.ops.begin();
+  for (list<bluestore_wal_op_t>::iterator p = wt.ops.begin();//针对wal事务中的每一个操作
        p != wt.ops.end();
        ++p) {
-    int r = _do_wal_op(txc, *p);//在这里写
+    int r = _do_wal_op(txc, *p);//将这个操作交由do_wal_op处理
     assert(r == 0);
   }
 
@@ -6874,6 +6875,7 @@ int BlueStore::_wal_finish(TransContext *txc)
   return 0;
 }
 
+//调用aio直接写入(未提交）
 int BlueStore::_do_wal_op(TransContext *txc, bluestore_wal_op_t& wo)
 {
   switch (wo.op) {
@@ -6986,7 +6988,7 @@ int BlueStore::queue_transactions(
   // journal wal items
   if (txc->wal_txn) {
     // move releases to after wal
-    txc->wal_txn->released.swap(txc->released);
+    txc->wal_txn->released.swap(txc->released);//将txc->released中的数据交给wal_txn提交
     assert(txc->released.empty());
 
     txc->wal_txn->seq = ++wal_seq;
@@ -6994,7 +6996,7 @@ int BlueStore::queue_transactions(
     ::encode(*txc->wal_txn, bl);
     string key;
     get_wal_key(txc->wal_txn->seq, &key);
-    txc->t->set(PREFIX_WAL, key, bl);
+    txc->t->set(PREFIX_WAL, key, bl);//写入wal日志
   }
 
   if (handle)
@@ -7541,12 +7543,12 @@ void BlueStore::_do_write_small(
   blp.copy(length, bl);//将blp内length长度copy到bl内
 
   // look for an existing mutable blob we can use
-  //查找offset所在的ep
+  //查找offset所在的lextent
   auto ep = o->extent_map.seek_lextent(offset);
   if (ep != o->extent_map.extent_map.begin()) {
     --ep;
     if (ep->blob_end() <= offset) {
-      ++ep;//继续向后走
+      ++ep;
     }
   }
   BlobRef b;
@@ -7570,22 +7572,23 @@ void BlueStore::_do_write_small(
     dout(20) << __func__ << " considering " << *b
 	     << " bstart 0x" << std::hex << bstart << std::dec << dendl;
 
-    //由于担心写一个对象时采用乱序写，故当不对齐时，如果这一段还没有写过，则直接填充zero
+    //当写不对齐时，需要将放大后的位置进行填充（填充有两种办法，之前没有写，填充０，之前有写过，读出来再填充）
+    //这里我们先检查头部需要填充多少字节，尾部需要填充多少字节，至于是填充０还是读后写，后面再考虑
     // can we pad our head/tail out with zeros?
     uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
     uint64_t head_pad = P2PHASE(offset, chunk_size);//offset前移数量（即head填充）
     if (head_pad &&
 	o->extent_map.has_any_lextents(offset - head_pad, chunk_size)) {
-      head_pad = 0;//已申请不必再填充(说明已写）
+      head_pad = 0;//已申请不必再填充(说明已写，这种需要先读出来再写）
     }
 
     uint64_t tail_pad = P2NPHASE(end, chunk_size);//尾部要后移数量（即tail填充）
     if (tail_pad && o->extent_map.has_any_lextents(end, tail_pad)) {
-      tail_pad = 0;//尾部已存在，不必再填充，申请
+      tail_pad = 0;//尾部已存在，不必再填充（需要先读出来再写）
     }
 
     bufferlist padded = bl;
-    if (head_pad) {
+    if (head_pad) {//这种是需要填充０的
       bufferlist z;
       z.append_zero(head_pad);//填充0
       z.claim_append(padded);//并将其填充在bl前面
@@ -7603,8 +7606,8 @@ void BlueStore::_do_write_small(
     // direct write into unused blocks of an existing mutable blob?
     uint64_t b_off = offset - head_pad - bstart;//左侧左移
     uint64_t b_len = length + head_pad + tail_pad;//右侧右移
-    if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&
-	b->get_blob().get_ondisk_length() >= b_off + b_len &&
+    if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&//对齐
+	b->get_blob().get_ondisk_length() >= b_off + b_len &&//包启了这段范围
 	b->get_blob().is_unused(b_off, b_len) && //这段没有使用
 	b->get_blob().is_allocated(b_off, b_len)) {//不需要放大写，且不需要分配新的段。这一段，恰没有人写过。写到没有使用的段
       dout(20) << __func__ << "  write to unused 0x" << std::hex
@@ -7620,7 +7623,7 @@ void BlueStore::_do_write_small(
 	[&](uint64_t offset, uint64_t length, bufferlist& t) {
 	  bdev->aio_write(offset, t,
 			  &txc->ioc, wctx->buffered);
-	});//对写入的这一段，调用aio进行写。为什么立即写入？原因可能是为了对外和其它情况提供一致的写。
+	});//对写入的这一段，调用aio进行写。为什么立即写入？
       b->dirty_blob().calc_csum(b_off, padded);
       dout(20) << __func__ << "  lex old " << *ep << dendl;
       Extent *le = o->extent_map.set_lextent(offset, b_off + head_pad, length,
@@ -7638,8 +7641,8 @@ void BlueStore::_do_write_small(
     uint64_t head_read = P2PHASE(b_off, chunk_size);
     uint64_t tail_read = P2NPHASE(b_off + b_len, chunk_size);
     if ((head_read || tail_read) &&
-	(b->get_blob().get_ondisk_length() >= b_off + b_len + tail_read) &&
-	head_read + tail_read < min_alloc_size) {
+	(b->get_blob().get_ondisk_length() >= b_off + b_len + tail_read) &&//包含了这段范围
+	head_read + tail_read < min_alloc_size) {//head_read或tail_read不为0,说明需要先读出来
       dout(20) << __func__ << "  reading head 0x" << std::hex << head_read
 	       << " and tail 0x" << tail_read << std::dec << dendl;
       if (head_read) {//需要在head写前进行读操作
@@ -7676,11 +7679,11 @@ void BlueStore::_do_write_small(
     }
 
     // chunk-aligned wal overwrite?
-    if (b->get_blob().get_ondisk_length() >= b_off + b_len &&
-	b_off % chunk_size == 0 &&
-	b_len % chunk_size == 0 &&
+    if (b->get_blob().get_ondisk_length() >= b_off + b_len &&//当前写范围在文件已有数据范围内
+	b_off % chunk_size == 0 &&//对齐
+	b_len % chunk_size == 0 &&//对齐
 	b->get_blob().is_allocated(b_off, b_len)) {//需要放大读写时处理（不需要申请空间，是overwrite）
-      bluestore_wal_op_t *op = _get_wal_op(txc, o);
+      bluestore_wal_op_t *op = _get_wal_op(txc, o);//仅overwrite将其操作加入给wal处理
       op->op = bluestore_wal_op_t::OP_WRITE;
       _buffer_cache_write(txc, b, b_off, padded,
 			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);//写入buffer
@@ -7688,14 +7691,14 @@ void BlueStore::_do_write_small(
       int r = b->get_blob().map(
 	b_off, b_len,
 	[&](uint64_t offset, uint64_t length) {
-	  op->extents.emplace_back(bluestore_pextent_t(offset, length));
+	  op->extents.emplace_back(bluestore_pextent_t(offset, length));//记录wal操作操作的范围段
           return 0;
 	});//将此类型的写直接分配一个bluestore_wal_op_t操作，由其来触发写
       assert(r == 0);
       if (b->get_blob().csum_type) {
 	b->dirty_blob().calc_csum(b_off, padded);
       }
-      op->data.claim(padded);
+      op->data.claim(padded);//记录wal操作需要写的数据
       dout(20) << __func__ << "  wal write 0x" << std::hex << b_off << "~"
 	       << b_len << std::dec << " of mutable " << *b
 	       << " at " << op->extents << dendl;

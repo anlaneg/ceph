@@ -1545,7 +1545,7 @@ private:
   bool kv_stop;
   deque<TransContext*> kv_queue;             ///< ready, already submitted
   deque<TransContext*> kv_queue_unsubmitted; ///< ready, need submit by kv thread
-  deque<TransContext*> kv_committing;        ///< currently syncing
+  deque<TransContext*> kv_committing;        ///< currently syncing　//kv_queue中的数据会更新到kv_committing中在_kv_sync_thread函数中
   deque<TransContext*> wal_cleanup_queue;    ///< wal done, ready for cleanup
 
   PerfCounters *logger;
