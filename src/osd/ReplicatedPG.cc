@@ -1579,7 +1579,7 @@ ReplicatedPG::ReplicatedPG(OSDService *o, OSDMapRef curmap,
   PG(o, curmap, _pool, p),
   pgbackend(
     PGBackend::build_pg_backend(
-      _pool.info, curmap, this, coll_t(p), ch, o->store, cct)),
+      _pool.info, curmap, this, coll_t(p), ch, o->store, cct)),//这里构造出后端后创建pgbackend
   object_contexts(o->cct, g_conf->osd_pg_object_context_cache_count),
   snapset_contexts_lock("ReplicatedPG::snapset_contexts_lock"),
   backfills_in_flight(hobject_t::Comparator(true)),
@@ -10175,7 +10175,7 @@ void ReplicatedPG::on_removal(ObjectStore::Transaction *t)
 
   write_if_dirty(*t);
 
-  on_shutdown();
+  on_shutdown();//停止此pg上的操作
 }
 
 void ReplicatedPG::on_shutdown()

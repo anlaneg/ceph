@@ -617,7 +617,7 @@ void ReplicatedBackend::submit_transaction(
   vector<ObjectStore::Transaction> tls;
   tls.push_back(std::move(op_t));
 
-  parent->queue_transactions(tls, op.op);//最终op_t的三个回调会被调起.
+  parent->queue_transactions(tls, op.op);//事务入队（primary处理，三个回调会被调起）
 }
 
 //on_applied回调处理
@@ -1188,7 +1188,7 @@ void ReplicatedBackend::sub_op_modify(OpRequestRef op)
   tls.reserve(2);
   tls.push_back(std::move(rm->localt));
   tls.push_back(std::move(rm->opt));
-  parent->queue_transactions(tls, op);//事务入队(准备写日志了)
+  parent->queue_transactions(tls, op);//事务入队（幅本处理）
   // op is cleaned up by oncommit/onapply when both are executed
 }
 

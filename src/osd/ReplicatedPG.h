@@ -282,12 +282,15 @@ public:
   void send_message(int to_osd, Message *m) override {
     osd->send_message_osd_cluster(to_osd, m, get_osdmap()->get_epoch());
   }
+  //第二类事务入队接口，传入单transaction
   void queue_transaction(ObjectStore::Transaction&& t,
 			 OpRequestRef op) override {
     osd->store->queue_transaction(osr.get(), std::move(t), 0, 0, 0, op);
   }
+  //在replicatedpg这一层实现入队
   void queue_transactions(vector<ObjectStore::Transaction>& tls,
 			  OpRequestRef op) override {
+    //不添加回调函数，回调函数在tls中已给出
     osd->store->queue_transactions(osr.get(), tls, 0, 0, 0, op, NULL);
   }
   epoch_t get_epoch() const override {

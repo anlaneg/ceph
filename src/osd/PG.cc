@@ -2476,7 +2476,7 @@ void PG::purge_strays()
       to_remove.push_back(spg_t(info.pgid.pgid, p->shard));
       MOSDPGRemove *m = new MOSDPGRemove(
 	get_osdmap()->get_epoch(),
-	to_remove);
+	to_remove);//发送pg删除操作
       osd->send_message_osd_cluster(p->osd, m, get_osdmap()->get_epoch());
     } else {
       dout(10) << "not sending PGRemove to down osd." << *p << dendl;

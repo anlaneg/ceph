@@ -200,7 +200,7 @@ protected:
   OSDriver osdriver;
   SnapMapper snap_mapper;
 
-  virtual PGBackend *get_pgbackend() = 0;
+  virtual PGBackend *get_pgbackend() = 0;//返回pg对应的后端，由于pg被replicatedpg继承，故此函数直接返回replicatedpg的成员
 public:
   std::string gen_prefix() const;
   CephContext *get_cct() const { return cct; }
@@ -885,7 +885,7 @@ protected:
   pg_stat_t pg_stats_publish;
 
   // for ordering writes
-  ceph::shared_ptr<ObjectStore::Sequencer> osr;
+  ceph::shared_ptr<ObjectStore::Sequencer> osr;//事务处理需要序列器
 
   void _update_calc_stats();
   void _update_blocked_by();

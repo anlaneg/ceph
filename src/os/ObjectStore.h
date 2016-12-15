@@ -1443,6 +1443,7 @@ public:
   }
   unsigned apply_transactions(Sequencer *osr, vector<Transaction>& tls, Context *ondisk=0);
 
+  //object中的这一组事务入队函数，实际上最终仅会调用一个接口（就是那个纯虚接口）
   int queue_transaction(Sequencer *osr, Transaction&& t, Context *onreadable, Context *ondisk=0,
 				Context *onreadable_sync=0,
 				TrackedOpRef op = TrackedOpRef(),
@@ -1470,7 +1471,7 @@ public:
     TrackedOpRef op = TrackedOpRef(),
     ThreadPool::TPHandle *handle = NULL) = 0;
 
-
+  //由各store具体去实现，一次性支持一组事务
   int queue_transactions(
     Sequencer *osr,
     vector<Transaction>& tls,
@@ -1480,6 +1481,7 @@ public:
     Context *oncomplete,
     TrackedOpRef op);
 
+  //单事务入队
   int queue_transaction(
     Sequencer *osr,
     Transaction&& t,
@@ -1489,6 +1491,7 @@ public:
     Context *oncomplete,
     TrackedOpRef op) {
 
+    //将单个事务变更为事务数组
     vector<Transaction> tls;
     tls.push_back(std::move(t));
     return queue_transactions(

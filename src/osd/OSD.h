@@ -2035,7 +2035,7 @@ private:
 protected:
   // -- placement groups --
   RWLock pg_map_lock; // this lock orders *above* individual PG _locks
-  //记录pg
+  //记录pg（osd中所有创建的pg记录在这张表里）
   ceph::unordered_map<spg_t, PG*> pg_map; // protected by pg_map lock
 
   map<spg_t, list<PG::CephPeeringEvtRef> > peering_wait_for_split;

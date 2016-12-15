@@ -126,6 +126,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
        ObjectStore::Transaction&& t,
        OpRequestRef op = OpRequestRef()
        ) = 0;
+     //pg后端实现的事务入队处理（接口）
      virtual void queue_transactions(
        vector<ObjectStore::Transaction>& tls,
        OpRequestRef op = OpRequestRef()
@@ -257,6 +258,9 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual ~Listener() {}
    };
+   //针对pg的后端而言，这里的parent指的是pg(这里如果用fontend的话就好理解了）
+   //目前实现的实际类型为ReplicatedPG(这个封装明显不好，应对应PG才对，PG应吸收一部分ReplicatedPG的功能
+   //PGBackend吸收一部分ReplicatedPG的功能，最终将ReplicatedPG删除掉
    Listener *parent;//is ReplicatedPG
    Listener *get_parent() const { return parent; }
    PGBackend(Listener *l, ObjectStore *store, coll_t coll,

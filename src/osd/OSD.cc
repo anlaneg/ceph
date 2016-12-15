@@ -3794,7 +3794,7 @@ void OSD::handle_pg_peering_evt(
  * Fill in the passed history so you know same_interval_since, same_up_since,
  * and same_primary_since.
  */
-//创建pg的时间是from,而此时可能epoch已经过了一些变化,故需要回退查看是否
+//检查自from到当前osdmap最新版本是否
 //有发生up,acting的变化,如果有变化,从最后一个变化后,填充same_interval_since,same_up_since
 //same_primary_since字段
 bool OSD::project_pg_history(spg_t pgid, pg_history_t& h, epoch_t from,
@@ -4786,7 +4786,7 @@ void OSD::RemoveWQ::_process(
     generic_derr << "osd_inject_failure_on_pg_removal" << dendl;
     exit(1);
   }
-  t.remove_collection(coll);
+  t.remove_collection(coll);//指明需要删除目录
 
   // We need the sequencer to stick around until the op is complete
   store->queue_transaction(
@@ -6298,7 +6298,7 @@ void OSD::dispatch_op(OpRequestRef op)
     handle_pg_log(op);
     break;
   case MSG_OSD_PG_REMOVE:
-    handle_pg_remove(op);
+    handle_pg_remove(op);//pg移除处理
     break;
   case MSG_OSD_PG_INFO:
     handle_pg_info(op);
@@ -8367,7 +8367,7 @@ void OSD::handle_pg_query(OpRequestRef op)
   do_notifies(notify_list, osdmap);
 }
 
-
+//pg移除操作
 void OSD::handle_pg_remove(OpRequestRef op)
 {
   MOSDPGRemove *m = (MOSDPGRemove *)op->get_req();
@@ -8385,6 +8385,7 @@ void OSD::handle_pg_remove(OpRequestRef op)
 
   op->mark_started();
 
+  //针对参数中要求的每个pg
   for (vector<spg_t>::iterator it = m->pg_list.begin();
        it != m->pg_list.end();
        ++it) {
@@ -8395,7 +8396,7 @@ void OSD::handle_pg_remove(OpRequestRef op)
     }
 
     RWLock::WLocker l(pg_map_lock);
-    if (pg_map.count(pgid) == 0) {
+    if (pg_map.count(pgid) == 0) {//不存在此pg,无法操作
       dout(10) << " don't have pg " << pgid << dendl;
       continue;
     }
@@ -8404,16 +8405,18 @@ void OSD::handle_pg_remove(OpRequestRef op)
     pg_history_t history = pg->info.history;
     int up_primary, acting_primary;
     vector<int> up, acting;
+    //利用osdmap中缓存的osdmap确定up,acting集合
     osdmap->pg_to_up_acting_osds(
       pgid.pgid, &up, &up_primary, &acting, &acting_primary);
+    //检查自pg当前拥有的osdmap版本开始是否有变化
     bool valid_history = project_pg_history(
       pg->info.pgid, history, pg->get_osdmap()->get_epoch(),
       up, up_primary, acting, acting_primary);
     if (valid_history &&
-        history.same_interval_since <= m->get_epoch()) {
-      assert(pg->get_primary().osd == m->get_source().num());
+        history.same_interval_since <= m->get_epoch()) {//所有相关的pgmap版本都在，自消息发送来之前我们处理相同的一个间隔
+      assert(pg->get_primary().osd == m->get_source().num());//一定是从主上发送过来的
       PGRef _pg(pg);
-      _remove_pg(pg);
+      _remove_pg(pg);//走移除
       pg->unlock();
     } else {
       dout(10) << *pg << " ignoring remove request, pg changed in epoch "
@@ -8434,9 +8437,9 @@ void OSD::_remove_pg(PG *pg)//pg移除入口
   // and handle_notify_timeout
   pg->on_removal(&rmt);
 
-  service.cancel_pending_splits_for_parent(pg->info.pgid);
+  service.cancel_pending_splits_for_parent(pg->info.pgid);//防止父pg计划分裂
 
-  store->queue_transaction(
+  store->queue_transaction(//将恢复方式写入事务，防止断电？（整个pg恢复？）
     pg->osr.get(), std::move(rmt), NULL, 
     new ContainerContext<
       SequencerRef>(pg->osr));

@@ -392,8 +392,8 @@ void PGBackend::trim_rollback_object(
 
 //构造pg后端.通过pool的类型创建不同的backend
 PGBackend *PGBackend::build_pg_backend(
-  const pg_pool_t &pool,
-  const OSDMapRef curmap,
+  const pg_pool_t &pool,//对应的pool
+  const OSDMapRef curmap,//对应的osdmap
   Listener *l,
   coll_t coll,
   ObjectStore::CollectionHandle &ch,
@@ -401,7 +401,7 @@ PGBackend *PGBackend::build_pg_backend(
   CephContext *cct)
 {
   switch (pool.type) {
-  case pg_pool_t::TYPE_REPLICATED: {
+  case pg_pool_t::TYPE_REPLICATED: {//对于幅本创建，创建ReplicatedBackend
     return new ReplicatedBackend(l, coll, ch, store, cct);
   }
   case pg_pool_t::TYPE_ERASURE: {
