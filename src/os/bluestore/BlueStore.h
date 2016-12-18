@@ -1008,20 +1008,20 @@ public:
     uint64_t buffer_list_bytes[BUFFER_TYPE_MAX] = {0}; ///< bytes per type
 
   public:
-    uint64_t _get_num_onodes() override {
+    uint64_t _get_num_onodes() override {//获取加入的节点数
       return onode_lru.size();
     }
-    void _add_onode(OnodeRef& o, int level) override {
+    void _add_onode(OnodeRef& o, int level) override {//节点加入
       if (level > 0)
 	onode_lru.push_front(*o);
       else
 	onode_lru.push_back(*o);
     }
-    void _rm_onode(OnodeRef& o) override {
+    void _rm_onode(OnodeRef& o) override {//移除一个节点
       auto q = onode_lru.iterator_to(*o);
       onode_lru.erase(q);
     }
-    void _touch_onode(OnodeRef& o) override;
+    void _touch_onode(OnodeRef& o) override;//从链表里删除它，并重新添加它到链表头
 
     uint64_t _get_buffer_bytes() override {
       return buffer_bytes;
