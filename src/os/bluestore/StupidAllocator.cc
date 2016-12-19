@@ -11,8 +11,6 @@
 
 StupidAllocator::StupidAllocator()
   : num_free(0),
-    num_uncommitted(0),
-    num_committing(0),
     num_reserved(0),
     free(10),//free大小被硬编码成10，目的减少b树的大小
     last_alloc(0)
@@ -265,8 +263,8 @@ int StupidAllocator::release(
   std::lock_guard<std::mutex> l(lock);
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
-  uncommitted.insert(offset, length);
-  num_uncommitted += length;
+  _insert_free(offset, length);
+  num_free += length;
   return 0;
 }
 
@@ -288,22 +286,6 @@ void StupidAllocator::dump()
       dout(0) << __func__ << "  0x" << std::hex << p.get_start() << "~"
 	      << p.get_len() << std::dec << dendl;
     }
-  }
-  dout(0) << __func__ << " committing: "
-	  << committing.num_intervals() << " extents" << dendl;
-  for (auto p = committing.begin();
-       p != committing.end();
-       ++p) {
-    dout(0) << __func__ << "  0x" << std::hex << p.get_start() << "~"
-	    << p.get_len() << std::dec << dendl;
-  }
-  dout(0) << __func__ << " uncommitted: "
-	  << uncommitted.num_intervals() << " extents" << dendl;
-  for (auto p = uncommitted.begin();
-       p != uncommitted.end();
-       ++p) {
-    dout(0) << __func__ << "  0x" << std::hex << p.get_start() << "~"
-	    << p.get_len() << std::dec << dendl;
   }
 }
 
@@ -346,30 +328,3 @@ void StupidAllocator::shutdown()
   dout(1) << __func__ << dendl;
 }
 
-//将未提交的已释放数据合转移至committing中
-void StupidAllocator::commit_start()
-{
-  std::lock_guard<std::mutex> l(lock);
-  dout(10) << __func__ << " releasing " << num_uncommitted
-	   << " in extents " << uncommitted.num_intervals() << dendl;
-  assert(committing.empty());
-  committing.swap(uncommitted);
-  num_committing = num_uncommitted;
-  num_uncommitted = 0;
-}
-
-//遍历committing将其中的所有内容全部加入到free中。
-void StupidAllocator::commit_finish()
-{
-  std::lock_guard<std::mutex> l(lock);
-  dout(10) << __func__ << " released " << num_committing
-	   << " in extents " << committing.num_intervals() << dendl;
-  for (auto p = committing.begin();
-       p != committing.end();
-       ++p) {
-    _insert_free(p.get_start(), p.get_len());
-  }
-  committing.clear();
-  num_free += num_committing;
-  num_committing = 0;
-}

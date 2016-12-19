@@ -250,9 +250,11 @@ private:
    */
   vector<BlockDevice*> bdev;                  ///< block devices we can use //指出哪些块设备我们可以用
   vector<IOContext*> ioc;                     ///< IOContexts for bdevs
-  vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own　//记录每块dev的可用范围（每个块设备占用一项，内层为一个set列表）
-  vector<uint64_t> block_total;               ///< sum of block_all　//记录每块dev的最block数目（每个块设备占用一项）
+  vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own //记录每块dev的可用范围（每个块设备占用一项，内层为一个set列表）
+
+  vector<uint64_t> block_total;               ///< sum of block_all //记录每块dev的最block数目（每个块设备占用一项）
   vector<Allocator*> alloc;                   ///< allocators for bdevs //记录分配内容(每个块设备占一项）
+  vector<interval_set<uint64_t>> pending_release; ///< extents to release
 
   void _init_logger();
   void _shutdown_logger();

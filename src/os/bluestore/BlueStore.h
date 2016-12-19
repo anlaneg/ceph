@@ -541,20 +541,22 @@ public:
       }
     }
 #else
-    void bound_encode(size_t& p, bool include_ref_map) const {
-      denc(blob, p);
+    void bound_encode(size_t& p, uint64_t struct_v, bool include_ref_map) const {
+      denc(blob, p, struct_v);
       if (include_ref_map) {
         ref_map.bound_encode(p);
       }
     }
-    void encode(bufferlist::contiguous_appender& p, bool include_ref_map) const {
-      denc(blob, p);
+    void encode(bufferlist::contiguous_appender& p, uint64_t struct_v,
+		bool include_ref_map) const {
+      denc(blob, p, struct_v);
       if (include_ref_map) {
         ref_map.encode(p);
       }
     }
-    void decode(bufferptr::iterator& p, bool include_ref_map) {
-      denc(blob, p);
+    void decode(bufferptr::iterator& p, uint64_t struct_v,
+		bool include_ref_map) {
+      denc(blob, p, struct_v);
       if (include_ref_map) {
         ref_map.decode(p);
       }
@@ -1527,6 +1529,7 @@ private:
   Throttle throttle_wal_ops, throttle_wal_bytes;  ///< submit to wal complete
 
   interval_set<uint64_t> bluefs_extents;  ///< block extents owned by bluefs
+  interval_set<uint64_t> bluefs_extents_reclaiming; ///< currently reclaiming
 
   std::mutex wal_lock;
   std::atomic<uint64_t> wal_seq = {0};

@@ -65,21 +65,23 @@ int get_block_device_base(const char *dev, char *out, size_t out_len)//获取设
   struct stat st;
   int r = 0;
   DIR *dir;
-  char devname[PATH_MAX], fn[PATH_MAX];
+  char devname[PATH_MAX] = {0}, fn[PATH_MAX] = {0};
   char *p;
   char realname[PATH_MAX] = {0};
 
   if (strncmp(dev, "/dev/", 5) != 0) {//检查前缀是否'/dev/',如果不时，尝试解引用后再试
-    if ((readlink(dev, realname, sizeof(realname)) == -1) || (strncmp(realname, "/dev/", 5) != 0))
+    if (realpath(dev, realname) == NULL || (strncmp(realname, "/dev/", 5) != 0)) {
       return -EINVAL;//没有指向/dev，失败
+    }
   }
 
   if (strlen(realname))
-    strncpy(devname, realname + 5, PATH_MAX -1);
+    strncpy(devname, realname + 5, PATH_MAX - 5);
   else
-    strncpy(devname, dev + 5, PATH_MAX-1);//跳过'/dev/'
+    strncpy(devname, dev + 5, strlen(dev) - 5);//跳过'/dev/'
 
-  devname[PATH_MAX-1] = '\0';
+  devname[PATH_MAX - 1] = '\0';
+
   for (p = devname; *p; ++p)
     if (*p == '/')
       *p = '!';

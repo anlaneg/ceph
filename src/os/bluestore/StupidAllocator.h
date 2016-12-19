@@ -14,13 +14,9 @@ class StupidAllocator : public Allocator {
   std::mutex lock;
 
   int64_t num_free;     ///< total bytes in freelist //总空闲数
-  int64_t num_uncommitted;//未提交的大小
-  int64_t num_committing;//正在提交的大小
   int64_t num_reserved; ///< reserved bytes //总预留数
 
   std::vector<btree_interval_set<uint64_t> > free;        ///< leading-edge copy
-  btree_interval_set<uint64_t> uncommitted; ///< released but not yet usable //保存还没有提交的
-  btree_interval_set<uint64_t> committing;  ///< released but not yet usable //暂时态，起中转作用，将uncommitted中的数据，临时持用,并提交至free
 
   uint64_t last_alloc;
 
@@ -44,9 +40,6 @@ public:
 
   int release(
     uint64_t offset, uint64_t length);
-
-  void commit_start();
-  void commit_finish();
 
   uint64_t get_free();
 

@@ -1677,6 +1677,10 @@ public:
     struct IsIncomplete : boost::statechart::event< IsIncomplete > {
       IsIncomplete() : boost::statechart::event< IsIncomplete >() {}
     };
+    struct Down;
+    struct IsDown : boost::statechart::event< IsDown > {
+      IsDown() : boost::statechart::event< IsDown >() {}
+    };
 
     //primary状态
     struct Primary : boost::statechart::state< Primary, Started, Peering >, NamedState {
@@ -1970,7 +1974,8 @@ public:
       typedef boost::mpl::list <
 	boost::statechart::custom_reaction< QueryState >,
 	boost::statechart::transition< GotInfo, GetLog >,//如果收到GotInfo事件,走GetLog
-	boost::statechart::custom_reaction< MNotifyRec >
+	boost::statechart::custom_reaction< MNotifyRec >,
+	boost::statechart::transition< IsDown, Down >
 	> reactions;
       boost::statechart::result react(const QueryState& q);
       boost::statechart::result react(const MNotifyRec& infoevt);//对端的响应信息(会迁至GetLog)
@@ -2030,6 +2035,11 @@ public:
       boost::statechart::result react(const QueryState& q);
       boost::statechart::result react(const ActMap& am);
       boost::statechart::result react(const MLogRec& logrec);
+    };
+
+    struct Down : boost::statechart::state< Down, Peering>, NamedState {
+      explicit Down(my_context ctx);
+      void exit();
     };
 
     //incomplete状态

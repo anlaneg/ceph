@@ -48,7 +48,7 @@
 #include "os/FuseStore.h"
 #endif
 
-#include "ReplicatedPG.h"
+#include "PrimaryLogPG.h"
 
 
 #include "msg/Messenger.h"
@@ -1689,7 +1689,7 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   command_tp(cct, "OSD::command_tp", "tp_osd_cmd",  1),
   session_waiting_lock("OSD::session_waiting_lock"),
   heartbeat_lock("OSD::heartbeat_lock"),
-  heartbeat_stop(false), heartbeat_update_lock("OSD::heartbeat_update_lock"),
+  heartbeat_stop(false),
   heartbeat_need_update(true),
   hbclient_messenger(hb_clientm),
   hb_front_server_messenger(hb_front_serverm),
@@ -2491,6 +2491,13 @@ void OSD::final_init()
     test_ops_hook,
      "Delay osd recovery by specified seconds");
   assert(r == 0);
+  r = admin_socket->register_command(
+   "trigger_scrub",
+   "trigger_scrub " \
+   "name=pgid,type=CephString ",
+   test_ops_hook,
+   "Trigger a scheduled scrub ");
+  assert(r == 0);
 }
 
 void OSD::create_logger()
@@ -2668,6 +2675,7 @@ void OSD::create_recoverystate_perf()
   rs_perf.add_time_avg(rs_getlog_latency, "getlog_latency", "Getlog recovery state latency");
   rs_perf.add_time_avg(rs_waitactingchange_latency, "waitactingchange_latency", "Waitactingchange recovery state latency");
   rs_perf.add_time_avg(rs_incomplete_latency, "incomplete_latency", "Incomplete recovery state latency");
+  rs_perf.add_time_avg(rs_down_latency, "down_latency", "Down recovery state latency");
   rs_perf.add_time_avg(rs_getmissing_latency, "getmissing_latency", "Getmissing recovery state latency");
   rs_perf.add_time_avg(rs_waitupthru_latency, "waitupthru_latency", "Waitupthru recovery state latency");
 
@@ -3121,7 +3129,7 @@ PG* OSD::_make_pg(
   PG *pg;
   if (createmap->get_pg_type(pgid.pgid) == pg_pool_t::TYPE_REPLICATED ||
       createmap->get_pg_type(pgid.pgid) == pg_pool_t::TYPE_ERASURE)
-    pg = new ReplicatedPG(&service, createmap, pool, pgid);
+    pg = new PrimaryLogPG(&service, createmap, pool, pgid);
   else
     ceph_abort();
 
@@ -4678,6 +4686,44 @@ void TestOpsSocketHook::test_ops(OSDService *service, ObjectStore *store,
     service->cct->_conf->apply_changes(NULL);
     ss << "set_recovery_delay: set osd_recovery_delay_start "
        << "to " << service->cct->_conf->osd_recovery_delay_start;
+    return;
+  }
+  if (command ==  "trigger_scrub") {
+    spg_t pgid;
+    OSDMapRef curmap = service->get_osdmap();
+
+    string pgidstr;
+
+    cmd_getval(service->cct, cmdmap, "pgid", pgidstr);
+    if (!pgid.parse(pgidstr.c_str())) {
+      ss << "Invalid pgid specified";
+      return;
+    }
+
+    PG *pg = service->osd->_lookup_lock_pg(pgid);
+    if (pg == nullptr) {
+      ss << "Can't find pg " << pgid;
+      return;
+    }
+
+    if (pg->is_primary()) {
+      pg->unreg_next_scrub();
+      const pg_pool_t *p = curmap->get_pg_pool(pgid.pool());
+      double pool_scrub_max_interval = 0;
+      p->opts.get(pool_opts_t::SCRUB_MAX_INTERVAL, &pool_scrub_max_interval);
+      double scrub_max_interval = pool_scrub_max_interval > 0 ?
+        pool_scrub_max_interval : g_conf->osd_scrub_max_interval;
+      // Instead of marking must_scrub force a schedule scrub
+      utime_t stamp = ceph_clock_now(service->cct);
+      stamp -= scrub_max_interval;
+      stamp -=  100.0;  // push back last scrub more for good measure
+      pg->info.history.last_scrub_stamp = stamp;
+      pg->reg_next_scrub();
+      ss << "ok";
+    } else {
+      ss << "Not primary";
+    }
+    pg->unlock();
     return;
   }
   ss << "Internal error - command=" << command;
@@ -7179,6 +7225,12 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
 	start_waiting_for_healthy();
 
 	set<int> avoid_ports;
+#if defined(__FreeBSD__)
+        // prevent FreeBSD from grabbing the client_messenger port during
+        // rebinding. In which case a cluster_meesneger will connect also 
+	// to the same port
+	avoid_ports.insert(client_messenger->get_myaddr().get_port());
+#endif
 	avoid_ports.insert(cluster_messenger->get_myaddr().get_port());
 	avoid_ports.insert(hb_back_server_messenger->get_myaddr().get_port());
 	avoid_ports.insert(hb_front_server_messenger->get_myaddr().get_port());
@@ -7187,21 +7239,24 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
-          dout(0) << __func__ << " marked down: rebind failed" << dendl;
+          dout(0) << __func__ << " marked down:"
+                  << " rebind cluster_messenger failed" << dendl;
         }
 
 	r = hb_back_server_messenger->rebind(avoid_ports);
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
-          dout(0) << __func__ << " marked down: rebind failed" << dendl;
+          dout(0) << __func__ << " marked down:"
+                  << " rebind hb_back_server_messenger failed" << dendl;
         }
 
 	r = hb_front_server_messenger->rebind(avoid_ports);
 	if (r != 0) {
 	  do_shutdown = true;  // FIXME: do_restart?
           network_error = true;
-          dout(0) << __func__ << " marked down: rebind failed" << dendl;
+          dout(0) << __func__ << " marked down:" 
+                  << " rebind hb_front_server_messenger failed" << dendl;
         }
 
 	hbclient_messenger->mark_down_all();

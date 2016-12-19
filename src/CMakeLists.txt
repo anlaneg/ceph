@@ -476,6 +476,7 @@ set(libcommon_files
   common/ceph_strings.cc
   common/ceph_frag.cc
   common/config.cc
+  common/config_validators.cc
   common/utf8.c
   common/mime.c
   common/strtol.cc
@@ -934,7 +935,7 @@ configure_file(
 add_subdirectory(brag)
 
 # Everything you need to spin up a cluster with vstart.sh
-add_custom_target(vstart DEPENDS
+add_custom_target(vstart-base DEPENDS
     ceph-osd
     ceph-mon
     ceph-mgr
@@ -942,11 +943,17 @@ add_custom_target(vstart DEPENDS
     ceph-conf
     monmaptool
     crushtool
+    rados
     cython_rados
+    )
+
+add_custom_target(vstart DEPENDS
+    vstart-base
     ceph-mds)
 if(WITH_RADOSGW)
   add_dependencies(vstart radosgw radosgw-admin)
 endif(WITH_RADOSGW)
+
 
 # Everything you need to run CephFS tests
 add_custom_target(cephfs_testing DEPENDS
