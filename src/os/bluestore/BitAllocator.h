@@ -277,36 +277,36 @@ private:
   std::mutex m_marker_mutex;
 
 public:
-  BitMapArea *get_nth_item(int64_t idx) {
+  BitMapArea *get_nth_item(int64_t idx) {//返回对应元素
     return m_items[idx];
   }
 
-   BitMapArea ** get_item_list() {
+   BitMapArea ** get_item_list() {//返回item数组(与get_list重复，这两个需要被重命名）
     return m_items;
   }
 
-  int64_t size() {
+  int64_t size() {//返回数组大小
     return m_num_items;
   }
-  BitMapAreaList(BitMapArea **list, int64_t len);
-  BitMapAreaList(BitMapArea **list, int64_t len, int64_t marker);
+  BitMapAreaList(BitMapArea **list, int64_t len);//列表注入
+  BitMapAreaList(BitMapArea **list, int64_t len, int64_t marker);//列表，互斥量注入
 
-  BitMapArea **get_list() {
+  BitMapArea **get_list() {//返回item数组
     return m_items;
   }
 };
 
 class BmapEntityListIter {
-  BitMapAreaList *m_list;
-  int64_t m_start_idx;
-  int64_t m_cur_idx;
-  bool m_wrap;
-  bool m_wrapped;
-  bool m_end;
+  BitMapAreaList *m_list;//遍历哪个链
+  int64_t m_start_idx;//标记我们遍历的起点
+  int64_t m_cur_idx;//记录我们当前的位置
+  bool m_wrap;//用户是否要求回绕
+  bool m_wrapped;//当前是否已进行了回绕
+  bool m_end;//是否到达结尾
 public:
 
   void init(BitMapAreaList *list, int64_t start_idx, bool wrap);
-  BmapEntityListIter(BitMapAreaList *list);
+  BmapEntityListIter(BitMapAreaList *list);//注入bitmaparelist
 
   BmapEntityListIter(BitMapAreaList *list, bool wrap);
 
@@ -315,8 +315,8 @@ public:
   BmapEntityListIter(BitMapAreaList *list, int64_t start_idx, bool wrap);
 
   BitMapArea *next();
-  int64_t index();
-  void decr_idx();
+  int64_t index();//返回当前位置
+  void decr_idx();//当前位置回退
 };
 
 typedef mempool::bluestore_alloc::vector<BmapEntry> BmapEntryVector;

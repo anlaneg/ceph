@@ -113,7 +113,7 @@ int BitMapAllocator::allocate(
     return 0;
 
   assert(!(alloc_unit % m_block_size));
-  int64_t nblks = (want_size + m_block_size - 1) / m_block_size;
+  int64_t nblks = (want_size + m_block_size - 1) / m_block_size;//需要多少个块
 
   assert(alloc_unit);
 
@@ -133,8 +133,8 @@ int BitMapAllocator::allocate(
   if (count == 0) {
     return -ENOSPC;
   }
-  *offset = start_blk * m_block_size;
-  *length = count * m_block_size;
+  *offset = start_blk * m_block_size;//返回offset
+  *length = count * m_block_size;//返回长度
 
   dout(20) << __func__ <<" instance "<< (uint64_t) this
            << " offset 0x" << std::hex << *offset

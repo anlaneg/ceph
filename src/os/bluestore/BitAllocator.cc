@@ -54,7 +54,7 @@ void BmapEntityListIter::init(BitMapAreaList *list, int64_t start_idx, bool wrap
 
 BmapEntityListIter::BmapEntityListIter(BitMapAreaList *list, int64_t start_idx)
 {
-  init(list, start_idx, false);
+  init(list, start_idx, false);//不容许回绕
 }
 
 BmapEntityListIter::BmapEntityListIter(BitMapAreaList *list, int64_t start_idx, bool wrap)
@@ -67,31 +67,31 @@ BitMapArea* BmapEntityListIter::next()
   int64_t cur_idx = m_cur_idx;
 
   if (m_wrapped &&
-    cur_idx == m_start_idx) {
+    cur_idx == m_start_idx) {//当前已进行了回绕，而现在idx就是m_start_idx,因此已到达末尾
     /*
      * End of wrap cycle + 1
      */
-    if (!m_end) {
+    if (!m_end) {//需要返回最后一个元素（m_end ==false)
       m_end = true;
       return m_list->get_nth_item(cur_idx);
     }
-    return NULL;
+    return NULL;//最后一个已返回过了
   }
-  m_cur_idx++;
+  m_cur_idx++;//向下一个移动
 
   if (m_cur_idx == m_list->size() &&
-      m_wrap) {
+      m_wrap) {//如果到达结尾了，并且用户要求回绕，那标记已回绕，并更新cur_idx
     m_cur_idx = 0;
     m_wrapped = true;
   }
-  if (cur_idx == m_list->size()) {
+  if (cur_idx == m_list->size()) {//如果到达结尾，则返回null
     /*
      * End of list
      */
     return NULL;
   }
   alloc_assert(cur_idx < m_list->size());
-  return m_list->get_nth_item(cur_idx);
+  return m_list->get_nth_item(cur_idx);//返回相应元素
 }
 
 int64_t BmapEntityListIter::index()
@@ -798,11 +798,12 @@ void BitMapAreaIN::shutdown()
   unlock();
 }
 
-bool BitMapAreaIN::child_check_n_lock(BitMapArea *child, int64_t required)
+bool BitMapAreaIN::child_check_n_lock(BitMapArea *child, int64_t required)//检查在child中是否可以分配出required
 {
   child->lock_shared();
 
-  if (child->is_exhausted()) {
+  //只要有，就可以分配，呵呵，无非你多用几个段来存储。
+  if (child->is_exhausted()) {//检查是否用光了
     child->unlock();
     return false;
   }
@@ -909,20 +910,23 @@ int64_t BitMapAreaIN::alloc_blocks_int_work(bool wait, bool wrap, int64_t num_bl
   BmapEntityListIter iter = BmapEntityListIter(
                                 m_child_list, hint / m_child_size_blocks, wrap);
 
-  while ((child = (BitMapArea *) iter.next())) {
+  //回头看时，这个函数并不完美，child_check_n_lock的检查底下并没有传入合适的参数（期待的大小），相当于无用
+  //allocated实际上并没有用到，申请的非要求大小，总是释放掉
+  while ((child = (BitMapArea *) iter.next())) {//如果有bitmaparea
     if (!child_check_n_lock(child, num_blocks - allocated)) {
     hint = 0;
       continue;
     }
 
+    //尝试在新的位置申请num_blocks大小
     allocated = child->alloc_blocks(wait, num_blocks, hint % m_child_size_blocks, start_block);
     child_unlock(child);
-    if (allocated == num_blocks) {
+    if (allocated == num_blocks) {//不是我们想要的大小，释放掉
       (*start_block) += child->get_index() * m_child_size_blocks;
       break;
     }
 
-    child->free_blocks(*start_block, allocated);
+    child->free_blocks(*start_block, allocated);//把刚申请的非期待大小的块释放掉
   hint = 0;
     *start_block = 0;
     allocated = 0;
@@ -1453,7 +1457,7 @@ int64_t BitAllocator::alloc_blocks_res(int64_t num_blocks, int64_t hint, int64_t
   int scans = 1;
   int64_t allocated = 0;
 
-  *start_block = 0;
+  *start_block = 0;//清空start_block中的值
   if (!check_input(num_blocks)) {
     return 0;
   }
@@ -1486,7 +1490,7 @@ int64_t BitAllocator::alloc_blocks_res(int64_t num_blocks, int64_t hint, int64_t
   }
 
   alloc_dbg_assert(is_allocated(*start_block, allocated));
-  unreserve(num_blocks, allocated);
+  unreserve(num_blocks, allocated);//取消预留，数据已经到手了。
 
   serial_unlock();
   unlock();
