@@ -39,6 +39,8 @@
 
 #include "bluestore_types.h"
 #include "BlockDevice.h"
+#include "common/EventTrace.h"
+
 class Allocator;
 class FreelistManager;
 class BlueFS;
@@ -92,6 +94,12 @@ enum {
   l_bluestore_write_small_wal,
   l_bluestore_write_small_pre_read,
   l_bluestore_write_small_new,
+
+  l_bluestore_cur_ops_in_queue,
+  l_bluestore_cur_bytes_in_queue,
+  l_bluestore_cur_ops_in_wal_queue,
+  l_bluestore_cur_bytes_in_wal_queue,
+
   l_bluestore_txc,
   l_bluestore_onode_reshard,
   l_bluestore_blob_split,
@@ -104,7 +112,6 @@ class BlueStore : public ObjectStore,
   // -----------------------------------------------------
   // types
 public:
-
   // config observer
   virtual const char** get_tracked_conf_keys() const override;
   virtual void handle_conf_change(const struct md_config_t *conf,
@@ -118,6 +125,7 @@ public:
   typedef map<uint64_t, bufferlist> ready_regions_t;
 
   struct BufferSpace;
+  struct Collection;
 
   /// cached buffer
   struct Buffer {
@@ -212,29 +220,20 @@ public:
 	boost::intrusive::list_member_hook<>,
 	&Buffer::state_item> > state_list_t;
 
-    mempool::bluestore_meta_other::map<uint64_t, std::unique_ptr<Buffer>>
+    mempool::bluestore_meta_other::map<uint32_t, std::unique_ptr<Buffer>>
       buffer_map;//map,采用offset进行索引的buffer
-    Cache *cache;//通过bufferspace构造时注入，用于实现不同类型的缓存
 
     // we use a bare intrusive list here instead of std::map because
     // it uses less memory and we expect this to be very small (very
     // few IOs in flight to the same Blob at the same time).
     state_list_t writing;   ///< writing buffers, sorted by seq, ascending
 
-    BufferSpace(Cache *c) : cache(c) {
-      if (cache) {
-	cache->add_blob();
-      }
-    }
     ~BufferSpace() {
       assert(buffer_map.empty());
       assert(writing.empty());
-      if (cache) {
-	cache->rm_blob();
-      }
     }
 
-    void _add_buffer(Buffer *b, int level, Buffer *near) {
+    void _add_buffer(Cache* cache, Buffer *b, int level, Buffer *near) {
       cache->_audit("_add_buffer start");
       buffer_map[b->offset].reset(b);//加入索引
       if (b->is_writing()) {
@@ -244,25 +243,24 @@ public:
       }
       cache->_audit("_add_buffer end");
     }
-    void _rm_buffer(Buffer *b) {//移除
-      _rm_buffer(buffer_map.find(b->offset));//通过索引定位
+    void _rm_buffer(Cache* cache, Buffer *b) {//移除
+      _rm_buffer(cache, buffer_map.find(b->offset));//通过索引定位
     }
-    void _rm_buffer(map<uint64_t,std::unique_ptr<Buffer>>::iterator p) {
+    void _rm_buffer(Cache* cache, map<uint32_t, std::unique_ptr<Buffer>>::iterator p) {
       assert(p != buffer_map.end());
       cache->_audit("_rm_buffer start");
       if (p->second->is_writing()) {
         writing.erase(writing.iterator_to(*p->second));//自writing内移除
-      } else {
-	cache->_rm_buffer(p->second.get());//自缓存中移除
       }
       buffer_map.erase(p);
       cache->_audit("_rm_buffer end");
     }
 
     //找出第一个包含offset位置的buffer
-    map<uint64_t,std::unique_ptr<Buffer>>::iterator _data_lower_bound(
-      uint64_t offset) {
-      auto i = buffer_map.lower_bound(offset);//返回第一个大于第于offset的迭代器
+    map<uint32_t,std::unique_ptr<Buffer>>::iterator _data_lower_bound(
+      uint32_t offset) {
+      //返回第一个大于第于offset的迭代器
+      auto i = buffer_map.lower_bound(offset);
       if (i != buffer_map.begin()) {
 	--i;//向后退一格，防止offset被上一个buffer包含
 	if (i->first + i->second->length <= offset)
@@ -271,48 +269,47 @@ public:
       return i;
     }
 
-    bool empty() const {//是否为空
-      return buffer_map.empty();
-    }
-
     // must be called under protection of the Cache lock
-    void _clear();
+    void _clear(Cache* cache);
 
     // return value is the highest cache_private of a trimmed buffer, or 0.
     //丢弃offset起始长度length的数据，返回这一段内最大的cache_private
-    int discard(uint64_t offset, uint64_t length) {
+    int discard(Cache* cache, uint32_t offset, uint32_t length) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
-      return _discard(offset, length);
+      return _discard(cache, offset, length);
     }
-    int _discard(uint64_t offset, uint64_t length);
+    int _discard(Cache* cache, uint32_t offset, uint32_t length);
 
     //将数据交给writing处理或者交给cache进行管理
-    void write(uint64_t seq, uint64_t offset, bufferlist& bl, unsigned flags) {
+    void write(Cache* cache, uint64_t seq, uint32_t offset, bufferlist& bl, unsigned flags) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_WRITING, seq, offset, bl,
 			     flags);//构造buffer,使其的data指向bl　（这是要新写入的数据）
-      b->cache_private = _discard(offset, bl.length());//丢弃已有的offset到bl.length的数据，并返回最大cache_private（这里之前缓存的旧数据，需要扔掉）
-      _add_buffer(b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);//将新数据加入（标明，无缓存）
+      //丢弃已有的offset到bl.length的数据，并返回最大cache_private（这里之前缓存的旧数据，需要扔掉）
+      b->cache_private = _discard(cache, offset, bl.length());
+      //将新数据加入（标明，无缓存）
+      _add_buffer(cache, b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);
     }
-    void finish_write(uint64_t seq);
-    void did_read(uint64_t offset, bufferlist& bl) {//构造offset范围，丢掉这之间的数据
+    void finish_write(Cache* cache, uint64_t seq);
+    //构造offset范围，丢掉这之间的数据
+    void did_read(Cache* cache, uint32_t offset, bufferlist& bl) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       Buffer *b = new Buffer(this, Buffer::STATE_CLEAN, 0, offset, bl);
-      b->cache_private = _discard(offset, bl.length());
-      _add_buffer(b, 1, nullptr);
+      b->cache_private = _discard(cache, offset, bl.length());
+      _add_buffer(cache, b, 1, nullptr);
     }
 
-    void read(uint64_t offset, uint64_t length,
+    void read(Cache* cache, uint32_t offset, uint32_t length,
 	      BlueStore::ready_regions_t& res,
-	      interval_set<uint64_t>& res_intervals);
+	      interval_set<uint32_t>& res_intervals);
 
-    void truncate(uint64_t offset) {//丢弃掉offset之后的所有数据
-      discard(offset, (uint64_t)-1 - offset);
+    void truncate(Cache* cache, uint32_t offset) {
+      discard(cache, offset, (uint32_t)-1 - offset);
     }
 
-    void split(size_t pos, BufferSpace &r);
+    void split(Cache* cache, size_t pos, BufferSpace &r);
 
-    void dump(Formatter *f) const {
+    void dump(Cache* cache, Formatter *f) const {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
       f->open_array_section("buffers");
       for (auto& i : buffer_map) {
@@ -326,6 +323,7 @@ public:
   };
 
   struct SharedBlobSet;
+  struct Collection;
 
   /// in-memory shared blob state (incl cached buffers)
   struct SharedBlob {
@@ -339,14 +337,15 @@ public:
 
     // these are defined/set if the blob is marked 'shared'
     uint64_t sbid = 0;          ///< shared blob id
-    string key;                 ///< key in kv store
-    //从属于哪个set
-    SharedBlobSet *parent_set = 0;  ///< containing SharedBlobSet
-
+    Collection *coll = nullptr;
     BufferSpace bc;             ///< buffer cache
 
-    SharedBlob(Cache *c) : bc(c) {}
-    SharedBlob(uint64_t i, Cache *c);
+    SharedBlob(Collection *_coll) : coll(_coll) {
+      if (get_cache()) {
+	get_cache()->add_blob();
+      }
+    }
+    SharedBlob(uint64_t i, Collection *_coll);
     ~SharedBlob();
 
     friend void intrusive_ptr_add_ref(SharedBlob *b) { b->get(); }
@@ -365,6 +364,12 @@ public:
     friend std::size_t hash_value(const SharedBlob &e) {
       rjhash<uint32_t> h;
       return h(e.sbid);
+    }
+    inline Cache* get_cache() {
+      return coll ? coll->cache : nullptr;
+    }
+    inline SharedBlobSet* get_parent() {
+      return coll ? &(coll->shared_blob_set) : nullptr;
     }
   };
   typedef boost::intrusive_ptr<SharedBlob> SharedBlobRef;
@@ -387,16 +392,16 @@ public:
       return p->second;
     }
 
-    void add(SharedBlob *sb) {
+    void add(Collection* coll, SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
       sb_map[sb->sbid] = sb;
-      sb->parent_set = this;
+      sb->coll = coll;
     }
 
     bool remove(SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
       if (sb->nref == 0) {
-	assert(sb->parent_set == this);
+	assert(sb->get_parent() == this);
 	sb_map.erase(sb->sbid);
 	return true;
       }
@@ -407,15 +412,9 @@ public:
       std::lock_guard<std::mutex> l(lock);
       return sb_map.empty();
     }
-
-    void violently_clear() {
-      std::lock_guard<std::mutex> l(lock);
-      for (auto& p : sb_map) {
-	p.second->parent_set = nullptr;
-      }
-      sb_map.clear();
-    }
   };
+
+//#define CACHE_BLOB_BL  // not sure if this is a win yet or not... :/
 
   /// in-memory blob metadata and associated cached buffers (if any)
   struct Blob {
@@ -427,16 +426,16 @@ public:
     SharedBlobRef shared_blob;      ///< shared blob state (if any)
 
   private:
-    mutable bluestore_blob_t blob;  ///< decoded blob metadata //解码后的元数据
-    mutable bool dirty = true;      ///< true if blob is newer than blob_bl
     mutable bufferlist blob_bl;     ///< cached encoded blob　//未解码前的元数据
+    mutable bluestore_blob_t blob;  ///< decoded blob metadata //解码后的元数据
+#ifdef CACHE_BLOB_BL
+    //未解码前的元数据
+    mutable bufferlist blob_bl;     ///< cached encoded blob, blob is dirty if empty
+#endif
     /// refs from this shard.  ephemeral if id<0, persisted if spanning.
     bluestore_extent_ref_map_t ref_map;
 
   public:
-    Blob() {}
-    ~Blob() {
-    }
 
     friend void intrusive_ptr_add_ref(Blob *b) { b->get(); }
     friend void intrusive_ptr_release(Blob *b) { b->put(); }
@@ -451,7 +450,7 @@ public:
     }
 
     bool can_split() const {
-      std::lock_guard<std::recursive_mutex> l(shared_blob->bc.cache->lock);
+      std::lock_guard<std::recursive_mutex> l(shared_blob->get_cache()->lock);
       // splitting a BufferSpace writing list is too hard; don't try.
       return shared_blob->bc.writing.empty() && get_blob().can_split();
     }
@@ -459,41 +458,37 @@ public:
     void dup(Blob& o) {
       o.shared_blob = shared_blob;
       o.blob = blob;
-      o.dirty = dirty;
+#ifdef CACHE_BLOB_BL
       o.blob_bl = blob_bl;
+#endif
     }
 
     const bluestore_blob_t& get_blob() const {//blob对应的元数据
       return blob;
     }
     bluestore_blob_t& dirty_blob() {
-      if (!dirty) {
-	dirty = true;
-	blob_bl.clear();
-      }
+#ifdef CACHE_BLOB_BL
+      blob_bl.clear();
+#endif
       return blob;
     }
-    bool is_dirty() const {
-      return dirty;
-    }
-
     bool is_unreferenced(uint64_t offset, uint64_t length) const {
       return !ref_map.intersects(offset, length);
     }
 
     /// discard buffers for unallocated regions
-    void discard_unallocated();
+    void discard_unallocated(Collection *coll);
 
     /// get logical references
     void get_ref(uint64_t offset, uint64_t length);
     /// put logical references, and get back any released extents
-    bool put_ref(uint64_t offset, uint64_t length,  uint64_t min_alloc_size,
-		 vector<bluestore_pextent_t> *r);
+    bool put_ref(Collection *coll, uint64_t offset, uint64_t length,
+		 PExtentVector *r);
     /// pass references for specific range to other blob
     void pass_ref(Blob* other, uint64_t src_offset, uint64_t length, uint64_t dest_offset);
 
     /// split the blob
-    void split(size_t blob_offset, Blob *o);
+    void split(Collection *coll, size_t blob_offset, Blob *o);
 
     void get() {
       ++nref;
@@ -503,14 +498,11 @@ public:
 	delete this;
     }
 
-//#define CACHE_BLOB_BL  // not sure if this is a win yet or not... :/
 
 #ifdef CACHE_BLOB_BL
     void _encode() const {
-      if (dirty) {
-	blob_bl.clear();
+      if (blob_bl.length() == 0 ) {
 	::encode(blob, blob_bl);
-	dirty = false;
       } else {
 	assert(blob_bl.length());
       }
@@ -535,28 +527,36 @@ public:
       const char *end = p.get_pos();
       blob_bl.clear();
       blob_bl.append(start, end - start);
-      dirty = false;
       if (include_ref_map) {
         ref_map.decode(p);
       }
     }
 #else
-    void bound_encode(size_t& p, uint64_t struct_v, bool include_ref_map) const {
+    void bound_encode(size_t& p, uint64_t struct_v, uint64_t sbid, bool include_ref_map) const {
       denc(blob, p, struct_v);
+      if (blob.is_shared()) {
+        denc(sbid, p);
+      }
       if (include_ref_map) {
         ref_map.bound_encode(p);
       }
     }
-    void encode(bufferlist::contiguous_appender& p, uint64_t struct_v,
+    void encode(bufferlist::contiguous_appender& p, uint64_t struct_v, uint64_t sbid,
 		bool include_ref_map) const {
       denc(blob, p, struct_v);
+      if (blob.is_shared()) {
+        denc(sbid, p);
+      }
       if (include_ref_map) {
         ref_map.encode(p);
       }
     }
-    void decode(bufferptr::iterator& p, uint64_t struct_v,
+    void decode(bufferptr::iterator& p, uint64_t struct_v, uint64_t* sbid,
 		bool include_ref_map) {
       denc(blob, p, struct_v);
+      if (blob.is_shared()) {
+        denc(*sbid, p);
+      }
       if (include_ref_map) {
         ref_map.decode(p);
       }
@@ -589,14 +589,14 @@ public:
     }
     ~Extent() {
       if (blob) {
-	blob->shared_blob->bc.cache->rm_extent();
+	blob->shared_blob->get_cache()->rm_extent();
       }
     }
 
     void assign_blob(const BlobRef& b) {
       assert(!blob);
       blob = b;
-      blob->shared_blob->bc.cache->add_extent();
+      blob->shared_blob->get_cache()->add_extent();
     }
 
     // comparators for intrusive_set
@@ -632,7 +632,6 @@ public:
 
   friend ostream& operator<<(ostream& out, const Extent& e);
 
-  struct Collection;
   struct Onode;
 
   /// a sharded extent map, mapping offsets to lextents to blobs
@@ -642,9 +641,8 @@ public:
     blob_map_t spanning_blob_map;   ///< blobs that span shards
 
     struct Shard {
-      string key;            ///< kv key
-      uint32_t offset;       ///< starting logical offset
       bluestore_onode_t::shard_info *shard_info;
+      uint32_t offset = 0;   ///< starting logical offset
       bool loaded = false;   ///< true if shard is loaded　//指出是否已加载进extent_map
       bool dirty = false;    ///< true if shard is dirty and needs reencoding  //指出是否已属于dirty
     };
@@ -676,7 +674,7 @@ public:
 
     void bound_encode_spanning_blobs(size_t& p);
     void encode_spanning_blobs(bufferlist::contiguous_appender& p);
-    void decode_spanning_blobs(Collection *c, bufferptr::iterator& p);
+    void decode_spanning_blobs(bufferptr::iterator& p);
 
     BlobRef get_spanning_blob(int id) {
       auto p = spanning_blob_map.find(id);
@@ -684,11 +682,11 @@ public:
       return p->second;
     }
 
-    bool update(Onode *on, KeyValueDB::Transaction t, bool force);
-    void reshard(Onode *on, uint64_t min_alloc_size);
+    bool update(KeyValueDB::Transaction t, bool force);
+    void reshard();
 
     /// initialize Shards from the onode
-    void init_shards(Onode *on, bool loaded, bool dirty);
+    void init_shards(bool loaded, bool dirty);
 
     /// return index of shard containing offset
     /// or -1 if not found
@@ -776,14 +774,6 @@ public:
 
     /// split a blob (and referring extents)
     BlobRef split_blob(BlobRef lb, uint32_t blob_offset, uint32_t pos);
-
-    bool do_write_check_depth(
-      uint64_t onode_size,
-      uint64_t start_offset,
-      uint64_t end_offset,
-      uint8_t  *blob_depth,
-      uint64_t *gc_start_offset,
-      uint64_t *gc_end_offset);
   };
 
   struct OnodeSpace;
@@ -796,7 +786,9 @@ public:
     Collection *c;//属于哪个目录
 
     ghobject_t oid;//对象id
-    string key;     ///< key under PREFIX_OBJ where we are stored　//存储在db中用的key(可由oid生成）
+
+    /// key under PREFIX_OBJ where we are stored
+    mempool::bluestore_meta_other::string key;//存储在db中用的key(可由oid生成）
 
     boost::intrusive::list_member_hook<> lru_item;
 
@@ -805,11 +797,13 @@ public:
 
     ExtentMap extent_map;
 
+    std::atomic<int> flushing_count = {0};
     std::mutex flush_lock;  ///< protect flush_txns
     std::condition_variable flush_cond;   ///< wait here for unapplied txns
     set<TransContext*> flush_txns;   ///< committing or wal txns
 
-    Onode(Collection *c, const ghobject_t& o, const string& k)
+    Onode(Collection *c, const ghobject_t& o,
+	  const mempool::bluestore_meta_other::string& k)
       : nref(0),
 	c(c),
 	oid(o),
@@ -832,6 +826,7 @@ public:
 
   /// a cache (shard) of onodes and buffers
   struct Cache {
+    CephContext* cct;
     PerfCounters *logger;
     std::recursive_mutex lock;          ///< protect lru and other structures
 
@@ -840,8 +835,10 @@ public:
 
     size_t last_trim_seq = 0;
 
-    static Cache *create(string type, PerfCounters *logger);//依据不同类型生成相应的cache实例
+    //依据不同类型生成相应的cache实例
+    static Cache *create(CephContext* cct, string type, PerfCounters *logger);
 
+    Cache(CephContext* cct) : cct(cct), logger(nullptr) {}
     virtual ~Cache() {}
 
     virtual void _add_onode(OnodeRef& o, int level) = 0;
@@ -910,6 +907,7 @@ public:
     uint64_t buffer_size = 0;
 
   public:
+    LRUCache(CephContext* cct) : Cache(cct) {}
     uint64_t _get_num_onodes() override {
       return onode_lru.size();
     }
@@ -1010,7 +1008,8 @@ public:
     uint64_t buffer_list_bytes[BUFFER_TYPE_MAX] = {0}; ///< bytes per type
 
   public:
-    uint64_t _get_num_onodes() override {//获取加入的节点数
+    TwoQCache(CephContext* cct) : Cache(cct) {}
+    uint64_t _get_num_onodes() override {
       return onode_lru.size();
     }
     void _add_onode(OnodeRef& o, int level) override {//节点加入
@@ -1083,8 +1082,9 @@ public:
     OnodeRef lookup(const ghobject_t& o);
     void rename(OnodeRef& o, const ghobject_t& old_oid,
 		const ghobject_t& new_oid,
-		const string& new_okey);
+		const mempool::bluestore_meta_other::string& new_okey);
     void clear();
+    void clear_pre_split(SharedBlobSet& sbset, uint32_t ps, int bits);
     bool empty();
 
     /// return true if f true for any item
@@ -1123,13 +1123,13 @@ public:
     //  shared = blob_t shared flag is set; SharedBlob is hashed.
     //  loaded = SharedBlob::shared_blob_t is loaded from kv store
     //创建相应的shared_blob
-    void open_shared_blob(BlobRef b);
+    void open_shared_blob(uint64_t sbid, BlobRef b);
     void load_shared_blob(SharedBlobRef sb);
-    void make_blob_shared(BlobRef b);
+    void make_blob_shared(uint64_t sbid, BlobRef b);
 
     BlobRef new_blob() {
-      BlobRef b = new Blob;
-      b->shared_blob = new SharedBlob(cache);
+      BlobRef b = new Blob();
+      b->shared_blob = new SharedBlob(this);
       return b;
     }
 
@@ -1215,10 +1215,36 @@ public:
       return "???";
     }
 
-    void log_state_latency(PerfCounters *logger, int state) {//记录state变量的用时长
-      utime_t lat, now = ceph_clock_now(g_ceph_context);
+#if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
+    const char *get_state_latency_name(int state) {
+      switch (state) {
+      case l_bluestore_state_prepare_lat: return "prepare";
+      case l_bluestore_state_aio_wait_lat: return "aio_wait";
+      case l_bluestore_state_io_done_lat: return "io_done";
+      case l_bluestore_state_kv_queued_lat: return "kv_queued";
+      case l_bluestore_state_kv_committing_lat: return "kv_committing";
+      case l_bluestore_state_kv_done_lat: return "kv_done";
+      case l_bluestore_state_wal_queued_lat: return "wal_queued";
+      case l_bluestore_state_wal_applying_lat: return "wal_applying";
+      case l_bluestore_state_wal_aio_wait_lat: return "wal_aio_wait";
+      case l_bluestore_state_wal_cleanup_lat: return "wal_cleanup";
+      case l_bluestore_state_finishing_lat: return "finishing";
+      case l_bluestore_state_done_lat: return "done";
+      }
+      return "???";
+    }
+#endif
+
+    void log_state_latency(PerfCounters *logger, int state) {
+      utime_t lat, now = ceph_clock_now();
       lat = now - last_stamp;
       logger->tinc(state, lat);
+#if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
+      if (state >= l_bluestore_state_prepare_lat && state <= l_bluestore_state_done_lat) {
+        double usecs = (now.to_nsec()-last_stamp.to_nsec())/1000;
+        OID_ELAPSED("", usecs, get_state_latency_name(state));
+      }
+#endif
       last_stamp = now;
     }
 
@@ -1229,6 +1255,7 @@ public:
 
     //记录哪些onode需要更新或者写
     set<OnodeRef> onodes;     ///< these need to be updated/written
+    set<OnodeRef> modified_objects;  ///< objects we modified (and need a ref)
     set<SharedBlobRef> shared_blobs;  ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs_written; ///< update these on io completion //记录那些blobs被写了
 
@@ -1308,7 +1335,7 @@ public:
     uint64_t last_nid = 0;     ///< if non-zero, highest new nid we allocated
     uint64_t last_blobid = 0;  ///< if non-zero, highest new blobid we allocated
 
-    explicit TransContext(OpSequencer *o)
+    explicit TransContext(CephContext* cct, OpSequencer *o)
       : state(STATE_PREPARE),
 	osr(o),
 	ops(0),
@@ -1317,8 +1344,8 @@ public:
 	onreadable(NULL),
 	onreadable_sync(NULL),
 	wal_txn(NULL),
-	ioc(this),
-	start(ceph_clock_now(g_ceph_context)) {
+	ioc(cct, this),
+	start(ceph_clock_now()) {
         last_stamp = start;
     }
     ~TransContext() {
@@ -1330,6 +1357,15 @@ public:
     }
     void write_shared_blob(SharedBlobRef &sb) {//将sb加入到shared_blobs中
       shared_blobs.insert(sb);
+    }
+    /// note we logically modified object (when onode itself is unmodified)
+    void note_modified_object(OnodeRef &o) {
+      // onode itself isn't written, though
+      modified_objects.insert(o);
+    }
+    void removed(OnodeRef& o) {
+      onodes.erase(o);
+      modified_objects.erase(o);
     }
   };
 
@@ -1366,9 +1402,10 @@ public:
 
     std::atomic_int kv_committing_serially = {0};
 
-    OpSequencer()
+    OpSequencer(CephContext* cct)
 	//set the qlock to PTHREAD_MUTEX_RECURSIVE mode
-      : parent(NULL) {
+      : Sequencer_impl(cct),
+	parent(NULL) {
     }
     ~OpSequencer() {
       assert(q.empty());
@@ -1502,7 +1539,6 @@ public:
   // --------------------------------------------------------
   // members
 private:
-  CephContext *cct;
   BlueFS *bluefs;//用于db,slow等块设备
   unsigned bluefs_shared_bdev;  ///< which bluefs bdev we are sharing
   KeyValueDB *db;//指向key-value类数据库
@@ -1645,7 +1681,8 @@ private:
 				   bool create);
 
   int _write_bdev_label(string path, bluestore_bdev_label_t label);
-  static int _read_bdev_label(string path, bluestore_bdev_label_t *label);
+  static int _read_bdev_label(CephContext* cct, string path,
+			      bluestore_bdev_label_t *label);
   int _check_or_set_bdev_label(string path, uint64_t size, string desc,
 			       bool create);
 
@@ -1653,8 +1690,8 @@ private:
   int _open_super_meta();
 
   int _reconcile_bluefs_freespace();
-  int _balance_bluefs_freespace(vector<bluestore_pextent_t> *extents);
-  void _commit_bluefs_freespace(const vector<bluestore_pextent_t>& extents);
+  int _balance_bluefs_freespace(PExtentVector *extents);
+  void _commit_bluefs_freespace(const PExtentVector& extents);
 
   CollectionRef _get_collection(const coll_t& cid);
   void _queue_reap_collection(CollectionRef& c);
@@ -1709,7 +1746,7 @@ private:
 
   int _fsck_check_extents(
     const ghobject_t& oid,
-    const vector<bluestore_pextent_t>& extents,
+    const PExtentVector& extents,
     bool compressed,
     boost::dynamic_bitset<> &used_blocks,
     store_statfs_t& expected_statfs);
@@ -1721,7 +1758,7 @@ private:
     uint64_t offset,
     bufferlist& bl,
     unsigned flags) {
-    b->shared_blob->bc.write(txc->seq, offset, bl, flags);
+    b->shared_blob->bc.write(b->shared_blob->get_cache(), txc->seq, offset, bl, flags);
     txc->shared_blobs_written.insert(b->shared_blob);
   }
 
@@ -1740,6 +1777,7 @@ private:
   }
 public:
   BlueStore(CephContext *cct, const string& path);
+  BlueStore(CephContext *cct, const string& path, uint64_t min_alloc_size); // Ctor for UT only
   ~BlueStore();
 
   string get_type() override {
@@ -1751,7 +1789,8 @@ public:
   bool wants_journal() override { return false; };
   bool allows_journal() override { return false; };
 
-  static int get_block_device_fsid(const string& path, uuid_d *fsid);
+  static int get_block_device_fsid(CephContext* cct, const string& path,
+				   uuid_d *fsid);
 
   bool test_mount_in_use() override;
 
@@ -1975,22 +2014,22 @@ public:
     debug_mdata_error_objects.insert(o);
   }
 private:
-  bool _debug_data_eio(const ghobject_t& o) {//故障注入
-    if (!g_conf->bluestore_debug_inject_read_err) {
+  bool _debug_data_eio(const ghobject_t& o) {
+    if (!cct->_conf->bluestore_debug_inject_read_err) {
       return false;
     }
     RWLock::RLocker l(debug_read_error_lock);
     return debug_data_error_objects.count(o);
   }
   bool _debug_mdata_eio(const ghobject_t& o) {
-    if (!g_conf->bluestore_debug_inject_read_err) {
+    if (!cct->_conf->bluestore_debug_inject_read_err) {
       return false;
     }
     RWLock::RLocker l(debug_read_error_lock);
     return debug_mdata_error_objects.count(o);
   }
   void _debug_obj_on_delete(const ghobject_t& o) {
-    if (g_conf->bluestore_debug_inject_read_err) {
+    if (cct->_conf->bluestore_debug_inject_read_err) {
       RWLock::WLocker l(debug_read_error_lock);
       debug_data_error_objects.erase(o);
       debug_mdata_error_objects.erase(o);
@@ -2174,14 +2213,19 @@ private:
 	      OnodeRef& oldo,
 	      OnodeRef& newo,
 	      const ghobject_t& new_oid);
-  int _create_collection(TransContext *txc, coll_t cid, unsigned bits,
-			 CollectionRef *c);
-  int _remove_collection(TransContext *txc, coll_t cid, CollectionRef *c);
+  int _create_collection(TransContext *txc, const coll_t &cid,
+			 unsigned bits, CollectionRef *c);
+  int _remove_collection(TransContext *txc, const coll_t &cid,
+                         CollectionRef *c);
   int _split_collection(TransContext *txc,
 			CollectionRef& c,
 			CollectionRef& d,
 			unsigned bits, int rem);
 
+  void op_queue_reserve_throttle(TransContext *txc);
+  void op_queue_release_throttle(TransContext *txc);
+  void op_queue_reserve_wal_throttle(TransContext *txc);
+  void op_queue_release_wal_throttle(TransContext *txc);
 };
 
 inline ostream& operator<<(ostream& out, const BlueStore::OpSequencer& s) {

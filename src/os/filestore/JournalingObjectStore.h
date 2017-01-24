@@ -27,12 +27,13 @@ protected:
 
 
   class SubmitManager {
+    CephContext* cct;
     Mutex lock;
     uint64_t op_seq;
     uint64_t op_submitted;
   public:
-    SubmitManager() :
-      lock("JOS::SubmitManager::lock", false, true, false, g_ceph_context),
+    SubmitManager(CephContext* cct) :
+      cct(cct), lock("JOS::SubmitManager::lock", false, true, false, cct),
       op_seq(0), op_submitted(0)
     {}
     uint64_t op_submit_start();
@@ -47,6 +48,7 @@ protected:
   } submit_manager;
 
   class ApplyManager {
+    CephContext* cct;
     Journal *&journal;
     Finisher &finisher;
 
@@ -61,13 +63,13 @@ protected:
     uint64_t committing_seq, committed_seq;//正在提交的seq,已经提交的seq
 
   public:
-    ApplyManager(Journal *&j, Finisher &f) :
-      journal(j), finisher(f),
-      apply_lock("JOS::ApplyManager::apply_lock", false, true, false, g_ceph_context),
+    ApplyManager(CephContext* cct, Journal *&j, Finisher &f) :
+      cct(cct), journal(j), finisher(f),
+      apply_lock("JOS::ApplyManager::apply_lock", false, true, false, cct),
       blocked(false),
       open_ops(0),
       max_applied_seq(0),
-      com_lock("JOS::ApplyManager::com_lock", false, true, false, g_ceph_context),
+      com_lock("JOS::ApplyManager::com_lock", false, true, false, cct),
       committing_seq(0), committed_seq(0) {}
     void reset() {
       assert(open_ops == 0);
@@ -130,11 +132,12 @@ public:
 
 public:
   //构造函数,path用于指出数据存放的位置
-  explicit JournalingObjectStore(const std::string& path)
-    : ObjectStore(path),
+  JournalingObjectStore(CephContext* cct, const std::string& path)
+    : ObjectStore(cct, path),
       journal(NULL),
-      finisher(g_ceph_context, "JournalObjectStore", "fn_jrn_objstore"),
-      apply_manager(journal, finisher),
+      finisher(cct, "JournalObjectStore", "fn_jrn_objstore"),
+      submit_manager(cct),
+      apply_manager(cct, journal, finisher),
       replaying(false) {}
 
   ~JournalingObjectStore() {

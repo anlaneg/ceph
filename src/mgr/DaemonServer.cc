@@ -19,6 +19,7 @@
 #include "messages/MCommandReply.h"
 #include "messages/MPGStats.h"
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mgr
 #undef dout_prefix
 #define dout_prefix *_dout << "mgr.server " << __func__ << " "
@@ -88,11 +89,12 @@ bool DaemonServer::ms_verify_authorizer(Connection *con,
   EntityName name;
   uint64_t global_id = 0;
 
-  is_valid = handler->verify_authorizer(cct, monc->rotating_secrets,
-						  authorizer_data,
-                                                  authorizer_reply, name,
-                                                  global_id, caps_info,
-                                                  session_key);
+  is_valid = handler->verify_authorizer(
+    cct, monc->rotating_secrets.get(),
+    authorizer_data,
+    authorizer_reply, name,
+    global_id, caps_info,
+    session_key);
 
   // TODO: invent some caps suitable for ceph-mgr
 
@@ -164,7 +166,7 @@ bool DaemonServer::handle_open(MMgrOpen *m)
           << m->daemon_name << dendl;
 
   auto configure = new MMgrConfigure();
-  configure->stats_period = 5;
+  configure->stats_period = g_conf->mgr_stats_period;
   m->get_connection()->send_message(configure);
 
   if (daemon_state.exists(key)) {

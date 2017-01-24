@@ -107,12 +107,6 @@ MonCommand mon_commands[] = {
   {parsesig, helptext, modulename, req_perms, avail, flags},
 #include <mon/MonCommands.h>
 };
-#undef COMMAND
-MonCommand classic_mon_commands[] = {
-#define COMMAND(parsesig, helptext, modulename, req_perms, avail)	\
-  {parsesig, helptext, modulename, req_perms, avail},
-#include <mon/DumplingMonCommands.h>
-};
 
 
 long parse_pos_long(const char *s, ostream *pss)
@@ -217,7 +211,7 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
   bool r = mon_caps->parse("allow *", NULL);
   assert(r);
 
-  exited_quorum = ceph_clock_now(g_ceph_context);
+  exited_quorum = ceph_clock_now();
 
   // assume our commands until we have an election.  this only means
   // we won't reply with EINVAL before the election; any command that
@@ -259,8 +253,7 @@ Monitor::~Monitor()
   delete paxos;
   assert(session_map.sessions.empty());
   delete mon_caps;
-  if (leader_supported_mon_commands != mon_commands &&
-      leader_supported_mon_commands != classic_mon_commands)
+  if (leader_supported_mon_commands != mon_commands)
     delete[] leader_supported_mon_commands;
 }
 
@@ -540,7 +533,7 @@ void Monitor::read_features_off_disk(MonitorDBStore *store, CompatSet *features)
     *features = get_legacy_features();
 
     features->encode(featuresbl);
-    MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+    auto t(std::make_shared<MonitorDBStore::Transaction>());
     t->put(MONITOR_NAME, COMPAT_SET_LOC, featuresbl);
     store->apply_transaction(t);
   } else {
@@ -957,8 +950,6 @@ int Monitor::init()
   int cmdsize;
   get_locally_supported_monitor_commands(&cmds, &cmdsize);
   MonCommand::encode_array(cmds, cmdsize, supported_commands_bl);
-  get_classic_monitor_commands(&cmds, &cmdsize);
-  MonCommand::encode_array(cmds, cmdsize, classic_commands_bl);
 
   return 0;
 }
@@ -1221,7 +1212,7 @@ void Monitor::_reset()
 
   leader_since = utime_t();
   if (!quorum.empty()) {
-    exited_quorum = ceph_clock_now(g_ceph_context);
+    exited_quorum = ceph_clock_now();
   }
   quorum.clear();
   outside_quorum.clear();
@@ -1344,7 +1335,7 @@ void Monitor::sync_start(entity_inst_t &other, bool full)//开始同步状态
 
   if (sync_full) {//全同步
     // stash key state, and mark that we are syncing
-    MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+    auto t(std::make_shared<MonitorDBStore::Transaction>());
     sync_stash_critical_state(t);
     t->put("mon_sync", "in_sync", 1);//同步标记
 
@@ -1409,7 +1400,7 @@ void Monitor::sync_finish(version_t last_committed)
 
   if (sync_full) {
     // finalize the paxos commits
-    MonitorDBStore::TransactionRef tx(new MonitorDBStore::Transaction);
+    auto tx(std::make_shared<MonitorDBStore::Transaction>());
     paxos->read_and_prepare_transactions(tx, sync_start_version,
 					 last_committed);
     tx->put(paxos->get_name(), "last_committed", last_committed);
@@ -1425,7 +1416,7 @@ void Monitor::sync_finish(version_t last_committed)
 
   assert(g_conf->mon_sync_requester_kill_at != 8);
 
-  MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+  auto t(std::make_shared<MonitorDBStore::Transaction>());
   t->erase("mon_sync", "in_sync");
   t->erase("mon_sync", "force_sync");
   t->erase("mon_sync", "last_committed_floor");
@@ -1564,7 +1555,7 @@ void Monitor::handle_sync_get_chunk(MonOpRequestRef op)
   }
 
   MMonSync *reply = new MMonSync(MMonSync::OP_CHUNK, sp.cookie);
-  MonitorDBStore::TransactionRef tx(new MonitorDBStore::Transaction);
+  auto tx(std::make_shared<MonitorDBStore::Transaction>());
 
   int left = g_conf->mon_sync_max_payload_size;
   while (sp.last_committed < paxos->get_version() && left > 0) {
@@ -1658,7 +1649,7 @@ void Monitor::handle_sync_chunk(MonOpRequestRef op)
   assert(state == STATE_SYNCHRONIZING);
   assert(g_conf->mon_sync_requester_kill_at != 5);
 
-  MonitorDBStore::TransactionRef tx(new MonitorDBStore::Transaction);
+  auto tx(std::make_shared<MonitorDBStore::Transaction>());
   tx->append_from_encoded(m->chunk_bl);
 
   dout(30) << __func__ << " tx dump:\n";
@@ -1673,7 +1664,7 @@ void Monitor::handle_sync_chunk(MonOpRequestRef op)
 
   if (!sync_full) {
     dout(10) << __func__ << " applying recent paxos transactions as we go" << dendl;
-    MonitorDBStore::TransactionRef tx(new MonitorDBStore::Transaction);
+    auto tx(std::make_shared<MonitorDBStore::Transaction>());
     paxos->read_and_prepare_transactions(tx, paxos->get_version() + 1,
 					 m->last_committed);
     tx->put(paxos->get_name(), "last_committed", m->last_committed);
@@ -1706,7 +1697,7 @@ void Monitor::sync_trim_providers()
 {
   dout(20) << __func__ << dendl;
 
-  utime_t now = ceph_clock_now(g_ceph_context);
+  utime_t now = ceph_clock_now();
   map<uint64_t,SyncProvider>::iterator p = sync_providers.begin();
   while (p != sync_providers.end()) {
     if (now > p->second.timeout) {
@@ -2022,7 +2013,7 @@ void Monitor::win_standalone_election()
   win_election(elector.get_epoch(), q,
                CEPH_FEATURES_ALL,
                ceph::features::mon::get_supported(),
-               my_cmds, cmdsize, NULL);
+               my_cmds, cmdsize);
 }
 
 const utime_t& Monitor::get_leader_since() const
@@ -2050,8 +2041,7 @@ void Monitor::_finish_svc_election()
 
 void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
                            const mon_feature_t& mon_features,
-                           const MonCommand *cmdset, int cmdsize,
-                           const set<int> *classic_monitors)
+                           const MonCommand *cmdset, int cmdsize)
 {
   dout(10) << __func__ << " epoch " << epoch << " quorum " << active
 	   << " features " << features
@@ -2059,7 +2049,7 @@ void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
            << dendl;
   assert(is_electing());
   state = STATE_LEADER;
-  leader_since = ceph_clock_now(g_ceph_context);
+  leader_since = ceph_clock_now();
   leader = rank;
   quorum = active;
   quorum_con_features = features;
@@ -2070,8 +2060,6 @@ void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
 		<< " won leader election with quorum " << quorum << "\n";
 
   set_leader_supported_commands(cmdset, cmdsize);
-  if (classic_monitors)
-    classic_mons = *classic_monitors;
 
   paxos->leader_init();//针对leader进行初始化。
   // NOTE: tell monmap monitor first.  This is important for the
@@ -2244,7 +2232,7 @@ void Monitor::sync_force(Formatter *f, ostream& ss)
     free_formatter = true;
   }
 
-  MonitorDBStore::TransactionRef tx(new MonitorDBStore::Transaction);
+  auto tx(std::make_shared<MonitorDBStore::Transaction>());
   sync_stash_critical_state(tx);
   tx->put("mon_sync", "force_sync", 1);
   store->apply_transaction(tx);
@@ -2404,7 +2392,7 @@ void Monitor::health_tick_stop()
 
 utime_t Monitor::health_interval_calc_next_update()
 {
-  utime_t now = ceph_clock_now(cct);
+  utime_t now = ceph_clock_now();
 
   time_t secs = now.sec();
   int remainder = secs % cct->_conf->mon_health_to_clog_interval;
@@ -2803,15 +2791,9 @@ void Monitor::get_locally_supported_monitor_commands(const MonCommand **cmds,
   *cmds = mon_commands;
   *count = ARRAY_SIZE(mon_commands);
 }
-void Monitor::get_classic_monitor_commands(const MonCommand **cmds, int *count)
-{
-  *cmds = classic_mon_commands;
-  *count = ARRAY_SIZE(classic_mon_commands);
-}
 void Monitor::set_leader_supported_commands(const MonCommand *cmds, int size)
 {
-  if (leader_supported_mon_commands != mon_commands &&
-      leader_supported_mon_commands != classic_mon_commands)
+  if (leader_supported_mon_commands != mon_commands)
     delete[] leader_supported_mon_commands;
   leader_supported_mon_commands = cmds;
   leader_supported_mon_commands_size = size;
@@ -3074,9 +3056,9 @@ void Monitor::handle_command(MonOpRequestRef op)
 
   if (prefix == "compact" || prefix == "mon compact") {
     dout(1) << "triggering manual compaction" << dendl;
-    utime_t start = ceph_clock_now(g_ceph_context);
+    utime_t start = ceph_clock_now();
     store->compact();
-    utime_t end = ceph_clock_now(g_ceph_context);
+    utime_t end = ceph_clock_now();
     end -= start;
     dout(1) << "finished manual compaction in " << end << " seconds" << dendl;
     ostringstream oss;
@@ -3165,7 +3147,7 @@ void Monitor::handle_command(MonOpRequestRef op)
     f->dump_stream("cluster_fingerprint") << fingerprint;
     f->dump_string("version", ceph_version_to_str());
     f->dump_string("commit", git_version_to_str());
-    f->dump_stream("timestamp") << ceph_clock_now(NULL);
+    f->dump_stream("timestamp") << ceph_clock_now();
 
     vector<string> tagsvec;
     cmd_getval(g_ceph_context, cmdmap, "tags", tagsvec);
@@ -3712,7 +3694,7 @@ void Monitor::waitlist_or_zap_client(MonOpRequestRef op)
   Message *m = op->get_req();
   MonSession *s = op->get_session();
   ConnectionRef con = op->get_connection();
-  utime_t too_old = ceph_clock_now(g_ceph_context);
+  utime_t too_old = ceph_clock_now();
   too_old -= g_ceph_context->_conf->mon_lease;
   if (m->get_recv_stamp() > too_old &&
       con->is_connected()) {
@@ -3782,7 +3764,7 @@ void Monitor::_ms_dispatch(Message *m)
 
   assert(s);
 
-  s->session_timeout = ceph_clock_now(NULL);
+  s->session_timeout = ceph_clock_now();
   s->session_timeout += g_conf->mon_session_timeout;
 
   if (s->auth_handler) {
@@ -4097,7 +4079,7 @@ void Monitor::timecheck_start_round()
 
   if (timecheck_round % 2) {
     dout(10) << __func__ << " there's a timecheck going on" << dendl;
-    utime_t curr_time = ceph_clock_now(g_ceph_context);
+    utime_t curr_time = ceph_clock_now();
     double max = g_conf->mon_timecheck_interval*3;
     if (curr_time - timecheck_round_start < max) {
       dout(10) << __func__ << " keep current round going" << dendl;
@@ -4112,7 +4094,7 @@ void Monitor::timecheck_start_round()
   assert(timecheck_round % 2 == 0);
   timecheck_acks = 0;
   timecheck_round ++;
-  timecheck_round_start = ceph_clock_now(g_ceph_context);
+  timecheck_round_start = ceph_clock_now();
   dout(10) << __func__ << " new " << timecheck_round << dendl;
 
   timecheck();
@@ -4296,7 +4278,7 @@ void Monitor::timecheck()
       continue;
 
     entity_inst_t inst = monmap->get_inst(*it);
-    utime_t curr_time = ceph_clock_now(g_ceph_context);
+    utime_t curr_time = ceph_clock_now();
     timecheck_waiting[inst] = curr_time;
     MTimeCheck *m = new MTimeCheck(MTimeCheck::OP_PING);
     m->epoch = get_epoch();
@@ -4347,7 +4329,7 @@ void Monitor::handle_timecheck_leader(MonOpRequestRef op)
     return;
   }
 
-  utime_t curr_time = ceph_clock_now(g_ceph_context);
+  utime_t curr_time = ceph_clock_now();
 
   assert(timecheck_waiting.count(other) > 0);
   utime_t timecheck_sent = timecheck_waiting[other];
@@ -4475,7 +4457,7 @@ void Monitor::handle_timecheck_peon(MonOpRequestRef op)
 
   assert((timecheck_round % 2) != 0);
   MTimeCheck *reply = new MTimeCheck(MTimeCheck::OP_PONG);
-  utime_t curr_time = ceph_clock_now(g_ceph_context);
+  utime_t curr_time = ceph_clock_now();
   reply->timestamp = curr_time;
   reply->epoch = m->epoch;
   reply->round = m->round;
@@ -5091,7 +5073,7 @@ void Monitor::tick()
   }
   
   // trim sessions
-  utime_t now = ceph_clock_now(g_ceph_context);
+  utime_t now = ceph_clock_now();
   xlist<MonSession*>::iterator p = session_map.sessions.begin();
 
   bool out_for_too_long = (!exited_quorum.is_zero()
@@ -5187,7 +5169,7 @@ int Monitor::check_fsid()
 
 int Monitor::write_fsid()
 {
-  MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+  auto t(std::make_shared<MonitorDBStore::Transaction>());
   write_fsid(t);
   int r = store->apply_transaction(t);
   return r;
@@ -5212,7 +5194,7 @@ int Monitor::write_fsid(MonitorDBStore::TransactionRef t)
  */
 int Monitor::mkfs(bufferlist& osdmapbl)
 {
-  MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+  auto t(std::make_shared<MonitorDBStore::Transaction>());
 
   // verify cluster fsid
   int r = check_fsid();

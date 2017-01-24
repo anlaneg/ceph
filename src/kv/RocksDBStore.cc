@@ -29,6 +29,7 @@ using std::string;
 
 #include "common/debug.h"
 
+#define dout_context cct
 #define dout_subsys ceph_subsys_rocksdb
 #undef dout_prefix
 #define dout_prefix *_dout << "rocksdb: "
@@ -415,7 +416,7 @@ void RocksDBStore::get_statistics(Formatter *f)
 
 int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)//写数据库
 {
-  utime_t start = ceph_clock_now(g_ceph_context);
+  utime_t start = ceph_clock_now();
   // enable rocksdb breakdown
   // considering performance overhead, default is disabled
   if (g_conf->rocksdb_perf) {
@@ -439,7 +440,7 @@ int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)//写数据库
     derr << __func__ << " error: " << s.ToString() << " code = " << s.code()
          << " Rocksdb transaction: " << rocks_txc.seen << dendl;
   }
-  utime_t lat = ceph_clock_now(g_ceph_context) - start;
+  utime_t lat = ceph_clock_now() - start;
 
   if (g_conf->rocksdb_perf) {
     utime_t write_memtable_time;
@@ -468,7 +469,7 @@ int RocksDBStore::submit_transaction(KeyValueDB::Transaction t)//写数据库
 
 int RocksDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
 {
-  utime_t start = ceph_clock_now(g_ceph_context);
+  utime_t start = ceph_clock_now();
   // enable rocksdb breakdown
   // considering performance overhead, default is disabled
   if (g_conf->rocksdb_perf) {
@@ -493,7 +494,7 @@ int RocksDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
     derr << __func__ << " error: " << s.ToString() << " code = " << s.code()
          << " Rocksdb transaction: " << rocks_txc.seen << dendl;
   }
-  utime_t lat = ceph_clock_now(g_ceph_context) - start;
+  utime_t lat = ceph_clock_now() - start;
 
   if (g_conf->rocksdb_perf) {
     utime_t write_memtable_time;
@@ -545,10 +546,40 @@ void RocksDBStore::RocksDBTransactionImpl::set(
   }
 }
 
+void RocksDBStore::RocksDBTransactionImpl::set(
+  const string &prefix,
+  const char *k, size_t keylen,
+  const bufferlist &to_set_bl)
+{
+  string key;
+  combine_strings(prefix, k, keylen, &key);
+
+  // bufferlist::c_str() is non-constant, so we can't call c_str()
+  if (to_set_bl.is_contiguous() && to_set_bl.length() > 0) {
+    bat.Put(rocksdb::Slice(key),
+	     rocksdb::Slice(to_set_bl.buffers().front().c_str(),
+			    to_set_bl.length()));
+  } else {
+    // make a copy
+    bufferlist val = to_set_bl;
+    bat.Put(rocksdb::Slice(key),
+	     rocksdb::Slice(val.c_str(), val.length()));
+  }
+}
+
 void RocksDBStore::RocksDBTransactionImpl::rmkey(const string &prefix,
 					         const string &k)
 {
   bat.Delete(combine_strings(prefix, k));
+}
+
+void RocksDBStore::RocksDBTransactionImpl::rmkey(const string &prefix,
+					         const char *k,
+						 size_t keylen)
+{
+  string key;
+  combine_strings(prefix, k, keylen, &key);
+  bat.Delete(key);
 }
 
 void RocksDBStore::RocksDBTransactionImpl::rm_single_key(const string &prefix,
@@ -593,7 +624,7 @@ int RocksDBStore::get(
     const std::set<string> &keys,
     std::map<string, bufferlist> *out)
 {
-  utime_t start = ceph_clock_now(g_ceph_context);
+  utime_t start = ceph_clock_now();
   for (std::set<string>::const_iterator i = keys.begin();
        i != keys.end(); ++i) {
     std::string value;
@@ -602,7 +633,7 @@ int RocksDBStore::get(
     if (status.ok())
       (*out)[*i].append(value);
   }
-  utime_t lat = ceph_clock_now(g_ceph_context) - start;
+  utime_t lat = ceph_clock_now() - start;
   logger->inc(l_rocksdb_gets);
   logger->tinc(l_rocksdb_get_latency, lat);
   return 0;
@@ -614,7 +645,7 @@ int RocksDBStore::get(
     bufferlist *out)
 {
   assert(out && (out->length() == 0));
-  utime_t start = ceph_clock_now(g_ceph_context);
+  utime_t start = ceph_clock_now();
   int r = 0;
   string value, k;
   rocksdb::Status s;
@@ -625,25 +656,34 @@ int RocksDBStore::get(
   } else {
     r = -ENOENT;
   }
-  utime_t lat = ceph_clock_now(g_ceph_context) - start;
+  utime_t lat = ceph_clock_now() - start;
   logger->inc(l_rocksdb_gets);
   logger->tinc(l_rocksdb_get_latency, lat);
   return r;
 }
 
-string RocksDBStore::combine_strings(const string &prefix, const string &value)
+int RocksDBStore::get(
+  const string& prefix,
+  const char *key,
+  size_t keylen,
+  bufferlist *out)
 {
-  string out = prefix;
-  out.push_back(0);
-  out.append(value);
-  return out;
-}
-
-bufferlist RocksDBStore::to_bufferlist(rocksdb::Slice in)
-{
-  bufferlist bl;
-  bl.append(bufferptr(in.data(), in.size()));
-  return bl;
+  assert(out && (out->length() == 0));
+  utime_t start = ceph_clock_now();
+  int r = 0;
+  string value, k;
+  combine_strings(prefix, key, keylen, &k);
+  rocksdb::Status s;
+  s = db->Get(rocksdb::ReadOptions(), rocksdb::Slice(k), &value);
+  if (s.ok()) {
+    out->append(value);
+  } else {
+    r = -ENOENT;
+  }
+  utime_t lat = ceph_clock_now() - start;
+  logger->inc(l_rocksdb_gets);
+  logger->tinc(l_rocksdb_get_latency, lat);
+  return r;
 }
 
 int RocksDBStore::split_key(rocksdb::Slice in, string *prefix, string *key)

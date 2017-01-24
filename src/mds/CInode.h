@@ -37,6 +37,8 @@
 #include <set>
 #include <map>
 
+#define dout_context g_ceph_context
+
 class Context;
 class CDentry;
 class CDir;
@@ -218,6 +220,7 @@ public:
   static const int STATE_DIRTYPOOL =   (1<<18);
   static const int STATE_REPAIRSTATS = (1<<19);
   static const int STATE_MISSINGOBJS = (1<<20);
+  static const int STATE_EVALSTALECAPS = (1<<21);
   // orphan inode needs notification of releasing reference
   static const int STATE_ORPHAN =	STATE_NOTIFYREF;
 
@@ -666,7 +669,7 @@ public:
     item_dirty_dirfrag_nest(this), 
     item_dirty_dirfrag_dirfragtree(this), 
     auth_pin_freeze_allowance(0),
-    pop(ceph_clock_now(g_ceph_context)),
+    pop(ceph_clock_now()),
     versionlock(this, &versionlock_type),
     authlock(this, &authlock_type),
     linklock(this, &linklock_type),
@@ -1161,4 +1164,5 @@ private:
 
 ostream& operator<<(ostream& out, const CInode::scrub_stamp_info_t& si);
 
+#undef dout_context
 #endif

@@ -13,11 +13,12 @@
 #include "include/stringify.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "global/global_context.h"
-#include "librbd/ObjectWatcher.h"
+#include "librbd/Watcher.h"
 #include "librbd/internal.h"
 #include "Replayer.h"
 #include "Threads.h"
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd_mirror
 #undef dout_prefix
 #define dout_prefix *_dout << "rbd::mirror::Replayer: " \
@@ -208,10 +209,10 @@ public:
   }
 
 private:
-  class Watcher : public librbd::ObjectWatcher<> {
+  class Watcher : public librbd::Watcher {
   public:
     Watcher(librados::IoCtx &ioctx, ContextWQ *work_queue) :
-      ObjectWatcher<>(ioctx, work_queue) {
+      librbd::Watcher(ioctx, work_queue, RBD_MIRRORING) {
     }
 
     virtual std::string get_oid() const {
@@ -219,7 +220,7 @@ private:
     }
 
     virtual void handle_notify(uint64_t notify_id, uint64_t handle,
-			       bufferlist &bl) {
+                               bufferlist &bl) {
       bufferlist out;
       acknowledge_notify(notify_id, handle, out);
     }
@@ -457,8 +458,9 @@ void Replayer::run()
     if (m_blacklisted) {
       break;
     }
-    m_cond.WaitInterval(g_ceph_context, m_lock,
-	utime_t(g_ceph_context->_conf->rbd_mirror_image_state_check_interval, 0));
+    m_cond.WaitInterval(m_lock,
+			utime_t(g_ceph_context->_conf
+				->rbd_mirror_image_state_check_interval, 0));
   }
 
   ImageIds empty_sources;
@@ -468,7 +470,7 @@ void Replayer::run()
     if (m_image_replayers.empty()) {
       break;
     }
-    m_cond.WaitInterval(g_ceph_context, m_lock, seconds(1));
+    m_cond.WaitInterval(m_lock, seconds(1));
   }
 }
 

@@ -79,10 +79,10 @@ int IndexManager::init_index(coll_t c, const char *path, uint32_t version) {
   int r = set_version(path, version);
   if (r < 0)
     return r;
-  HashIndex index(c, path, g_conf->filestore_merge_threshold,
-		  g_conf->filestore_split_multiple,
+  HashIndex index(cct, c, path, cct->_conf->filestore_merge_threshold,
+		  cct->_conf->filestore_split_multiple,
 		  version,
-		  g_conf->filestore_index_retry_probability);
+		  cct->_conf->filestore_index_retry_probability);
   return index.init();
 }
 
@@ -101,8 +101,9 @@ int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **inde
     case CollectionIndex::HASH_INDEX_TAG_2: // fall through
     case CollectionIndex::HOBJECT_WITH_POOL: {
       // Must be a HashIndex
-      *index = new HashIndex(c, path, g_conf->filestore_merge_threshold,
-				   g_conf->filestore_split_multiple, version);
+      *index = new HashIndex(cct, c, path,
+			     cct->_conf->filestore_merge_threshold,
+			     cct->_conf->filestore_split_multiple, version);
       return 0;
     }
     default: ceph_abort();
@@ -110,10 +111,10 @@ int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **inde
 
   } else {
     // No need to check
-    *index = new HashIndex(c, path, g_conf->filestore_merge_threshold,
-				 g_conf->filestore_split_multiple,
-				 CollectionIndex::HOBJECT_WITH_POOL,
-				 g_conf->filestore_index_retry_probability);
+    *index = new HashIndex(cct, c, path, cct->_conf->filestore_merge_threshold,
+			   cct->_conf->filestore_split_multiple,
+			   CollectionIndex::HOBJECT_WITH_POOL,
+			   cct->_conf->filestore_index_retry_probability);
     return 0;
   }
 }

@@ -11,6 +11,7 @@
 #include "include/btree_interval_set.h"
 
 class BitMapAllocator : public Allocator {
+  CephContext* cct;
   std::mutex m_lock;
 
   int64_t m_block_size;//块大小
@@ -20,27 +21,20 @@ class BitMapAllocator : public Allocator {
 
   void insert_free(uint64_t offset, uint64_t len);
 
-  int alloc_extents_cont(uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
-                         int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents, int *count);
-
-  int alloc_extents_dis(uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
-                        int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents, int *count);
+  int64_t allocate_dis(
+    uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
+    int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents);
 
 public:
-  BitMapAllocator();
-  BitMapAllocator(int64_t device_size, int64_t block_size);
+  BitMapAllocator(CephContext* cct, int64_t device_size, int64_t block_size);
   ~BitMapAllocator();
 
   int reserve(uint64_t need);
   void unreserve(uint64_t unused);
 
-  int allocate(
-    uint64_t want_size, uint64_t alloc_unit, int64_t hint,
-    uint64_t *offset, uint32_t *length);
-
-  int alloc_extents(
+  int64_t allocate(
     uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
-    int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents, int *count);
+    int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents);
 
   int release(
     uint64_t offset, uint64_t length);

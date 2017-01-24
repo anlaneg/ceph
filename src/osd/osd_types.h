@@ -283,6 +283,7 @@ enum {
   CEPH_OSD_RMW_FLAG_FORCE_PROMOTE   = (1 << 7),
   CEPH_OSD_RMW_FLAG_SKIP_HANDLE_CACHE = (1 << 8),
   CEPH_OSD_RMW_FLAG_SKIP_PROMOTE      = (1 << 9),
+  CEPH_OSD_RMW_FLAG_RWORDERED         = (1 << 10),
 };
 
 
@@ -4154,10 +4155,6 @@ public:
   int unstable_writes, readers, writers_waiting, readers_waiting;
 
 
-  // set if writes for this object are blocked on another objects recovery
-  ObjectContextRef blocked_by;      // object blocking our writes
-  set<ObjectContextRef> blocking;   // objects whose writes we block
-
   // any entity in obs.oi.watchers MUST be in either watchers or unconnected_watchers.
   map<pair<uint64_t, entity_name_t>, WatchRef> watchers;
 
@@ -4362,6 +4359,9 @@ public:
     }
     return false;
   }
+  bool try_get_read_lock() {
+    return rwstate.get_read_lock();
+  }
   void drop_recovery_read(list<OpRequestRef> *ls) {
     assert(rwstate.recovery_read_marker);
     rwstate.put_read(ls);
@@ -4521,6 +4521,7 @@ public:
   ObcLockManager() = default;
   ObcLockManager(ObcLockManager &&) = default;
   ObcLockManager(const ObcLockManager &) = delete;
+  ObcLockManager &operator=(ObcLockManager &&) = default;
   bool empty() const {
     return locks.empty();
   }
@@ -4581,6 +4582,23 @@ public:
       return false;
     }
   }
+
+  /// try get read lock
+  bool try_get_read_lock(
+    const hobject_t &hoid,
+    ObjectContextRef obc) {
+    assert(locks.find(hoid) == locks.end());
+    if (obc->try_get_read_lock()) {
+      locks.insert(
+	make_pair(
+	  hoid,
+	  ObjectLockState(obc, ObjectContext::RWState::RWREAD)));
+      return true;
+    } else {
+      return false;
+    }
+  }
+
   void put_locks(
     list<pair<hobject_t, list<OpRequestRef> > > *to_requeue,
     bool *requeue_recovery,

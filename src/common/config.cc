@@ -107,13 +107,13 @@ struct md_config_t::option_##name##_t {     \
 namespace {
 
 template <typename T>
-typename std::enable_if<!std::is_constructible<T>::value,
+typename std::enable_if<!std::is_destructible<T>::value,
                         md_config_t::validator_t>::type create_validator() {
   return md_config_t::validator_t();
 }
 
 template <typename T>
-typename std::enable_if<std::is_constructible<T>::value,
+typename std::enable_if<std::is_destructible<T>::value,
                         md_config_t::validator_t>::type create_validator() {
   // if T is defined (and not just forward declared), it implies
   // that a validator function exists. use a dummy typed pointer to
@@ -719,7 +719,7 @@ void md_config_t::_apply_changes(std::ostream *oss)
 	!_internal_field(key)) {
       (*oss) << key << " = '" << buf << "' ";
       if (range.first == range.second) {
-	(*oss) << "(unchangeable) ";
+	(*oss) << "(not observed, change may require restart) ";
       }
     }
     for (obs_map_t::iterator r = range.first; r != range.second; ++r) {

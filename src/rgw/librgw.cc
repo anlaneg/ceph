@@ -120,7 +120,7 @@ namespace rgw {
     // XXX move RGWLibIO and timing setup into process_request
 
 #if 0 /* XXX */
-    utime_t tm = ceph_clock_now(NULL);
+    utime_t tm = ceph_clock_now();
 #endif
 
     RGWLibIO io_ctx;
@@ -139,7 +139,7 @@ namespace rgw {
     // XXX move RGWLibIO and timing setup into process_request
 
 #if 0 /* XXX */
-    utime_t tm = ceph_clock_now(NULL);
+    utime_t tm = ceph_clock_now();
 #endif
 
     RGWLibIO io_ctx;
@@ -560,8 +560,6 @@ namespace rgw {
 
     dout(1) << "final shutdown" << dendl;
     cct.reset();
-
-    ceph::crypto::shutdown();
 
     return 0;
   } /* RGWLib::stop() */

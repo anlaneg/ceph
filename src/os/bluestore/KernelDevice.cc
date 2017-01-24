@@ -26,26 +26,26 @@
 #include "common/blkdev.h"
 #include "common/align.h"
 
+#define dout_context cct
 #define dout_subsys ceph_subsys_bdev
 #undef dout_prefix
 #define dout_prefix *_dout << "bdev(" << path << ") "
 
-KernelDevice::KernelDevice(aio_callback_t cb, void *cbpriv)
-  : fd_direct(-1),
+KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv)
+  : BlockDevice(cct),
+    fd_direct(-1),
     fd_buffered(-1),
     size(0), block_size(0),
     fs(NULL), aio(false), dio(false),
     debug_lock("KernelDevice::debug_lock"),
     flush_lock("KernelDevice::flush_lock"),
-    aio_queue(g_conf->bdev_aio_max_queue_depth),
+    aio_queue(cct->_conf->bdev_aio_max_queue_depth),
     aio_callback(cb),//设置回调
     aio_callback_priv(cbpriv),
     aio_stop(false),
     aio_thread(this),
     injecting_crash(0)
 {
-  zeros = buffer::create_page_aligned(1048576);
-  zeros.zero();
 }
 
 int KernelDevice::_lock()//锁文件
@@ -54,15 +54,14 @@ int KernelDevice::_lock()//锁文件
   memset(&l, 0, sizeof(l));
   l.l_type = F_WRLCK;
   l.l_whence = SEEK_SET;
-  l.l_start = 0;
-  l.l_len = 0;
   int r = ::fcntl(fd_direct, F_SETLK, &l);
   if (r < 0)
     return -errno;
   return 0;
 }
 
-int KernelDevice::open(string p)//打开指定块设备或者普通文件
+//打开指定块设备或者普通文件
+int KernelDevice::open(const string& p)
 {
   path = p;
   int r = 0;
@@ -70,7 +69,7 @@ int KernelDevice::open(string p)//打开指定块设备或者普通文件
 
   fd_direct = ::open(path.c_str(), O_RDWR | O_DIRECT);
   if (fd_direct < 0) {
-    int r = -errno;
+    r = -errno;
     derr << __func__ << " open got: " << cpp_strerror(r) << dendl;
     return r;
   }
@@ -81,7 +80,7 @@ int KernelDevice::open(string p)//打开指定块设备或者普通文件
     goto out_direct;
   }
   dio = true;
-  aio = g_conf->bdev_aio;
+  aio = cct->_conf->bdev_aio;
   if (!aio) {//当前不支持非aio情况
     assert(0 == "non-aio not supported");
   }
@@ -128,7 +127,7 @@ int KernelDevice::open(string p)//打开指定块设备或者普通文件
   // blksize doesn't strictly matter except that some file systems may
   // require a read/modify/write if we write something smaller than
   // it.
-  block_size = g_conf->bdev_block_size;
+  block_size = cct->_conf->bdev_block_size;
   if (block_size != (unsigned)st.st_blksize) {
     dout(1) << __func__ << " backing device/file reports st_blksize "
 	    << st.st_blksize << ", using bdev_block_size "
@@ -191,19 +190,20 @@ int KernelDevice::flush()//实现数据落盘
     return 0;
   }
   dout(10) << __func__ << " start" << dendl;
-  if (g_conf->bdev_inject_crash) {//测试用代码，故障注入，无需关注
+  if (cct->_conf->bdev_inject_crash) {
     ++injecting_crash;
     // sleep for a moment to give other threads a chance to submit or
     // wait on io that races with a flush.
     derr << __func__ << " injecting crash. first we sleep..." << dendl;
-    sleep(g_conf->bdev_inject_crash_flush_delay);
+    sleep(cct->_conf->bdev_inject_crash_flush_delay);
     derr << __func__ << " and now we die" << dendl;
-    g_ceph_context->_log->flush();
+    cct->_log->flush();
     _exit(1);
   }
-  utime_t start = ceph_clock_now(NULL);
-  int r = ::fdatasync(fd_direct);//同步
-  utime_t end = ceph_clock_now(NULL);
+  utime_t start = ceph_clock_now();
+  //同步
+  int r = ::fdatasync(fd_direct);
+  utime_t end = ceph_clock_now();
   utime_t dur = end - start;
   if (r < 0) {
     r = -errno;
@@ -247,8 +247,9 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
     dout(40) << __func__ << " polling" << dendl;
     int max = 16;
     FS::aio_t *aio[max];
-    int r = aio_queue.get_next_completed(g_conf->bdev_aio_poll_ms,
-					 aio, max);//获取kernel　aio完成情况
+    //获取kernel　aio完成情况
+    int r = aio_queue.get_next_completed(cct->_conf->bdev_aio_poll_ms,
+					 aio, max);
     if (r < 0) {
       derr << __func__ << " got " << cpp_strerror(r) << dendl;
     }
@@ -279,19 +280,19 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 	}
       }
     }
-    if (g_conf->bdev_debug_aio) {//调试代码
-      utime_t now = ceph_clock_now(NULL);
+    if (cct->_conf->bdev_debug_aio) {
+      utime_t now = ceph_clock_now();
       std::lock_guard<std::mutex> l(debug_queue_lock);
       if (debug_oldest) {
 	if (debug_stall_since == utime_t()) {
 	  debug_stall_since = now;
 	} else {
 	  utime_t cutoff = now;
-	  cutoff -= g_conf->bdev_debug_aio_suicide_timeout;
+	  cutoff -= cct->_conf->bdev_debug_aio_suicide_timeout;
 	  if (debug_stall_since < cutoff) {
 	    derr << __func__ << " stalled aio " << debug_oldest
 		 << " since " << debug_stall_since << ", timeout is "
-		 << g_conf->bdev_debug_aio_suicide_timeout
+		 << cct->_conf->bdev_debug_aio_suicide_timeout
 		 << "s, suicide" << dendl;
 	    assert(0 == "stalled aio... buggy kernel or bad device?");
 	  }
@@ -299,13 +300,13 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
       }
     }
     reap_ioc();
-    if (g_conf->bdev_inject_crash) {//调试代码
+    if (cct->_conf->bdev_inject_crash) {
       ++inject_crash_count;
-      if (inject_crash_count * g_conf->bdev_aio_poll_ms / 1000 >
-	  g_conf->bdev_inject_crash + g_conf->bdev_inject_crash_flush_delay) {
+      if (inject_crash_count * cct->_conf->bdev_aio_poll_ms / 1000 >
+	  cct->_conf->bdev_inject_crash + cct->_conf->bdev_inject_crash_flush_delay) {
 	derr << __func__ << " bdev_inject_crash trigger from aio thread"
 	     << dendl;
-	g_ceph_context->_log->flush();
+	cct->_log->flush();
 	_exit(1);
       }
     }
@@ -321,7 +322,7 @@ void KernelDevice::_aio_log_start(//调试性代码
 {
   dout(20) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
-  if (g_conf->bdev_debug_inflight_ios) {
+  if (cct->_conf->bdev_debug_inflight_ios) {
     Mutex::Locker l(debug_lock);
     if (debug_inflight.intersects(offset, length)) {
       derr << __func__ << " inflight overlap of 0x"
@@ -364,7 +365,7 @@ void KernelDevice::_aio_log_finish(//调试代码
 {
   dout(20) << __func__ << " " << aio << " 0x"
 	   << std::hex << offset << "~" << length << std::dec << dendl;
-  if (g_conf->bdev_debug_inflight_ios) {
+  if (cct->_conf->bdev_debug_inflight_ios) {
     Mutex::Locker l(debug_lock);
     debug_inflight.erase(offset, length);
   }
@@ -413,7 +414,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
     // do not dereference txc (or it's contents) after we submit (if
     // done == true and we don't loop)
     int retries = 0;
-    if (g_conf->bdev_debug_aio) {
+    if (cct->_conf->bdev_debug_aio) {
       std::lock_guard<std::mutex> l(debug_queue_lock);
       debug_aio_link(*cur);
     }
@@ -459,8 +460,8 @@ int KernelDevice::aio_write(//将bl写入到指定fd中，写的位置由offset�
     ioc->pending_aios.push_back(FS::aio_t(ioc, fd_direct));
     ++ioc->num_pending;
     FS::aio_t& aio = ioc->pending_aios.back();
-    if (g_conf->bdev_inject_crash &&
-	rand() % g_conf->bdev_inject_crash == 0) {//测试代码
+    if (cct->_conf->bdev_inject_crash &&
+	rand() % cct->_conf->bdev_inject_crash == 0) {
       derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
 	   << off << "~" << len << std::dec
 	   << dendl;
@@ -484,8 +485,8 @@ int KernelDevice::aio_write(//将bl写入到指定fd中，写的位置由offset�
   {
     dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
 	    << std::dec << " buffered" << dendl;
-    if (g_conf->bdev_inject_crash &&
-	rand() % g_conf->bdev_inject_crash == 0) {//故障注入代码，用于测试
+    if (cct->_conf->bdev_inject_crash &&
+	rand() % cct->_conf->bdev_inject_crash == 0) {
       derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
 	   << off << "~" << len << std::dec << dendl;
       ++injecting_crash;

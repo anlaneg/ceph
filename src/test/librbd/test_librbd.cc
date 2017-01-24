@@ -183,6 +183,12 @@ public:
     ASSERT_NE("", m_pool_name = create_pool());
   }
 
+  bool is_librados_test_stub() {
+    std::string fsid;
+    EXPECT_EQ(0, _rados.cluster_fsid(&fsid));
+    return fsid == "00000000-1111-2222-3333-444444444444";
+  }
+
   void validate_object_map(rbd_image_t image, bool *passed) {
     uint64_t flags;
     ASSERT_EQ(0, rbd_get_flags(image, &flags));
@@ -633,8 +639,7 @@ TEST_F(TestLibRBD, UpdateWatchAndResize)
     void wait_for_size(size_t size) {
       Mutex::Locker locker(m_lock);
       while (m_size != size) {
-	CephContext* cct = reinterpret_cast<CephContext*>(_rados.cct());
-	ASSERT_EQ(0, m_cond.WaitInterval(cct, m_lock, seconds(5)));
+	ASSERT_EQ(0, m_cond.WaitInterval(m_lock, seconds(5)));
       }
     }
     rbd_image_t &m_image;
@@ -685,8 +690,7 @@ TEST_F(TestLibRBD, UpdateWatchAndResizePP)
       void wait_for_size(size_t size) {
 	Mutex::Locker locker(m_lock);
 	while (m_size != size) {
-	  CephContext* cct = reinterpret_cast<CephContext*>(_rados.cct());
-	  ASSERT_EQ(0, m_cond.WaitInterval(cct, m_lock, seconds(5)));
+	  ASSERT_EQ(0, m_cond.WaitInterval(m_lock, seconds(5)));
 	}
       }
       librbd::Image &m_image;
@@ -3365,6 +3369,138 @@ TEST_F(TestLibRBD, Flatten)
   ASSERT_PASSED(validate_object_map, clone_image);
 }
 
+TEST_F(TestLibRBD, FlattenNoEmptyObjects)
+{
+  REQUIRE_FEATURE(RBD_FEATURE_LAYERING);
+
+  rados_ioctx_t ioctx;
+  rados_ioctx_create(_cluster, m_pool_name.c_str(), &ioctx);
+
+  librbd::RBD rbd;
+  std::string parent_name = get_temp_image_name();
+  uint64_t size = 4 << 20;
+  int order = 12; // smallest object size is 4K
+
+  bool old_format;
+  uint64_t features;
+  ASSERT_EQ(0, get_features(&old_format, &features));
+  ASSERT_FALSE(old_format);
+
+  // make a parent to clone from
+  ASSERT_EQ(0, create_image_full(ioctx, parent_name.c_str(), size, &order,
+                                 false, features));
+
+  rbd_image_t parent;
+  const int object_size = 1 << order;
+  const int object_num = size / object_size;
+  ASSERT_EQ(0, rbd_open(ioctx, parent_name.c_str(), &parent, NULL));
+  printf("made parent image \"%s\": %ldK (%d * %dK)\n", parent_name.c_str(),
+         (unsigned long)size, object_num, object_size/1024);
+
+  // write something into parent
+  char test_data[TEST_IO_SIZE + 1];
+  char zero_data[TEST_IO_SIZE + 1];
+  int i;
+  for (i = 0; i < TEST_IO_SIZE; ++i)
+    test_data[i] = (char) (rand() % (126 - 33) + 33);
+  test_data[TEST_IO_SIZE] = '\0';
+  memset(zero_data, 0, sizeof(zero_data));
+
+  // generate a random map which covers every objects with random
+  // offset
+  int count = 0;
+  map<uint64_t, uint64_t> write_tracker;
+  while (count < 10) {
+    uint64_t ono = rand() % object_num;
+    if (write_tracker.find(ono) == write_tracker.end()) {
+      uint64_t offset = rand() % (object_size - TEST_IO_SIZE);
+      write_tracker.insert(pair<uint64_t, uint64_t>(ono, offset));
+      count++;
+    }
+  }
+
+  printf("generated random write map:\n");
+  for (map<uint64_t, uint64_t>::iterator itr = write_tracker.begin();
+       itr != write_tracker.end(); ++itr)
+    printf("\t [%-8ld, %-8ld]\n",
+	   (unsigned long)itr->first, (unsigned long)itr->second);
+
+  printf("write data based on random map\n");
+  for (map<uint64_t, uint64_t>::iterator itr = write_tracker.begin();
+       itr != write_tracker.end(); ++itr) {
+    printf("\twrite object-%-4ld\t", (unsigned long)itr->first);
+    ASSERT_PASSED(write_test_data, parent, test_data, itr->first * object_size + itr->second, TEST_IO_SIZE, 0);
+  }
+
+  for (map<uint64_t, uint64_t>::iterator itr = write_tracker.begin();
+         itr != write_tracker.end(); ++itr) {
+    printf("\tread object-%-4ld\t", (unsigned long)itr->first);
+    ASSERT_PASSED(read_test_data, parent, test_data, itr->first * object_size + itr->second, TEST_IO_SIZE, 0);
+  }
+
+  // find out what objects the parent image has generated
+  rbd_image_info_t p_info;
+  ASSERT_EQ(0, rbd_stat(parent, &p_info, sizeof(p_info)));
+
+  int64_t data_pool_id = rbd_get_data_pool_id(parent);
+  rados_ioctx_t d_ioctx;
+  rados_ioctx_create2(_cluster, data_pool_id, &d_ioctx);
+
+  const char *entry;
+  set<string> obj_checker;
+  rados_list_ctx_t list_ctx;
+  ASSERT_EQ(0, rados_nobjects_list_open(d_ioctx, &list_ctx));
+  while (rados_nobjects_list_next(list_ctx, &entry, NULL, NULL) != -ENOENT) {
+    if (strstr(entry, p_info.block_name_prefix)) {
+      const char *block_name_suffix = entry + strlen(p_info.block_name_prefix) + 1;
+      obj_checker.insert(block_name_suffix);
+    }
+  }
+  rados_nobjects_list_close(list_ctx);
+  ASSERT_EQ(obj_checker.size(), write_tracker.size());
+
+  // create a snapshot, reopen as the parent we're interested in and protect it
+  ASSERT_EQ(0, rbd_snap_create(parent, "parent_snap"));
+  ASSERT_EQ(0, rbd_close(parent));
+  ASSERT_EQ(0, rbd_open(ioctx, parent_name.c_str(), &parent, "parent_snap"));
+  ASSERT_EQ(0, rbd_snap_protect(parent, "parent_snap"));
+  ASSERT_PASSED(validate_object_map, parent);
+  ASSERT_EQ(0, rbd_close(parent));
+  printf("made snapshot and protected: \"%s@parent_snap\"\n", parent_name.c_str());
+
+  std::string child_name = get_temp_image_name();
+  // create a copy-on-read clone and open it
+  ASSERT_EQ(0, rbd_clone(ioctx, parent_name.c_str(), "parent_snap", ioctx,
+                         child_name.c_str(), features, &order));
+
+  rbd_image_t child;
+  ASSERT_EQ(0, rbd_open(ioctx, child_name.c_str(), &child, NULL));
+  printf("made and opened clone \"%s\"\n", child_name.c_str());
+
+  printf("flattening clone: \"%s\"\n", child_name.c_str());
+  ASSERT_EQ(0, rbd_flatten(child));
+
+  printf("check whether child image has the same set of objects as parent\n");
+  rbd_image_info_t c_info;
+  ASSERT_EQ(0, rbd_stat(child, &c_info, sizeof(c_info)));
+  ASSERT_EQ(0, rados_nobjects_list_open(d_ioctx, &list_ctx));
+  while (rados_nobjects_list_next(list_ctx, &entry, NULL, NULL) != -ENOENT) {
+    if (strstr(entry, c_info.block_name_prefix)) {
+      const char *block_name_suffix = entry + strlen(c_info.block_name_prefix) + 1;
+      set<string>::iterator it = obj_checker.find(block_name_suffix);
+      ASSERT_TRUE(it != obj_checker.end());
+      obj_checker.erase(it);
+    }
+  }
+  rados_nobjects_list_close(list_ctx);
+  ASSERT_TRUE(obj_checker.empty());
+  ASSERT_PASSED(validate_object_map, child);
+  ASSERT_EQ(0, rbd_close(child));
+
+  rados_ioctx_destroy(ioctx);
+  rados_ioctx_destroy(d_ioctx);
+}
+
 TEST_F(TestLibRBD, SnapshotLimit)
 {
   rados_ioctx_t ioctx;
@@ -3947,6 +4083,11 @@ TEST_F(TestLibRBD, Metadata)
   ASSERT_EQ(0, image1.metadata_list("", 0, &pairs));
   ASSERT_EQ(1U, pairs.size());
   ASSERT_EQ(0, strncmp("value2", pairs["key2"].c_str(), 6));
+
+  // test config setting
+  ASSERT_EQ(0, image1.metadata_set("conf_rbd_cache", "false"));
+  ASSERT_EQ(-EINVAL, image1.metadata_set("conf_rbd_cache", "INVALID_VALUE"));
+  ASSERT_EQ(0, image1.metadata_remove("conf_rbd_cache"));
 
   // test metadata with snapshot adding
   ASSERT_EQ(0, image1.snap_create("snap1"));
@@ -4894,15 +5035,37 @@ TEST_F(TestLibRBD, ExclusiveLock)
   ASSERT_EQ(0, rbd_is_exclusive_lock_owner(image1, &lock_owner));
   ASSERT_TRUE(lock_owner);
 
+  rbd_lock_mode_t lock_mode;
+  char *lock_owners[1];
+  size_t max_lock_owners = 0;
+  ASSERT_EQ(-ERANGE, rbd_lock_get_owners(image1, &lock_mode, lock_owners,
+                                         &max_lock_owners));
+  ASSERT_EQ(1U, max_lock_owners);
+
+  max_lock_owners = 2;
+  ASSERT_EQ(0, rbd_lock_get_owners(image1, &lock_mode, lock_owners,
+                                   &max_lock_owners));
+  ASSERT_EQ(RBD_LOCK_MODE_EXCLUSIVE, lock_mode);
+  ASSERT_STRNE("", lock_owners[0]);
+  ASSERT_EQ(1U, max_lock_owners);
+
   rbd_image_t image2;
   ASSERT_EQ(0, rbd_open(ioctx, name.c_str(), &image2, NULL));
 
   ASSERT_EQ(0, rbd_is_exclusive_lock_owner(image2, &lock_owner));
   ASSERT_FALSE(lock_owner);
 
+  ASSERT_EQ(-EOPNOTSUPP, rbd_lock_break(image1, RBD_LOCK_MODE_SHARED, ""));
+  ASSERT_EQ(-EBUSY, rbd_lock_break(image1, RBD_LOCK_MODE_EXCLUSIVE,
+                                   "not the owner"));
+
   ASSERT_EQ(0, rbd_lock_release(image1));
   ASSERT_EQ(0, rbd_is_exclusive_lock_owner(image1, &lock_owner));
   ASSERT_FALSE(lock_owner);
+
+  ASSERT_EQ(-ENOENT, rbd_lock_break(image1, RBD_LOCK_MODE_EXCLUSIVE,
+                                    lock_owners[0]));
+  rbd_lock_get_owners_cleanup(lock_owners, max_lock_owners);
 
   ASSERT_EQ(-EROFS, rbd_write(image1, 0, sizeof(buf), buf));
   ASSERT_EQ((ssize_t)sizeof(buf), rbd_write(image2, 0, sizeof(buf), buf));
@@ -4952,7 +5115,15 @@ TEST_F(TestLibRBD, ExclusiveLock)
 	}
 
 	std::cout << m_id << ": acquiring exclusive lock" << std::endl;
-	EXPECT_EQ(0, rbd_lock_acquire(m_image, RBD_LOCK_MODE_EXCLUSIVE));
+        int r;
+        do {
+          r = rbd_lock_acquire(m_image, RBD_LOCK_MODE_EXCLUSIVE);
+          if (r == -EROFS) {
+            usleep(1000);
+          }
+        } while (r == -EROFS);
+	EXPECT_EQ(0, r);
+
 	int lock_owner;
 	EXPECT_EQ(0, rbd_is_exclusive_lock_owner(m_image, &lock_owner));
 	EXPECT_TRUE(lock_owner);
@@ -5000,6 +5171,59 @@ TEST_F(TestLibRBD, ExclusiveLock)
 
   ASSERT_EQ(0, rbd_close(image1));
   rados_ioctx_destroy(ioctx);
+}
+
+TEST_F(TestLibRBD, BreakLock)
+{
+  REQUIRE_FEATURE(RBD_FEATURE_EXCLUSIVE_LOCK);
+  REQUIRE(!is_librados_test_stub());
+
+  static char buf[10];
+
+  rados_t blacklist_cluster;
+  ASSERT_EQ("", connect_cluster(&blacklist_cluster));
+
+  rados_ioctx_t ioctx, blacklist_ioctx;
+  ASSERT_EQ(0, rados_ioctx_create(_cluster, m_pool_name.c_str(), &ioctx));
+  ASSERT_EQ(0, rados_ioctx_create(blacklist_cluster, m_pool_name.c_str(),
+                                  &blacklist_ioctx));
+
+  std::string name = get_temp_image_name();
+  uint64_t size = 2 << 20;
+  int order = 0;
+  ASSERT_EQ(0, create_image(ioctx, name.c_str(), size, &order));
+
+  rbd_image_t image, blacklist_image;
+  ASSERT_EQ(0, rbd_open(ioctx, name.c_str(), &image, NULL));
+  ASSERT_EQ(0, rbd_open(blacklist_ioctx, name.c_str(), &blacklist_image, NULL));
+
+  ASSERT_EQ(0, rbd_metadata_set(image, "rbd_blacklist_on_break_lock", "true"));
+  ASSERT_EQ(0, rbd_lock_acquire(blacklist_image, RBD_LOCK_MODE_EXCLUSIVE));
+
+  rbd_lock_mode_t lock_mode;
+  char *lock_owners[1];
+  size_t max_lock_owners = 1;
+  ASSERT_EQ(0, rbd_lock_get_owners(image, &lock_mode, lock_owners,
+                                   &max_lock_owners));
+  ASSERT_EQ(RBD_LOCK_MODE_EXCLUSIVE, lock_mode);
+  ASSERT_STRNE("", lock_owners[0]);
+  ASSERT_EQ(1U, max_lock_owners);
+
+  ASSERT_EQ(0, rbd_lock_break(image, RBD_LOCK_MODE_EXCLUSIVE, lock_owners[0]));
+  ASSERT_EQ(0, rbd_lock_acquire(image, RBD_LOCK_MODE_EXCLUSIVE));
+  EXPECT_EQ(0, rados_wait_for_latest_osdmap(blacklist_cluster));
+
+  ASSERT_EQ((ssize_t)sizeof(buf), rbd_write(image, 0, sizeof(buf), buf));
+  ASSERT_EQ(-EBLACKLISTED, rbd_write(blacklist_image, 0, sizeof(buf), buf));
+
+  ASSERT_EQ(0, rbd_close(image));
+  ASSERT_EQ(0, rbd_close(blacklist_image));
+
+  rbd_lock_get_owners_cleanup(lock_owners, max_lock_owners);
+
+  rados_ioctx_destroy(ioctx);
+  rados_ioctx_destroy(blacklist_ioctx);
+  rados_shutdown(blacklist_cluster);
 }
 
 TEST_F(TestLibRBD, DiscardAfterWrite)

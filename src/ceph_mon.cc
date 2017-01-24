@@ -567,7 +567,7 @@ int main(int argc, const char **argv)
     ::encode(v, final);
     ::encode(mapbl, final);
 
-    MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+    auto t(std::make_shared<MonitorDBStore::Transaction>());
     // save it
     t->put("monmap", v, mapbl);
     t->put("monmap", "latest", final);

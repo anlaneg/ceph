@@ -53,6 +53,7 @@ using namespace std;
 #include "common/PrioritizedQueue.h"
 #include "messages/MOSDOp.h"
 #include "include/Spinlock.h"
+#include "common/EventTrace.h"
 
 #define CEPH_OSD_PROTOCOL    10 /* cluster internal */
 
@@ -73,14 +74,12 @@ enum {
   l_osd_op_r_prepare_lat,
   l_osd_op_w,
   l_osd_op_w_inb,
-  l_osd_op_w_rlat,
   l_osd_op_w_lat,
   l_osd_op_w_process_lat,
   l_osd_op_w_prepare_lat,
   l_osd_op_rw,
   l_osd_op_rw_inb,
   l_osd_op_rw_outb,
-  l_osd_op_rw_rlat,
   l_osd_op_rw_lat,
   l_osd_op_rw_process_lat,
   l_osd_op_rw_prepare_lat,
@@ -632,6 +631,7 @@ private:
 
 public:
   struct ScrubJob {
+    CephContext* cct;
     /// pg to be scrubbed
     spg_t pgid;
     /// a time scheduled for scrub. but the scrub could be delayed if system
@@ -639,8 +639,9 @@ public:
     utime_t sched_time;
     /// the hard upper bound of scrub time
     utime_t deadline;
-    ScrubJob() {}
-    explicit ScrubJob(const spg_t& pg, const utime_t& timestamp,
+    ScrubJob() : cct(nullptr) {}
+    explicit ScrubJob(CephContext* cct, const spg_t& pg,
+		      const utime_t& timestamp,
 		      double pool_scrub_min_interval = 0,
 		      double pool_scrub_max_interval = 0, bool must = true);
     /// order the jobs by sched_time
@@ -652,7 +653,7 @@ public:
   //注册下一次清洗
   utime_t reg_pg_scrub(spg_t pgid, utime_t t, double pool_scrub_min_interval,
 		       double pool_scrub_max_interval, bool must) {
-    ScrubJob scrub(pgid, t, pool_scrub_min_interval, pool_scrub_max_interval,
+    ScrubJob scrub(cct, pgid, t, pool_scrub_min_interval, pool_scrub_max_interval,
 		   must);
     Mutex::Locker l(sched_scrub_lock);
     sched_scrub_pg.insert(scrub);
@@ -661,7 +662,7 @@ public:
   //删除注册
   void unreg_pg_scrub(spg_t pgid, utime_t t) {
     Mutex::Locker l(sched_scrub_lock);
-    size_t removed = sched_scrub_pg.erase(ScrubJob(pgid, t));
+    size_t removed = sched_scrub_pg.erase(ScrubJob(cct, pgid, t));
     assert(removed);
   }
   //获取首个注册的job
@@ -687,6 +688,22 @@ public:
       return false;
     *out = *iter;
     return true;
+  }
+
+  void dumps_scrub(Formatter *f) {
+    assert(f != nullptr);
+    Mutex::Locker l(sched_scrub_lock);
+
+    f->open_array_section("scrubs");
+    for (const auto &i: sched_scrub_pg) {
+      f->open_object_section("scrub");
+      f->dump_stream("pgid") << i.pgid;
+      f->dump_stream("sched_time") << i.sched_time;
+      f->dump_stream("deadline") << i.deadline;
+      f->dump_bool("forced", i.sched_time == i.deadline);
+      f->close_section();
+    }
+    f->close_section();
   }
 
   bool can_inc_scrubs_pending();
@@ -902,7 +919,7 @@ public:
 	  PGScrub(pg->get_osdmap()->get_epoch()),
 	  cct->_conf->osd_scrub_cost,
 	  pg->get_scrub_priority(),
-	  ceph_clock_now(cct),
+	  ceph_clock_now(),
 	  entity_inst_t())));
   }
 
@@ -930,7 +947,7 @@ private:
 	PGRecovery(p.first, reserved_pushes),
 	cct->_conf->osd_recovery_cost,
 	cct->_conf->osd_recovery_priority,
-	ceph_clock_now(cct),
+	ceph_clock_now(),
 	entity_inst_t()));
     op_wq.queue(to_queue);
   }
@@ -945,7 +962,7 @@ public:
     _maybe_queue_recovery();
   }
   void defer_recovery(float defer_for) {
-    defer_recovery_until = ceph_clock_now(cct);
+    defer_recovery_until = ceph_clock_now();
     defer_recovery_until += defer_for;
   }
   void pause_recovery() {
@@ -978,7 +995,7 @@ public:
       }
     }
   }
-  // replay / delayed pg activation
+  // delayed pg activation
   //将pg入队恢复
   void queue_for_recovery(PG *pg, bool front = false) {
     Mutex::Locker l(recovery_lock);
@@ -1279,7 +1296,8 @@ public:
     hobject_t oid(sobject_t("infos", CEPH_NOSNAP));
     return ghobject_t(oid);
   }
-  static void recursive_remove_collection(ObjectStore *store,
+  static void recursive_remove_collection(CephContext* cct,
+					  ObjectStore *store,
 					  spg_t pgid,
 					  coll_t tmp);
 
@@ -1432,7 +1450,7 @@ public:
 
     explicit Session(CephContext *cct) :
       RefCountedObject(cct),
-      auid(-1), con(0),
+      auid(-1), con(0), wstate(cct),
       session_dispatch_lock("Session::session_dispatch_lock"), 
       last_sent_epoch(0), received_map_epoch(0)
     {}
@@ -1639,7 +1657,8 @@ private:
   std::atomic_bool heartbeat_need_update;   
   map<int,HeartbeatInfo> heartbeat_peers;  ///< map of osd id to HeartbeatInfo
   utime_t last_mon_heartbeat;
-  Messenger *hbclient_messenger;
+  Messenger *hb_front_client_messenger;
+  Messenger *hb_back_client_messenger;
   Messenger *hb_front_server_messenger;
   Messenger *hb_back_server_messenger;
   utime_t last_heartbeat_resample;   ///< last time we chose random peers in waiting-for-healthy state
@@ -1859,6 +1878,7 @@ private:
     };
 
     void dequeue(PG *pg) {
+      FUNCTRACE();
       return dequeue_and_get_ops(pg, nullptr);
     }
 
@@ -2325,10 +2345,6 @@ protected:
   void do_recovery(PG *pg, epoch_t epoch_queued, uint64_t pushes_reserved,
 		   ThreadPool::TPHandle &handle);
 
-  Mutex replay_queue_lock;
-  list< pair<spg_t, utime_t > > replay_queue;
-  
-  void check_replay_queue();
 
   // -- scrubbing --
   void sched_scrub();
@@ -2340,12 +2356,13 @@ protected:
   //由disktp线程池处理,为pg的删除操作
   struct RemoveWQ :
     public ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> > {
+    CephContext* cct;
     ObjectStore *&store;
     list<pair<PGRef, DeletingStateRef> > remove_queue;
-    RemoveWQ(ObjectStore *&o, time_t ti, time_t si, ThreadPool *tp)
+    RemoveWQ(CephContext* cct, ObjectStore *&o, time_t ti, time_t si,
+	     ThreadPool *tp)
       : ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> >(
-	"OSD::RemoveWQ", ti, si, tp),
-	store(o) {}
+	"OSD::RemoveWQ", ti, si, tp), cct(cct), store(o) {}
 
     bool _empty() override {
       return remove_queue.empty();
@@ -2442,7 +2459,8 @@ protected:
       int id,
       Messenger *internal,
       Messenger *external,
-      Messenger *hb_client,
+      Messenger *hb_front_client,
+      Messenger *hb_back_client,
       Messenger *hb_front_server,
       Messenger *hb_back_server,
       Messenger *osdc_messenger,

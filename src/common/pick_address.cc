@@ -114,6 +114,7 @@ void pick_addresses(CephContext *cct, int needs)
     exit(1);
   }
 
+
   if ((needs & CEPH_PICK_ADDRESS_PUBLIC)
 		  //如果要选public地址，且没有给出public_addr,给出了public_network
       && cct->_conf->public_addr.is_blank_ip()
@@ -122,10 +123,17 @@ void pick_addresses(CephContext *cct, int needs)
   }
 
   if ((needs & CEPH_PICK_ADDRESS_CLUSTER)
-		  //如果要选cluster地址，且没有给出cluster_addr,给出了cluster_network
-      && cct->_conf->cluster_addr.is_blank_ip()
-      && !cct->_conf->cluster_network.empty()) {
-    fill_in_one_address(cct, ifa, cct->_conf->cluster_network, "cluster_addr");
+      //如果要选cluster地址，且没有给出cluster_addr,给出了cluster_network
+      && cct->_conf->cluster_addr.is_blank_ip()) {
+    if (!cct->_conf->cluster_network.empty()) {
+      fill_in_one_address(cct, ifa, cct->_conf->cluster_network, "cluster_addr");
+    } else {
+      if (!cct->_conf->public_network.empty()) {
+        lderr(cct) << "Public network was set, but cluster network was not set " << dendl;
+        lderr(cct) << "    Using public network also for cluster network" << dendl;
+        fill_in_one_address(cct, ifa, cct->_conf->public_network, "cluster_addr");
+      }
+    }
   }
 
   freeifaddrs(ifa);

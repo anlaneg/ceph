@@ -80,30 +80,35 @@ public:
   }
 };
 
+inline static ostream& operator<<(ostream& out, const AllocExtent& e) {
+  return out << "0x" << std::hex << e.offset << "~" << e.length << std::dec;
+}
+
 class ExtentList {
   AllocExtentVector *m_extents;//填充
-  int64_t m_num_extents;//这个成员变量比较不好记，它是我们每向m_extents中加一块，它就增加一个。
   int64_t m_block_size;//块大小
-  uint64_t m_max_alloc_size;//最大要的字节数
+  int64_t m_max_blocks;
 
 public:
-  void init(AllocExtentVector *extents, int64_t block_size, uint64_t max_alloc_size) {
+  void init(AllocExtentVector *extents, int64_t block_size,
+	    uint64_t max_alloc_size) {
     m_extents = extents;
-    m_num_extents = 0;
     m_block_size = block_size;
-    m_max_alloc_size = max_alloc_size;
+    m_max_blocks = max_alloc_size / block_size;
+    assert(m_extents->empty());
   }
 
   ExtentList(AllocExtentVector *extents, int64_t block_size) {
     init(extents, block_size, 0);
   }
 
-  ExtentList(AllocExtentVector *extents, int64_t block_size, uint64_t max_alloc_size) {
+  ExtentList(AllocExtentVector *extents, int64_t block_size,
+	     uint64_t max_alloc_size) {
     init(extents, block_size, max_alloc_size);
   }
 
   void reset() {
-    m_num_extents = 0;
+    m_extents->clear();
   }
 
   void add_extents(int64_t start, int64_t count);
@@ -119,13 +124,13 @@ public:
   }
 
   int64_t get_extent_count() {
-    return m_num_extents;
+    return m_extents->size();
   }
 };
 
 
 /// pextent: physical extent
-struct bluestore_pextent_t : public AllocExtent{
+struct bluestore_pextent_t : public AllocExtent {
   const static uint64_t INVALID_OFFSET = ~0ull;
 
   bluestore_pextent_t() : AllocExtent() {}
@@ -148,25 +153,27 @@ WRITE_CLASS_DENC(bluestore_pextent_t)
 
 ostream& operator<<(ostream& out, const bluestore_pextent_t& o);
 
+typedef mempool::bluestore_meta_other::vector<bluestore_pextent_t> PExtentVector;
+
 template<>
-struct denc_traits<vector<bluestore_pextent_t>> {
+struct denc_traits<PExtentVector> {
   enum { supported = true };
   enum { bounded = false };
   enum { featured = false };
-  static void bound_encode(const vector<bluestore_pextent_t>& v, size_t& p) {
+  static void bound_encode(const PExtentVector& v, size_t& p) {
     p += sizeof(uint32_t);
     size_t per = 0;
     denc(*(bluestore_pextent_t*)nullptr, per);
     p += per * v.size();
   }
-  static void encode(const vector<bluestore_pextent_t>& v,
+  static void encode(const PExtentVector& v,
 		     bufferlist::contiguous_appender& p) {
     denc_varint(v.size(), p);
     for (auto& i : v) {
       denc(i, p);
     }
   }
-  static void decode(vector<bluestore_pextent_t>& v, bufferptr::iterator& p) {
+  static void decode(PExtentVector& v, bufferptr::iterator& p) {
     unsigned num;
     denc_varint(num, p);
     v.clear();
@@ -204,7 +211,7 @@ struct bluestore_extent_ref_map_t {
   }
 
   void get(uint64_t offset, uint32_t len);
-  void put(uint64_t offset, uint32_t len, vector<bluestore_pextent_t> *release);
+  void put(uint64_t offset, uint32_t len, PExtentVector *release);
 
   bool contains(uint64_t offset, uint32_t len) const;
   bool intersects(uint64_t offset, uint32_t len) const;
@@ -279,20 +286,18 @@ struct bluestore_blob_t {
   };
   static string get_flags_string(unsigned flags);
 
-  vector<bluestore_pextent_t> extents;///< raw data position on device
-  uint64_t sbid = 0;                  ///< shared blob id (if shared)
+
+  PExtentVector extents;              ///< raw data position on device
   uint32_t compressed_length_orig = 0;///< original length of compressed blob if any
   uint32_t compressed_length = 0;     ///< compressed length if any
   uint32_t flags = 0;                 ///< FLAG_*
+
+  uint16_t unused = 0;     ///< portion that has never been written to (bitmap)
 
   uint8_t csum_type = Checksummer::CSUM_NONE;      ///< CSUM_*
   uint8_t csum_chunk_order = 0;       ///< csum block size is 1<<block_order bytes
 
   bufferptr csum_data;                ///< opaque vector of csum data
-
-  typedef uint16_t unused_uint_t;
-  typedef std::bitset<sizeof(unused_uint_t) * 8> unused_t;
-  unused_t unused;                    ///< portion that has never been written to
 
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
 
@@ -301,7 +306,6 @@ struct bluestore_blob_t {
     assert(struct_v == 1);
     denc(extents, p);
     denc_varint(flags, p);
-    denc_varint(sbid, p);
     denc_varint_lowz(compressed_length_orig, p);
     denc_varint_lowz(compressed_length, p);
     denc(csum_type, p);
@@ -315,9 +319,6 @@ struct bluestore_blob_t {
     assert(struct_v == 1);
     denc(extents, p);
     denc_varint(flags, p);
-    if (is_shared()) {
-      denc_varint(sbid, p);
-    }
     if (is_compressed()) {
       denc_varint_lowz(compressed_length_orig, p);
       denc_varint_lowz(compressed_length, p);
@@ -330,7 +331,7 @@ struct bluestore_blob_t {
 	     csum_data.length());
     }
     if (has_unused()) {
-      denc(unused_uint_t(unused.to_ullong()), p);
+      denc(unused, p);
     }
   }
 
@@ -338,9 +339,6 @@ struct bluestore_blob_t {
     assert(struct_v == 1);
     denc(extents, p);
     denc_varint(flags, p);
-    if (is_shared()) {
-      denc_varint(sbid, p);
-    }
     if (is_compressed()) {
       denc_varint_lowz(compressed_length_orig, p);
       denc_varint_lowz(compressed_length, p);
@@ -353,9 +351,7 @@ struct bluestore_blob_t {
       csum_data = p.get_ptr(len);
     }
     if (has_unused()) {
-      unused_uint_t val;
-      denc(val, p);
-      unused = unused_t(val);
+      denc(unused, p);
     }
   }
 
@@ -463,14 +459,13 @@ struct bluestore_blob_t {
       return false;
     }
     uint64_t blob_len = get_logical_length();
-    assert((blob_len % unused.size()) == 0);
+    assert((blob_len % (sizeof(unused)*8)) == 0);
     assert(offset + length <= blob_len);
-    uint64_t chunk_size = blob_len / unused.size();
+    uint64_t chunk_size = blob_len / (sizeof(unused)*8);
     uint64_t start = offset / chunk_size;
     uint64_t end = ROUND_UP_TO(offset + length, chunk_size) / chunk_size;
-    assert(end <= unused.size());
     auto i = start;
-    while (i < end && unused[i]) {
+    while (i < end && (unused & (1u << i))) {
       i++;
     }
     return i >= end;
@@ -479,14 +474,13 @@ struct bluestore_blob_t {
   /// mark a range that has never been used
   void add_unused(uint64_t offset, uint64_t length) {
     uint64_t blob_len = get_logical_length();
-    assert((blob_len % unused.size()) == 0);
+    assert((blob_len % (sizeof(unused)*8)) == 0);
     assert(offset + length <= blob_len);
-    uint64_t chunk_size = blob_len / unused.size();
+    uint64_t chunk_size = blob_len / (sizeof(unused)*8);
     uint64_t start = ROUND_UP_TO(offset, chunk_size) / chunk_size;
     uint64_t end = (offset + length) / chunk_size;
-    assert(end <= unused.size());
     for (auto i = start; i < end; ++i) {
-      unused[i] = 1;
+      unused |= (1u << i);
     }
     if (start != end) {
       set_flag(FLAG_HAS_UNUSED);
@@ -497,16 +491,15 @@ struct bluestore_blob_t {
   void mark_used(uint64_t offset, uint64_t length) {
     if (has_unused()) {
       uint64_t blob_len = get_logical_length();
-      assert((blob_len % unused.size()) == 0);
+      assert((blob_len % (sizeof(unused)*8)) == 0);
       assert(offset + length <= blob_len);
-      uint64_t chunk_size = blob_len / unused.size();
+      uint64_t chunk_size = blob_len / (sizeof(unused)*8);
       uint64_t start = offset / chunk_size;
       uint64_t end = ROUND_UP_TO(offset + length, chunk_size) / chunk_size;
-      assert(end <= unused.size());
       for (auto i = start; i < end; ++i) {
-        unused[i] = 0;
+        unused &= ~(1u << i);
       }
-      if (unused.none()) {
+      if (unused == 0) {
         clear_flag(FLAG_HAS_UNUSED);
       }
     }
@@ -672,21 +665,15 @@ ostream& operator<<(ostream& out, const bluestore_shared_blob_t& o);
 struct bluestore_onode_t {
   uint64_t nid = 0;                    ///< numeric id (locally unique)
   uint64_t size = 0;                   ///< object size
-  map<string, bufferptr> attrs;        ///< attrs//属性，对象的attribute
-  uint8_t flags = 0;
-
-  enum {
-    FLAG_OMAP = 1,
-  };
+  //属性，对象的attribute
+  map<mempool::bluestore_meta_other::string, bufferptr> attrs;        ///< attrs //属性，对象的attribute
 
   struct shard_info {
     uint32_t offset = 0;  ///< logical offset for start of shard
     uint32_t bytes = 0;   ///< encoded bytes
-    uint32_t extents = 0; ///< extents
     DENC(shard_info, v, p) {
       denc_varint(v.offset, p);
       denc_varint(v.bytes, p);
-      denc_varint(v.extents, p);
     }
     void dump(Formatter *f) const;
   };
@@ -695,6 +682,12 @@ struct bluestore_onode_t {
   uint32_t expected_object_size = 0;
   uint32_t expected_write_size = 0;
   uint32_t alloc_hint_flags = 0;
+
+  uint8_t flags = 0;
+
+  enum {
+    FLAG_OMAP = 1,
+  };
 
   string get_flags_string() const {
     string s;
@@ -755,7 +748,7 @@ struct bluestore_wal_op_t {
   } type_t;
   __u8 op = 0;//操作
 
-  vector<bluestore_pextent_t> extents;//写的范围
+  PExtentVector extents;//写的范围
   bufferlist data;//要写入的数据
 
   DENC(bluestore_wal_op_t, v, p) {

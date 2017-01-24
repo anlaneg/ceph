@@ -28,6 +28,7 @@
 
 /// track in-flight io
 struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层，连接两端
+  CephContext* cct;
   void *priv;
 #ifdef HAVE_SPDK
   void *nvme_task_first = nullptr;
@@ -44,13 +45,13 @@ struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层
   std::atomic_int num_reading = {0};
   std::atomic_int num_waiting = {0};
 
-  explicit IOContext(void *p)
-    : priv(p)
+  explicit IOContext(CephContext* cct, void *p)
+    : cct(cct), priv(p)
     {}
 
   // no copying
-  IOContext(const IOContext& other);
-  IOContext &operator=(const IOContext& other);
+  IOContext(const IOContext& other) = delete;
+  IOContext &operator=(const IOContext& other) = delete;
 
   bool has_pending_aios() {//是否有未绝aio
     return num_pending.load();
@@ -68,6 +69,9 @@ struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层
 
 //基类，向上提供两种kernel的用一写裸设备，
 class BlockDevice {
+public:
+  CephContext* cct;
+private:
   std::mutex ioc_reap_lock;
   vector<IOContext*> ioc_reap_queue;
   std::atomic_int ioc_reap_count = {0};
@@ -76,12 +80,12 @@ protected:
   bool rotational = true;//是否可转动设备（普通硬盘）,如果是ssd，则此值为false
 
 public:
-  BlockDevice() = default;
+  BlockDevice(CephContext* cct) : cct(cct) {}
   virtual ~BlockDevice() = default;
   typedef void (*aio_callback_t)(void *handle, void *aio);
 
   static BlockDevice *create(
-      const string& path, aio_callback_t cb, void *cbpriv);
+    CephContext* cct, const string& path, aio_callback_t cb, void *cbpriv);
   virtual bool supported_bdev_label() { return true; }
   virtual bool is_rotational() { return rotational; }
 
@@ -104,7 +108,7 @@ public:
 
   // for managing buffered readers/writers
   virtual int invalidate_cache(uint64_t off, uint64_t len) = 0;
-  virtual int open(string path) = 0;
+  virtual int open(const string& path) = 0;
   virtual void close() = 0;
 };
 

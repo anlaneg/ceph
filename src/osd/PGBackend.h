@@ -50,6 +50,8 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
   * 4) Handling scrub, deep-scrub, repair
   */
  class PGBackend {
+ public:
+   CephContext* cct;
  protected:
    ObjectStore *store;
    const coll_t coll;
@@ -187,6 +189,12 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
        const hobject_t &hoid,
        map<string, bufferlist> &attrs) = 0;
 
+     virtual bool try_lock_for_read(
+       const hobject_t &hoid,
+       ObcLockManager &manager) = 0;
+
+     virtual void release_locks(ObcLockManager &manager) = 0;
+
      virtual void op_applied(
        const eversion_t &applied_version) = 0;
 
@@ -263,8 +271,9 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
    //PGBackend吸收一部分ReplicatedPG的功能，最终将ReplicatedPG删除掉
    Listener *parent;//is ReplicatedPG
    Listener *get_parent() const { return parent; }
-   PGBackend(Listener *l, ObjectStore *store, coll_t coll,
+   PGBackend(CephContext* cct, Listener *l, ObjectStore *store, coll_t coll,
 	     ObjectStore::CollectionHandle &ch) :
+     cct(cct),
      store(store),
      coll(coll),
      ch(ch),

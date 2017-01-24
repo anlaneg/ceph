@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,9 +7,9 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software 
+ * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
- * 
+ *
  */
 
 #include <sys/stat.h>
@@ -37,11 +37,13 @@ using namespace std;
 #include "global/signal_handler.h"
 #include "common/Preforker.h"
 #include "common/safe_io.h"
-       
+
 #include <sys/types.h>
 #include <fcntl.h>
 
 #include <fuse.h>
+
+#define dout_context g_ceph_context
 
 static void fuse_usage()
 {
@@ -71,14 +73,16 @@ void usage()
 int main(int argc, const char **argv, const char *envp[]) {
   int filer_flags = 0;
   //cerr << "ceph-fuse starting " << myrank << "/" << world << std::endl;
-  vector<const char*> args;
+  std::vector<const char*> args;
   argv_to_vec(argc, argv, args);
   if (args.empty()) {
     usage();
   }
   env_to_vec(args);
 
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+  std::vector<const char*> def_args{"--pid-file="};
+
+  auto cct = global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_DAEMON,
 			 CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
@@ -89,7 +93,6 @@ int main(int argc, const char **argv, const char *envp[]) {
       filer_flags |= CEPH_OSD_FLAG_LOCALIZE_READS;
     } else if (ceph_argparse_flag(args, i, "-h", "--help", (char*)NULL)) {
       usage();
-      ceph_abort();
     } else {
       ++i;
     }

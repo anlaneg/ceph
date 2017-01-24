@@ -5,6 +5,7 @@
 #include "common/errno.h"
 #include "common/debug.h"
 
+#define dout_context cct
 #define dout_subsys ceph_subsys_journal
 #undef dout_prefix
 #define dout_prefix *_dout << "journal "
@@ -39,11 +40,12 @@ int JournalingObjectStore::journal_replay(uint64_t fs_op_seq)
 {
   dout(10) << "journal_replay fs op_seq " << fs_op_seq << dendl;
 
-  if (g_conf->journal_replay_from) {//默认肯定是0
-    dout(0) << "journal_replay forcing replay from " << g_conf->journal_replay_from
+  if (cct->_conf->journal_replay_from) {//默认肯定是0
+    dout(0) << "journal_replay forcing replay from "
+	    << cct->_conf->journal_replay_from
 	    << " instead of " << fs_op_seq << dendl;
     // the previous op is the last one committed
-    fs_op_seq = g_conf->journal_replay_from - 1;
+    fs_op_seq = cct->_conf->journal_replay_from - 1;
   }
 
   uint64_t op_seq = fs_op_seq;
@@ -121,11 +123,11 @@ uint64_t JournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
   Mutex::Locker l(apply_lock);
   //如果被置为阻塞,则等待阻塞解除信号
   while (blocked) {
-    // note: this only happens during journal replay
     dout(10) << "op_apply_start blocked, waiting" << dendl;
     blocked_cond.Wait(apply_lock);
   }
-  dout(10) << "op_apply_start " << op << " open_ops " << open_ops << " -> " << (open_ops+1) << dendl;
+  dout(10) << "op_apply_start " << op << " open_ops " << open_ops << " -> "
+	   << (open_ops+1) << dendl;
   assert(!blocked);
   assert(op > committed_seq);
   open_ops++;
@@ -136,14 +138,13 @@ uint64_t JournalingObjectStore::ApplyManager::op_apply_start(uint64_t op)
 void JournalingObjectStore::ApplyManager::op_apply_finish(uint64_t op)
 {
   Mutex::Locker l(apply_lock);
-  dout(10) << "op_apply_finish " << op << " open_ops " << open_ops
-	   << " -> " << (open_ops-1)
-	   << ", max_applied_seq " << max_applied_seq << " -> " << MAX(op, max_applied_seq)
-	   << dendl;
+  dout(10) << "op_apply_finish " << op << " open_ops " << open_ops << " -> "
+	   << (open_ops-1) << ", max_applied_seq " << max_applied_seq << " -> "
+	   << MAX(op, max_applied_seq) << dendl;
   --open_ops;//标记正在执行的操作减少
   assert(open_ops >= 0);
 
-  // signal a blocked commit_start (only needed during journal replay)
+  // signal a blocked commit_start
   //如果标记为blocked此时,按照实现约定,commit_start会阻塞(因为open_ops不为0)
   //走到此时,检测下,如果commit_start存在,则唤醒它.
   if (blocked) {
@@ -196,15 +197,14 @@ bool JournalingObjectStore::ApplyManager::commit_start()
 {
   bool ret = false;
 
-  uint64_t _committing_seq = 0;
   {
     Mutex::Locker l(apply_lock);
     dout(10) << "commit_start max_applied_seq " << max_applied_seq
-	     << ", open_ops " << open_ops
-	     << dendl;
+	     << ", open_ops " << open_ops << dendl;
     blocked = true;
     while (open_ops > 0) {
-      dout(10) << "commit_start waiting for " << open_ops << " open ops to drain" << dendl;
+      dout(10) << "commit_start waiting for " << open_ops
+	       << " open ops to drain" << dendl;
       blocked_cond.Wait(apply_lock);//有op_apply_finish未调用完成.等待
     }
     assert(open_ops == 0);
@@ -218,7 +218,8 @@ bool JournalingObjectStore::ApplyManager::commit_start()
 	goto out;
       }
 
-      _committing_seq = committing_seq = max_applied_seq;//更新已applied_seq为当前正在committing的seq
+      //更新已applied_seq为当前正在committing的seq
+      committing_seq = max_applied_seq;
 
       dout(10) << "commit_start committing " << committing_seq
 	       << ", still blocked" << dendl;
@@ -226,9 +227,9 @@ bool JournalingObjectStore::ApplyManager::commit_start()
   }
   ret = true;
 
- out:
   if (journal)
-    journal->commit_start(_committing_seq);  // tell the journal too
+    journal->commit_start(committing_seq);  // tell the journal too
+ out:
   return ret;
 }
 
@@ -237,7 +238,8 @@ void JournalingObjectStore::ApplyManager::commit_started()
 {
   Mutex::Locker l(apply_lock);
   // allow new ops. (underlying fs should now be committing all prior ops)
-  dout(10) << "commit_started committing " << committing_seq << ", unblocking" << dendl;
+  dout(10) << "commit_started committing " << committing_seq << ", unblocking"
+	   << dendl;
   blocked = false;
   blocked_cond.Signal();
 }

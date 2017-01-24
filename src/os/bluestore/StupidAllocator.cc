@@ -5,12 +5,13 @@
 #include "bluestore_types.h"
 #include "common/debug.h"
 
+#define dout_context cct
 #define dout_subsys ceph_subsys_bluestore
 #undef dout_prefix
 #define dout_prefix *_dout << "stupidalloc "
 
-StupidAllocator::StupidAllocator()
-  : num_free(0),
+StupidAllocator::StupidAllocator(CephContext* cct)
+  : cct(cct), num_free(0),
     num_reserved(0),
     free(10),//free大小被硬编码成10，目的减少b树的大小
     last_alloc(0)
@@ -24,7 +25,7 @@ StupidAllocator::~StupidAllocator()
 //根据长度选择一个树，不明白，为何命名为_choose_free_tree ？更直白些，或者_choose_btree也行啊！
 unsigned StupidAllocator::_choose_bin(uint64_t orig_len)
 {
-  uint64_t len = orig_len / g_conf->bdev_block_size;
+  uint64_t len = orig_len / cct->_conf->bdev_block_size;
   int bin = std::min((int)cbits(len), (int)free.size() - 1);
   dout(30) << __func__ << " len 0x" << std::hex << orig_len << std::dec
 	   << " -> " << bin << dendl;
@@ -88,8 +89,7 @@ static uint64_t aligned_len(btree_interval_set<uint64_t>::iterator p,
     return p.get_len() - skew;
 }
 
-//申请单个区域（这个查找，的确很stupid)
-int StupidAllocator::allocate(
+int64_t StupidAllocator::allocate_int(
   uint64_t want_size, uint64_t alloc_unit, int64_t hint,
   uint64_t *offset, uint32_t *length)
 {
@@ -169,9 +169,9 @@ int StupidAllocator::allocate(
     skew = alloc_unit - skew;
   *offset = p.get_start() + skew;//清除边角料
   *length = MIN(MAX(alloc_unit, want_size), p.get_len() - skew);//清除后的长度
-  if (g_conf->bluestore_debug_small_allocations) {//debug代码
+  if (cct->_conf->bluestore_debug_small_allocations) {
     uint64_t max =
-      alloc_unit * (rand() % g_conf->bluestore_debug_small_allocations);
+      alloc_unit * (rand() % cct->_conf->bluestore_debug_small_allocations);
     if (max && *length > max) {
       dout(10) << __func__ << " shortening allocation of 0x" << std::hex
 	       << *length << " -> 0x"
@@ -214,13 +214,12 @@ int StupidAllocator::allocate(
   return 0;
 }
 
-int StupidAllocator::alloc_extents(
+int64_t StupidAllocator::allocate(
   uint64_t want_size,//需要的大小
   uint64_t alloc_unit,//块大小
   uint64_t max_alloc_size,//最大需要的大小
   int64_t hint,//最后一片的结束位置（暗示）
-  mempool::bluestore_alloc::vector<AllocExtent> *extents,//出参，申请后填充
-  int *count)//出参，申请了多少个
+  mempool::bluestore_alloc::vector<AllocExtent> *extents)//出参，申请后填充
 {
   uint64_t allocated_size = 0;//已申请了多少字节
   uint64_t offset = 0;
@@ -234,7 +233,7 @@ int StupidAllocator::alloc_extents(
   ExtentList block_list = ExtentList(extents, 1, max_alloc_size);
 
   while (allocated_size < want_size) {
-    res = allocate(MIN(max_alloc_size, (want_size - allocated_size)),
+    res = allocate_int(MIN(max_alloc_size, (want_size - allocated_size)),
        alloc_unit, hint, &offset, &length);
     if (res != 0) {
       /*
@@ -247,13 +246,10 @@ int StupidAllocator::alloc_extents(
     hint = offset + length;//更新暗示
   }
 
-  *count = block_list.get_extent_count();//申请了多少个
-  if (want_size - allocated_size > 0) {//申请的不够对方要的，释放
-    release_extents(extents, *count);
+  if (allocated_size == 0) {
     return -ENOSPC;
   }
-
-  return 0;
+  return allocated_size;
 }
 
 //释放时，存入uncommitted的map中

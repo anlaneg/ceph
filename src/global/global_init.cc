@@ -36,6 +36,7 @@
 #include <sys/prctl.h>
 #endif
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_
 
 //设置全局的ceph_context

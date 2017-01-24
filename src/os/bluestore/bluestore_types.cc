@@ -22,14 +22,12 @@ void ExtentList::add_extents(int64_t start, int64_t count) {
   AllocExtent *last_extent = NULL;
   bool can_merge = false;
 
-  if (m_num_extents > 0) {//只有多于一个范围时，才有可合并的可能，检查能否合并
-    last_extent = &((*m_extents)[m_num_extents - 1]);
-    uint64_t last_offset = (last_extent->offset + last_extent->length) / 
-			m_block_size; 
-    uint32_t last_length = last_extent->length / m_block_size; 
-    int64_t max_blocks = m_max_alloc_size / m_block_size;
+  if (!m_extents->empty()) {//只有多于一个范围时，才有可合并的可能，检查能否合并
+    last_extent = &(m_extents->back());
+    uint64_t last_offset = last_extent->end() / m_block_size;
+    uint32_t last_length = last_extent->length / m_block_size;
     if ((last_offset == (uint64_t) start) &&
-        (!max_blocks || (last_length + count) <= max_blocks)) {
+        (!m_max_blocks || (last_length + count) <= m_max_blocks)) {
       can_merge = true;
     }
   }
@@ -37,11 +35,9 @@ void ExtentList::add_extents(int64_t start, int64_t count) {
   if (can_merge) {//可以合并时，直接更新最后一个段
     last_extent->length += (count * m_block_size);
   } else {//不能合并，直接新起一个段
-    (*m_extents)[m_num_extents].offset = start * m_block_size;
-    (*m_extents)[m_num_extents].length = count * m_block_size;
-    m_num_extents++;//增加已申请的块大小
+    m_extents->emplace_back(AllocExtent(start * m_block_size,
+					count * m_block_size));
   }
-  assert((int64_t) m_extents->size() >= m_num_extents);
 }
 
 // bluestore_bdev_label_t
@@ -201,7 +197,7 @@ void bluestore_extent_ref_map_t::get(uint64_t offset, uint32_t length)
 
 void bluestore_extent_ref_map_t::put(
   uint64_t offset, uint32_t length,
-  vector<bluestore_pextent_t> *release)
+  PExtentVector *release)
 {
   auto p = ref_map.lower_bound(offset);
   if (p == ref_map.end() || p->first > offset) {
@@ -401,7 +397,6 @@ void bluestore_blob_t::dump(Formatter *f) const
     f->dump_object("extent", p);
   }
   f->close_section();
-  f->dump_unsigned("shared_blob_id", sbid);
   f->dump_unsigned("compressed_length_original", compressed_length_orig);
   f->dump_unsigned("compressed_length", compressed_length);
   f->dump_unsigned("flags", flags);
@@ -412,7 +407,7 @@ void bluestore_blob_t::dump(Formatter *f) const
   for (unsigned i = 0; i < n; ++i)
     f->dump_unsigned("csum", get_csum_item(i));
   f->close_section();
-  f->dump_unsigned("unused", unused.to_ullong());
+  f->dump_unsigned("unused", unused);
 }
 
 void bluestore_blob_t::generate_test_instances(list<bluestore_blob_t*>& ls)
@@ -435,9 +430,6 @@ void bluestore_blob_t::generate_test_instances(list<bluestore_blob_t*>& ls)
 ostream& operator<<(ostream& out, const bluestore_blob_t& o)
 {
   out << "blob(" << o.extents;
-  if (o.sbid) {
-    out << " sbid 0x" << std::hex << o.sbid << std::dec;
-  }
   if (o.is_compressed()) {
     out << " clen 0x" << std::hex
 	<< o.compressed_length_orig
@@ -453,7 +445,7 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o)
 	<< "/0x" << std::hex << (1ull << o.csum_chunk_order) << std::dec;
   }
   if (o.has_unused())
-    out << " unused=0x" << std::hex << o.unused.to_ullong() << std::dec;
+    out << " unused=0x" << std::hex << o.unused << std::dec;
   out << ")";
   return out;
 }
@@ -551,13 +543,12 @@ void bluestore_onode_t::shard_info::dump(Formatter *f) const
 {
   f->dump_unsigned("offset", offset);
   f->dump_unsigned("bytes", bytes);
-  f->dump_unsigned("extents", extents);
 }
 
 ostream& operator<<(ostream& out, const bluestore_onode_t::shard_info& si)
 {
-  return out << std::hex << "0x" << si.offset << "(0x" << si.bytes << " bytes, "
-	     << std::dec << si.extents << " extents)";
+  return out << std::hex << "0x" << si.offset << "(0x" << si.bytes << " bytes"
+	     << std::dec << ")";
 }
 
 void bluestore_onode_t::dump(Formatter *f) const
@@ -565,10 +556,9 @@ void bluestore_onode_t::dump(Formatter *f) const
   f->dump_unsigned("nid", nid);
   f->dump_unsigned("size", size);
   f->open_object_section("attrs");
-  for (map<string,bufferptr>::const_iterator p = attrs.begin();
-       p != attrs.end(); ++p) {
+  for (auto p = attrs.begin(); p != attrs.end(); ++p) {
     f->open_object_section("attr");
-    f->dump_string("name", p->first);
+    f->dump_string("name", p->first.c_str());  // it's not quite std::string
     f->dump_unsigned("len", p->second.length());
     f->close_section();
   }
