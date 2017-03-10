@@ -312,41 +312,7 @@ bool hobject_t::parse(const string &s)
   return true;
 }
 
-int cmp_nibblewise(const hobject_t& l, const hobject_t& r)
-{
-  if (l.max < r.max)
-    return -1;
-  if (l.max > r.max)
-    return 1;
-  if (l.pool < r.pool)
-    return -1;
-  if (l.pool > r.pool)
-    return 1;
-  if (l.get_nibblewise_key() < r.get_nibblewise_key())
-    return -1;
-  if (l.get_nibblewise_key() > r.get_nibblewise_key())
-    return 1;
-  if (l.nspace < r.nspace)
-    return -1;
-  if (l.nspace > r.nspace)
-    return 1;
-  if (l.get_effective_key() < r.get_effective_key())
-    return -1;
-  if (l.get_effective_key() > r.get_effective_key())
-    return 1;
-  if (l.oid < r.oid)
-    return -1;
-  if (l.oid > r.oid)
-    return 1;
-  if (l.snap < r.snap)
-    return -1;
-  if (l.snap > r.snap)
-    return 1;
-  return 0;
-}
-
-//小于返回-1,大于返回1,否则返回0(与cmp_nibblewise不同的是,在比对时,用get_bitwise_key)
-int cmp_bitwise(const hobject_t& l, const hobject_t& r)
+int cmp(const hobject_t& l, const hobject_t& r)
 {
   if (l.max < r.max)
     return -1;
@@ -600,7 +566,7 @@ bool ghobject_t::parse(const string& s)
   return true;
 }
 
-int cmp_nibblewise(const ghobject_t& l, const ghobject_t& r)
+int cmp(const ghobject_t& l, const ghobject_t& r)
 {
   if (l.max < r.max)
     return -1;
@@ -610,27 +576,7 @@ int cmp_nibblewise(const ghobject_t& l, const ghobject_t& r)
     return -1;
   if (l.shard_id > r.shard_id)
     return 1;
-  int ret = cmp_nibblewise(l.hobj, r.hobj);
-  if (ret != 0)
-    return ret;
-  if (l.generation < r.generation)
-    return -1;
-  if (l.generation > r.generation)
-    return 1;
-  return 0;
-}
-
-int cmp_bitwise(const ghobject_t& l, const ghobject_t& r)
-{
-  if (l.max < r.max)
-    return -1;
-  if (l.max > r.max)
-    return 1;
-  if (l.shard_id < r.shard_id)
-    return -1;
-  if (l.shard_id > r.shard_id)
-    return 1;
-  int ret = cmp_bitwise(l.hobj, r.hobj);
+  int ret = cmp(l.hobj, r.hobj);
   if (ret != 0)
     return ret;
   if (l.generation < r.generation)

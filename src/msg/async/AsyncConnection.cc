@@ -52,7 +52,7 @@ class C_time_wakeup : public EventCallback {
 
  public:
   explicit C_time_wakeup(AsyncConnectionRef c): conn(c) {}
-  void do_request(int fd_or_id) {
+  void do_request(int fd_or_id) override {
     conn->wakeup_from(fd_or_id);
   }
 };
@@ -62,7 +62,7 @@ class C_handle_read : public EventCallback {
 
  public:
   explicit C_handle_read(AsyncConnectionRef c): conn(c) {}
-  void do_request(int fd_or_id) {
+  void do_request(int fd_or_id) override {
     conn->process();
   }
 };
@@ -72,7 +72,7 @@ class C_handle_write : public EventCallback {
 
  public:
   explicit C_handle_write(AsyncConnectionRef c): conn(c) {}
-  void do_request(int fd) {
+  void do_request(int fd) override {
     conn->handle_write();
   }
 };
@@ -81,7 +81,7 @@ class C_clean_handler : public EventCallback {
   AsyncConnectionRef conn;
  public:
   explicit C_clean_handler(AsyncConnectionRef c): conn(c) {}
-  void do_request(int id) {
+  void do_request(int id) override {
     conn->cleanup();
     delete this;
   }
@@ -92,7 +92,7 @@ class C_tick_wakeup : public EventCallback {
 
  public:
   explicit C_tick_wakeup(AsyncConnectionRef c): conn(c) {}
-  void do_request(int fd_or_id) {
+  void do_request(int fd_or_id) override {
     conn->tick(fd_or_id);
   }
 };
@@ -328,7 +328,7 @@ void AsyncConnection::process()
 {
   ssize_t r = 0;
   int prev_state = state;
-#ifdef WITH_LTTNG
+#if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
   utime_t ltt_recv_stamp = ceph_clock_now();
 #endif
   bool need_dispatch_writer = false;
@@ -432,7 +432,7 @@ void AsyncConnection::process()
 
       case STATE_OPEN_MESSAGE_HEADER:
         {
-#ifdef WITH_LTTNG
+#if defined(WITH_LTTNG) && defined(WITH_EVENTTRACE)
           ltt_recv_stamp = ceph_clock_now();
 #endif
           ldout(async_msgr->cct, 20) << __func__ << " begin MSG" << dendl;
@@ -1074,7 +1074,6 @@ ssize_t AsyncConnection::_process_connection()
         }
 
         connect_reply = *((ceph_msg_connect_reply*)state_buffer);
-        connect_reply.features = ceph_sanitize_features(connect_reply.features);
 
         ldout(async_msgr->cct, 20) << __func__ << " connect got reply tag " << (int)connect_reply.tag
                              << " connect_seq " << connect_reply.connect_seq << " global_seq "
@@ -1286,8 +1285,6 @@ ssize_t AsyncConnection::_process_connection()
         }
 
         connect_msg = *((ceph_msg_connect*)state_buffer);
-        // sanitize features
-        connect_msg.features = ceph_sanitize_features(connect_msg.features);
         state = STATE_ACCEPTING_WAIT_CONNECT_MSG_AUTH;
         break;
       }
@@ -1715,7 +1712,10 @@ ssize_t AsyncConnection::handle_connect_msg(ceph_msg_connect &connect, bufferlis
           if (existing->delay_state)
             existing->delay_state->set_center(new_center);
         } else if (existing->state == STATE_CLOSED) {
-          cs.close();
+          auto back_to_close = std::bind(
+            [](ConnectedSocket &cs) mutable { cs.close(); }, std::move(cs));
+          new_center->submit_to(
+              new_center->get_id(), std::move(back_to_close), true);
           return ;
         } else {
           ceph_abort();
@@ -1861,7 +1861,7 @@ void AsyncConnection::_connect()
 void AsyncConnection::accept(ConnectedSocket socket, entity_addr_t &addr)
 {
   ldout(async_msgr->cct, 10) << __func__ << " sd=" << socket.fd() << dendl;
-  assert(socket.fd() > 0);
+  assert(socket.fd() >= 0);
 
   std::lock_guard<std::mutex> l(lock);
   cs = std::move(socket);

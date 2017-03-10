@@ -87,10 +87,12 @@ set(rgw_a_srcs
   rgw_rest_opstate.cc
   rgw_rest_realm.cc
   rgw_rest_replica_log.cc
+  rgw_rest_role.cc
   rgw_rest_s3.cc
   rgw_rest_swift.cc
   rgw_rest_usage.cc
   rgw_rest_user.cc
+  rgw_role.cc
   rgw_swift_auth.cc
   rgw_tools.cc
   rgw_usage.cc
@@ -210,6 +212,7 @@ install(TARGETS rgw DESTINATION ${CMAKE_INSTALL_LIBDIR})
 if(WITH_EMBEDDED)
   include(MergeStaticLibraries)
   add_library(cephd_rgw_base STATIC rgw_main.cc ${radosgw_admin_srcs})
+  target_include_directories(cephd_rgw_base PUBLIC ${FCGI_INCLUDE_DIR})
   set_target_properties(cephd_rgw_base PROPERTIES COMPILE_DEFINITIONS BUILDING_FOR_EMBEDDED)
   merge_static_libraries(cephd_rgw cephd_rgw_base rgw_a radosgw_a)
   target_link_libraries(cephd_rgw ${FCGI_LIBRARY})

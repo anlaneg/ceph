@@ -147,7 +147,6 @@ struct CloseImageRequest<librbd::MockTestImageCtx> {
   Context *on_finish = nullptr;
 
   static CloseImageRequest* create(librbd::MockTestImageCtx **image_ctx,
-                                   ContextWQ *work_queue, bool destroy_only,
                                    Context *on_finish) {
     assert(s_instance != nullptr);
     s_instance->image_ctx = image_ctx;
@@ -249,7 +248,7 @@ public:
   typedef librbd::journal::Replay<librbd::MockTestImageCtx> MockReplay;
   typedef ImageReplayer<librbd::MockTestImageCtx> MockImageReplayer;
 
-  virtual void SetUp() {
+  void SetUp() override {
     TestMockFixture::SetUp();
 
     librbd::RBD rbd;
@@ -265,12 +264,12 @@ public:
     m_image_replayer = new MockImageReplayer(
       m_threads, m_image_deleter, m_image_sync_throttler,
       rbd::mirror::RadosRef(new librados::Rados(m_local_io_ctx)),
-      rbd::mirror::RadosRef(new librados::Rados(m_remote_io_ctx)),
-      "local_mirror_uuid", "remote_mirror_uuid", m_local_io_ctx.get_id(),
-      m_remote_io_ctx.get_id(), m_remote_image_ctx->id, "global image id");
+      "local_mirror_uuid", m_local_io_ctx.get_id(), "global image id");
+    m_image_replayer->add_remote_image(
+      "remote_mirror_uuid", m_remote_image_ctx->id, m_remote_io_ctx);
   }
 
-  virtual void TearDown() {
+  void TearDown() override {
     delete m_image_replayer;
 
     TestMockFixture::TearDown();
@@ -847,7 +846,7 @@ TEST_F(TestMockImageReplayer, DelayedReplay) {
   // process with delay
   EXPECT_CALL(mock_replay_entry, get_data());
   librbd::journal::EventEntry event_entry(
-    librbd::journal::AioDiscardEvent(123, 345), ceph_clock_now());
+    librbd::journal::AioDiscardEvent(123, 345, false), ceph_clock_now());
   EXPECT_CALL(mock_local_replay, decode(_, _))
     .WillOnce(DoAll(SetArgPointee<1>(event_entry),
                     Return(0)));

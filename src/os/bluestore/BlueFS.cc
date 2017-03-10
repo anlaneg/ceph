@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include "boost/algorithm/string.hpp" 
 #include "BlueFS.h"
 
 #include "common/debug.h"
@@ -8,6 +9,7 @@
 #include "common/perf_counters.h"
 #include "BlockDevice.h"
 #include "Allocator.h"
+#include "include/assert.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_bluefs
@@ -230,6 +232,14 @@ uint64_t BlueFS::get_free(unsigned id)
   assert(id < alloc.size());
   return alloc[id]->get_free();
 }
+
+void BlueFS::dump_perf_counters(Formatter *f)
+{
+  f->open_object_section("bluefs_perf_counters");
+  logger->dump_formatted(f,0);
+  f->close_section();
+}
+
 
 void BlueFS::get_usage(vector<pair<uint64_t,uint64_t>> *usage)
 {
@@ -1590,10 +1600,10 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     //由于t采用的是page_aligned_appender方式分配，故一定是block的整数倍，所以这里
     //作者认为一定能放在结尾，所以作者添加了断言。
 	const bufferptr &last = t.back();
-	if (last.unused_tail_length() != zlen) {//作者不自信的表现，不必理会
+	if (last.unused_tail_length() < zlen) {
 	  derr << " wtf, last is " << last << " from " << t << dendl;
+	  assert(last.unused_tail_length() >= zlen);
 	}
-	assert(last.unused_tail_length() == zlen);//断言
 	bufferptr z = last;
 	z.set_offset(last.offset() + last.length());
 	z.set_length(zlen);
@@ -1932,9 +1942,9 @@ int BlueFS::open_for_write(
     // match up with bluestore.  the slow device is always the second
     // one (when a dedicated block.db device is present and used at
     // bdev 0).  the wal device is always last.
-    if (strcmp(dirname.c_str() + dirname.length() - 5, ".slow") == 0) {
+    if (boost::algorithm::ends_with(filename, ".slow")) {
       file->fnode.prefer_bdev = BlueFS::BDEV_SLOW;
-    } else if (strcmp(dirname.c_str() + dirname.length() - 4, ".wal") == 0) {
+    } else if (boost::algorithm::ends_with(dirname, ".wal")) {
       file->fnode.prefer_bdev = BlueFS::BDEV_WAL;
     }
   }
@@ -1947,12 +1957,12 @@ int BlueFS::open_for_write(
 
   *h = _create_writer(file);
 
-  if (0 == filename.compare(filename.length() - 4, 4, ".log")) {//如果是.log
+  if (boost::algorithm::ends_with(filename, ".log")) {//如果是.log
     (*h)->writer_type = BlueFS::WRITER_WAL;
     if (logger && !overwrite) {
       logger->inc(l_bluefs_files_written_wal);
     }
-  } else if (0 == filename.compare(filename.length() - 4, 4, ".sst")) {
+  } else if (boost::algorithm::ends_with(filename, ".sst")) {
     (*h)->writer_type = BlueFS::WRITER_SST;
     if (logger) {
       logger->inc(l_bluefs_files_written_sst);
@@ -2195,7 +2205,8 @@ int BlueFS::readdir(const string& dirname, vector<string> *ls)//返回指定目�
 {
   std::lock_guard<std::mutex> l(lock);
   dout(10) << __func__ << " " << dirname << dendl;
-  if (dirname.size() == 0) {//列出所有根目录
+  if (dirname.empty()) {
+    //列出所有根目录
     // list dirs
     ls->reserve(dir_map.size() + 2);
     for (auto& q : dir_map) {

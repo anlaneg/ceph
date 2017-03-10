@@ -12,14 +12,15 @@
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
-#define dout_prefix *_dout << "librbd::Watcher: "
+#define dout_prefix *_dout << "librbd::Watcher: " << this << " " << __func__ \
+                           << ": "
 
 namespace librbd {
 
 using namespace watcher;
 
 using util::create_context_callback;
-using util::create_rados_safe_callback;
+using util::create_rados_callback;
 using std::string;
 
 namespace {
@@ -34,7 +35,7 @@ struct C_UnwatchAndFlush : public Context {
     : rados(io_ctx), on_finish(on_finish) {
   }
 
-  virtual void complete(int r) override {
+  void complete(int r) override {
     if (ret_val == 0 && r < 0) {
       ret_val = r;
     }
@@ -42,7 +43,7 @@ struct C_UnwatchAndFlush : public Context {
     if (!flushing) {
       flushing = true;
 
-      librados::AioCompletion *aio_comp = create_rados_safe_callback(this);
+      librados::AioCompletion *aio_comp = create_rados_callback(this);
       r = rados.aio_watch_flush(aio_comp);
       assert(r == 0);
       aio_comp->release();
@@ -59,7 +60,7 @@ struct C_UnwatchAndFlush : public Context {
     ctx->complete(r);
   }
 
-  virtual void finish(int r) override {
+  void finish(int r) override {
   }
 };
 
@@ -67,71 +68,89 @@ struct C_UnwatchAndFlush : public Context {
 
 Watcher::Watcher(librados::IoCtx& ioctx, ContextWQ *work_queue,
                           const string& oid)
-  : m_cct(reinterpret_cast<CephContext *>(ioctx.cct())),
+  : m_ioctx(ioctx), m_work_queue(work_queue), m_oid(oid),
+    m_cct(reinterpret_cast<CephContext *>(ioctx.cct())),
     m_watch_lock(util::unique_lock_name("librbd::Watcher::m_watch_lock", this)),
     m_watch_handle(0), m_notifier(work_queue, ioctx, oid),
-    m_watch_state(WATCH_STATE_UNREGISTERED), m_ioctx(ioctx),
-    m_work_queue(work_queue), m_oid(oid), m_watch_ctx(*this)
-{
+    m_watch_state(WATCH_STATE_UNREGISTERED), m_watch_ctx(*this) {
 }
 
-Watcher::~Watcher()
-{
+Watcher::~Watcher() {
   RWLock::RLocker l(m_watch_lock);
   assert(m_watch_state != WATCH_STATE_REGISTERED);
 }
 
 void Watcher::register_watch(Context *on_finish) {
-  ldout(m_cct, 10) << this << " registering watcher" << dendl;
+  ldout(m_cct, 10) << dendl;
 
   RWLock::RLocker watch_locker(m_watch_lock);
   assert(m_watch_state == WATCH_STATE_UNREGISTERED);
-  librados::AioCompletion *aio_comp = create_rados_safe_callback(
+  m_watch_state = WATCH_STATE_REGISTERING;
+
+  librados::AioCompletion *aio_comp = create_rados_callback(
                                          new C_RegisterWatch(this, on_finish));
   int r = m_ioctx.aio_watch(m_oid, aio_comp, &m_watch_handle, &m_watch_ctx);
   assert(r == 0);
   aio_comp->release();
 }
 
-void Watcher::handle_register_watch(int r) {
-  ldout(m_cct, 10) << this << " handle register r=" << r << dendl;
-  RWLock::WLocker watch_locker(m_watch_lock);
-  assert(m_watch_state == WATCH_STATE_UNREGISTERED);
-  if (r < 0) {
-    lderr(m_cct) << ": failed to register watch: " << cpp_strerror(r) << dendl;
-    m_watch_handle = 0;
-  } else if (r >= 0) {
-    m_watch_state = WATCH_STATE_REGISTERED;
+void Watcher::handle_register_watch(int r, Context *on_finish) {
+  ldout(m_cct, 10) << "r=" << r << dendl;
+  Context *unregister_watch_ctx = nullptr;
+  {
+    RWLock::WLocker watch_locker(m_watch_lock);
+    assert(m_watch_state == WATCH_STATE_REGISTERING);
+
+    std::swap(unregister_watch_ctx, m_unregister_watch_ctx);
+    if (r < 0) {
+      lderr(m_cct) << "failed to register watch: " << cpp_strerror(r)
+                   << dendl;
+      m_watch_handle = 0;
+      m_watch_state = WATCH_STATE_UNREGISTERED;
+    } else if (r >= 0) {
+      m_watch_state = WATCH_STATE_REGISTERED;
+    }
+  }
+
+  on_finish->complete(r);
+
+  // wake up pending unregister request
+  if (unregister_watch_ctx != nullptr) {
+    unregister_watch_ctx->complete(0);
   }
 }
 
 void Watcher::unregister_watch(Context *on_finish) {
-  ldout(m_cct, 10) << this << " unregistering watcher" << dendl;
+  ldout(m_cct, 10) << dendl;
 
-  RWLock::WLocker watch_locker(m_watch_lock);
-  if (m_watch_state == WATCH_STATE_REWATCHING) {
-    ldout(m_cct, 10) << this << " delaying unregister until rewatch completed"
-                     << dendl;
+  {
+    RWLock::WLocker watch_locker(m_watch_lock);
+    if (m_watch_state == WATCH_STATE_REGISTERING ||
+        m_watch_state == WATCH_STATE_REWATCHING) {
+      ldout(m_cct, 10) << "delaying unregister until register completed"
+                       << dendl;
 
-    assert(m_unregister_watch_ctx == nullptr);
-    m_unregister_watch_ctx = new FunctionContext([this, on_finish](int r) {
-        unregister_watch(on_finish);
-      });
-    return;
+      assert(m_unregister_watch_ctx == nullptr);
+      m_unregister_watch_ctx = new FunctionContext([this, on_finish](int r) {
+          unregister_watch(on_finish);
+        });
+      return;
+    }
+
+    if (m_watch_state == WATCH_STATE_REGISTERED ||
+        m_watch_state == WATCH_STATE_ERROR) {
+      m_watch_state = WATCH_STATE_UNREGISTERED;
+
+      librados::AioCompletion *aio_comp = create_rados_callback(
+                        new C_UnwatchAndFlush(m_ioctx, on_finish));
+      int r = m_ioctx.aio_unwatch(m_watch_handle, aio_comp);
+      assert(r == 0);
+      aio_comp->release();
+      return;
+    }
   }
 
-  if (m_watch_state == WATCH_STATE_REGISTERED ||
-      m_watch_state == WATCH_STATE_ERROR) {
-    m_watch_state = WATCH_STATE_UNREGISTERED;
-
-    librados::AioCompletion *aio_comp = create_rados_safe_callback(
-                      new C_UnwatchAndFlush(m_ioctx, on_finish));
-    int r = m_ioctx.aio_unwatch(m_watch_handle, aio_comp);
-    assert(r == 0);
-    aio_comp->release();
-  } else {
-    on_finish->complete(0);
-  }
+  on_finish->complete(0);
 }
 
 void Watcher::flush(Context *on_finish) {
@@ -146,8 +165,7 @@ void Watcher::set_oid(const string& oid) {
 }
 
 void Watcher::handle_error(uint64_t handle, int err) {
-  lderr(m_cct) << this << " watch failed: " << handle << ", "
-               << cpp_strerror(err) << dendl;
+  lderr(m_cct) << "handle=" << handle << ": " << cpp_strerror(err) << dendl;
 
   RWLock::WLocker l(m_watch_lock);
   if (m_watch_state == WATCH_STATE_REGISTERED) {
@@ -165,7 +183,7 @@ void Watcher::acknowledge_notify(uint64_t notify_id, uint64_t handle,
 }
 
 void Watcher::rewatch() {
-  ldout(m_cct, 10) << this << " re-registering watch" << dendl;
+  ldout(m_cct, 10) << dendl;
 
   RWLock::WLocker l(m_watch_lock);
   if (m_watch_state != WATCH_STATE_ERROR) {
@@ -182,7 +200,7 @@ void Watcher::rewatch() {
 }
 
 void Watcher::handle_rewatch(int r) {
-  ldout(m_cct, 10) << this << " " << __func__ << ": r=" << r << dendl;
+  ldout(m_cct, 10) "r=" << r << dendl;
 
   WatchState next_watch_state = WATCH_STATE_REGISTERED;
   if (r < 0) {
@@ -219,7 +237,7 @@ void Watcher::WatchCtx::handle_notify(uint64_t notify_id,
                                                uint64_t handle,
                                                uint64_t notifier_id,
                                                bufferlist& bl) {
-  watcher.handle_notify(notify_id, handle, bl);
+  watcher.handle_notify(notify_id, handle, notifier_id, bl);
 }
 
 void Watcher::WatchCtx::handle_error(uint64_t handle, int err) {

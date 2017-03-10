@@ -711,6 +711,42 @@ function test_get_osds() {
 #######################################################################
 
 ##
+# Wait for the monitor to form quorum (optionally, of size N)
+#
+# @param timeout duration (lower-bound) to wait for quorum to be formed
+# @param quorumsize size of quorum to wait for
+# @return 0 on success, 1 on error
+#
+function wait_for_quorum() {
+    local timeout=$1
+    local quorumsize=$2
+
+    if [[ -z "$timeout" ]]; then
+      timeout=300
+    fi
+
+    if [[ -z "$quorumsize" ]]; then
+      timeout $timeout ceph mon_status --format=json >&/dev/null || return 1
+      return 0
+    fi
+
+    no_quorum=1
+    wait_until=$((`date +%s` + $timeout)) 
+    while [[ $(date +%s) -lt $wait_until ]]; do
+        jqfilter='.quorum | length == '$quorumsize
+        jqinput="$(timeout $timeout ceph mon_status --format=json 2>/dev/null)"
+        res=$(echo $jqinput | jq "$jqfilter")
+        if [[ "$res" == "true" ]]; then
+          no_quorum=0
+          break
+        fi
+    done
+    return $no_quorum
+}
+
+#######################################################################
+
+##
 # Return the PG of supporting the **objectname** stored in
 # **poolname**, as reported by ceph osd map.
 #
@@ -1085,8 +1121,8 @@ function test_is_clean() {
 # @return a list of sleep delays
 #
 function get_timeout_delays() {
-    local saved_state=$(set +o)
-    set +x
+    local trace=$(shopt -q -o xtrace && echo true || echo false)
+    $trace && shopt -u -o xtrace
     local timeout=$1
     local first_step=${2:-1}
 
@@ -1101,7 +1137,7 @@ function get_timeout_delays() {
     if test "$(echo $total \< $timeout | bc -l)" = "1"; then
         echo -n $(echo $timeout - $total | bc -l)
     fi
-    eval "$saved_state"
+    $trace && shopt -s -o xtrace
 }
 
 function test_get_timeout_delays() {
@@ -1133,15 +1169,14 @@ function wait_for_clean() {
     local cur_active_clean
     local -a delays=($(get_timeout_delays $TIMEOUT .1))
     local -i loop=0
-    local num_pgs=$(get_num_pgs)
-    test $num_pgs != 0 || return 1
+    test $(get_num_pgs) != 0 || return 1
 
     while true ; do
         # Comparing get_num_active_clean & get_num_pgs is used to determine
         # if the cluster is clean. That's almost an inline of is_clean() to
         # get more performance by avoiding multiple calls of get_num_active_clean.
         cur_active_clean=$(get_num_active_clean)
-        test $cur_active_clean = $num_pgs && break
+        test $cur_active_clean = $(get_num_pgs) && break
         if test $cur_active_clean != $num_active_clean ; then
             loop=0
             num_active_clean=$cur_active_clean

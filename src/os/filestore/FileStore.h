@@ -33,6 +33,7 @@ using namespace std;
 
 #include "common/Timer.h"
 #include "common/WorkQueue.h"
+#include "common/perf_counters.h"
 
 #include "common/Mutex.h"
 #include "HashIndex.h"
@@ -139,6 +140,9 @@ public:
   objectstore_perf_stat_t get_cur_stats() {
     perf_tracker.update_from_perfcounters(*logger);
     return perf_tracker.get_cur_stats();
+  }
+  const PerfCounters* get_perf_counters() const {
+    return logger;
   }
 
 private:
@@ -493,6 +497,11 @@ public:
   bool needs_journal() {
     return false;
   }
+  void dump_perf_counters(Formatter *f) override {
+    f->open_object_section("perf_counters");
+    logger->dump_formatted(f, false);
+    f->close_section();
+  }
 
   int write_version_stamp();
   int version_stamp_is_valid(uint32_t *version);
@@ -639,8 +648,8 @@ public:
 
   // DEBUG read error injection, an object is removed from both on delete()
   Mutex read_error_lock;
-  set<ghobject_t, ghobject_t::BitwiseComparator> data_error_set; // read() will return -EIO
-  set<ghobject_t, ghobject_t::BitwiseComparator> mdata_error_set; // getattr(),stat() will return -EIO
+  set<ghobject_t> data_error_set; // read() will return -EIO
+  set<ghobject_t> mdata_error_set; // getattr(),stat() will return -EIO
   void inject_data_error(const ghobject_t &oid);
   void inject_mdata_error(const ghobject_t &oid);
   void debug_obj_on_delete(const ghobject_t &oid);
@@ -668,8 +677,7 @@ public:
   // collections
   using ObjectStore::collection_list;
   int collection_list(const coll_t& c,
-		      const ghobject_t& start, const ghobject_t& end,
-		      bool sort_bitwise, int max,
+		      const ghobject_t& start, const ghobject_t& end, int max,
 		      vector<ghobject_t> *ls, ghobject_t *next);
   int list_collections(vector<coll_t>& ls);
   int list_collections(vector<coll_t>& ls, bool include_temp);

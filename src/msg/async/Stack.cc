@@ -35,8 +35,11 @@ std::function<void ()> NetworkStack::add_thread(unsigned i)
 {
   Worker *w = workers[i];
   return [this, w]() {
-    const uint64_t EventMaxWaitUs = 30000000;
-    w->center.set_owner();
+      char tp_name[16];
+      sprintf(tp_name, "msgr-worker-%d", w->id);
+      pthread_setname_np(pthread_self(), tp_name);
+      const uint64_t EventMaxWaitUs = 30000000;
+      w->center.set_owner();
       ldout(cct, 10) << __func__ << " starting" << dendl;
       w->initialize();
       w->init_done();
@@ -107,7 +110,7 @@ NetworkStack::NetworkStack(CephContext *c, const string &t): type(t), started(fa
 
   for (unsigned i = 0; i < num_workers; ++i) {
     Worker *w = create_worker(cct, type, i);
-    w->center.init(InitEventNumber, i);
+    w->center.init(InitEventNumber, i, type);
     workers.push_back(w);
   }
   cct->register_fork_watcher(this);
@@ -180,7 +183,7 @@ class C_drain : public EventCallback {
   explicit C_drain(size_t c)
       : drain_lock("C_drain::drain_lock"),
         drain_count(c) {}
-  void do_request(int id) {
+  void do_request(int id) override {
     Mutex::Locker l(drain_lock);
     drain_count--;
     if (drain_count == 0) drain_cond.Signal();

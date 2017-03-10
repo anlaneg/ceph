@@ -440,7 +440,11 @@ void OSDMap::Incremental::encode(bufferlist& bl, uint64_t features) const
   }
 
   {
-    ENCODE_START(2, 1, bl); // extended, osd-only data
+    uint8_t target_v = 3;
+    if (!HAVE_FEATURE(features, SERVER_LUMINOUS)) {
+      target_v = 2;
+    }
+    ENCODE_START(target_v, 1, bl); // extended, osd-only data
     ::encode(new_hb_back_up, bl, features);
     ::encode(new_up_thru, bl);
     ::encode(new_last_clean_interval, bl);
@@ -453,6 +457,10 @@ void OSDMap::Incremental::encode(bufferlist& bl, uint64_t features) const
     ::encode(new_xinfo, bl);
     ::encode(new_hb_front_up, bl, features);
     ::encode(features, bl);         // NOTE: features arg, not the member
+    if (target_v >= 3) {
+      ::encode(new_nearfull_ratio, bl);
+      ::encode(new_full_ratio, bl);
+    }
     ENCODE_FINISH(bl); // osd-only data
   }
 
@@ -630,7 +638,7 @@ void OSDMap::Incremental::decode(bufferlist::iterator& bl)
   }
 
   {
-    DECODE_START(2, bl); // extended, osd-only data
+    DECODE_START(3, bl); // extended, osd-only data
     ::decode(new_hb_back_up, bl);
     ::decode(new_up_thru, bl);
     ::decode(new_last_clean_interval, bl);
@@ -646,6 +654,13 @@ void OSDMap::Incremental::decode(bufferlist::iterator& bl)
       ::decode(encode_features, bl);
     else
       encode_features = CEPH_FEATURE_PGID64 | CEPH_FEATURE_OSDMAP_ENC;
+    if (struct_v >= 3) {
+      ::decode(new_nearfull_ratio, bl);
+      ::decode(new_full_ratio, bl);
+    } else {
+      new_nearfull_ratio = -1;
+      new_full_ratio = -1;
+    }
     DECODE_FINISH(bl); // osd-only data
   }
 
@@ -687,6 +702,8 @@ void OSDMap::Incremental::dump(Formatter *f) const
   f->dump_stream("modified") << modified;
   f->dump_int("new_pool_max", new_pool_max);
   f->dump_int("new_flags", new_flags);
+  f->dump_float("new_full_ratio", new_full_ratio);
+  f->dump_float("new_nearfull_ratio", new_nearfull_ratio);
 
   if (fullmap.length()) {
     f->open_object_section("full_map");
@@ -950,6 +967,20 @@ int OSDMap::calc_num_osds()
   return num_osd;
 }
 
+void OSDMap::count_full_nearfull_osds(int *full, int *nearfull) const
+{
+  *full = 0;
+  *nearfull = 0;
+  for (int i = 0; i < max_osd; ++i) {
+    if (exists(i) && is_up(i) && is_in(i)) {
+      if (osd_state[i] & CEPH_OSD_FULL)
+	++(*full);
+      else if (osd_state[i] & CEPH_OSD_NEARFULL)
+	++(*nearfull);
+    }
+  }
+}
+
 //找出这个版本所有的osd
 void OSDMap::get_all_osds(set<int32_t>& ls) const
 {
@@ -1043,7 +1074,7 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     features |= CEPH_FEATURE_CRUSH_TUNABLES5;
   mask |= CEPH_FEATURES_CRUSH;
 
-  for (map<int64_t,pg_pool_t>::const_iterator p = pools.begin(); p != pools.end(); ++p) {
+  for (auto p = pools.begin(); p != pools.end(); ++p) {
     if (p->second.has_flag(pg_pool_t::FLAG_HASHPSPOOL)) {
       features |= CEPH_FEATURE_OSDHASHPSPOOL;
     }
@@ -1068,7 +1099,7 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     }
   }
   if (entity_type == CEPH_ENTITY_TYPE_OSD) {
-    for (map<string,map<string,string> >::const_iterator p = erasure_code_profiles.begin();
+    for (auto p = erasure_code_profiles.begin();
 	 p != erasure_code_profiles.end();
 	 ++p) {
       const map<string,string> &profile = p->second;
@@ -1094,6 +1125,21 @@ uint64_t OSDMap::get_features(int entity_type, uint64_t *pmask) const
     }
   }
   mask |= CEPH_FEATURE_OSD_PRIMARY_AFFINITY;
+
+  if (entity_type == CEPH_ENTITY_TYPE_OSD) {
+    const uint64_t jewel_features = CEPH_FEATURE_SERVER_JEWEL;
+    if (test_flag(CEPH_OSDMAP_REQUIRE_JEWEL)) {
+      features |= jewel_features;
+    }
+    mask |= jewel_features;
+
+    const uint64_t kraken_features = CEPH_FEATUREMASK_SERVER_KRAKEN
+      | CEPH_FEATURE_MSG_ADDR2;
+    if (test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {
+      features |= kraken_features;
+    }
+    mask |= kraken_features;
+  }
 
   if (pmask)
     *pmask = mask;
@@ -1371,7 +1417,6 @@ int OSDMap::apply_incremental(const Incremental &inc)
       (*osd_uuid)[i->first] = uuid_d();
       osd_info[i->first] = osd_info_t();
       osd_xinfo[i->first] = osd_xinfo_t();
-      osd_weight[i->first] = CEPH_OSD_IN;
       set_primary_affinity(i->first, CEPH_OSD_DEFAULT_PRIMARY_AFFINITY);
       osd_addrs->client_addr[i->first].reset(new entity_addr_t());
       osd_addrs->cluster_addr[i->first].reset(new entity_addr_t());
@@ -1463,6 +1508,13 @@ int OSDMap::apply_incremental(const Incremental &inc)
     cluster_snapshot_epoch = 0;
   }
 
+  if (inc.new_nearfull_ratio >= 0) {
+    nearfull_ratio = inc.new_nearfull_ratio;
+  }
+  if (inc.new_full_ratio >= 0) {
+    full_ratio = inc.new_full_ratio;
+  }
+
   // do new crush map last (after up/down stuff)
   if (inc.crush.length()) {
     bufferlist bl(inc.crush);
@@ -1477,26 +1529,37 @@ int OSDMap::apply_incremental(const Incremental &inc)
 }
 
 // mapping
-int OSDMap::object_locator_to_pg(
-	const object_t& oid,
-	const object_locator_t& loc,
-	pg_t &pg) const
+int OSDMap::map_to_pg(
+  int64_t poolid,
+  const string& name,
+  const string& key,
+  const string& nspace,
+  pg_t *pg) const
 {
   // calculate ps (placement seed)
-  const pg_pool_t *pool = get_pg_pool(loc.get_pool());
+  const pg_pool_t *pool = get_pg_pool(poolid);
   if (!pool)
     return -ENOENT;
   ps_t ps;
-  if (loc.hash >= 0) {
-    ps = loc.hash;
-  } else {
-    if (!loc.key.empty())
-      ps = pool->hash_key(loc.key, loc.nspace);
-    else
-      ps = pool->hash_key(oid.name, loc.nspace);
-  }
-  pg = pg_t(ps, loc.get_pool(), -1);
+  if (!key.empty())
+    ps = pool->hash_key(key, nspace);
+  else
+    ps = pool->hash_key(name, nspace);
+  *pg = pg_t(ps, poolid);
   return 0;
+}
+
+int OSDMap::object_locator_to_pg(
+  const object_t& oid, const object_locator_t& loc, pg_t &pg) const
+{
+  if (loc.hash >= 0) {
+    if (!get_pg_pool(loc.get_pool())) {
+      return -ENOENT;
+    }
+    pg = pg_t(loc.hash, loc.get_pool());
+    return 0;
+  }
+  return map_to_pg(loc.get_pool(), oid.name, loc.key, loc.nspace, &pg);
 }
 
 ceph_object_layout OSDMap::make_object_layout(
@@ -1715,14 +1778,15 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   _raw_to_up_osds(*pool, raw, up, primary);
   _apply_primary_affinity(pps, *pool, up, primary);
 }
-
-//返回当前哪些osd负责此pg
-//up集合,指有效osd,up_priamry指primary_osd,acting,acting_primary一般与up相同.
-void OSDMap::_pg_to_up_acting_osds(const pg_t& pg, vector<int> *up, int *up_primary,
-                                   vector<int> *acting, int *acting_primary) const
+  
+void OSDMap::_pg_to_up_acting_osds(
+  const pg_t& pg, vector<int> *up, int *up_primary,
+  vector<int> *acting, int *acting_primary,
+  bool raw_pg_to_pg) const
 {
   const pg_pool_t *pool = get_pg_pool(pg.pool());
-  if (!pool) {//pool为空的处理.
+  if (!pool ||
+      (!raw_pg_to_pg && pg.ps() >= pool->get_pg_num())) {
     if (up)
       up->clear();
     if (up_primary)
@@ -1963,7 +2027,11 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
   }
 
   {
-    ENCODE_START(1, 1, bl); // extended, osd-only data
+    uint8_t target_v = 2;
+    if (!HAVE_FEATURE(features, SERVER_LUMINOUS)) {
+      target_v = 1;
+    }
+    ENCODE_START(target_v, 1, bl); // extended, osd-only data
     ::encode(osd_addrs->hb_back_addr, bl, features);
     ::encode(osd_info, bl);
     {
@@ -1981,6 +2049,10 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
     ::encode(*osd_uuid, bl);
     ::encode(osd_xinfo, bl);
     ::encode(osd_addrs->hb_front_addr, bl, features);
+    if (target_v >= 2) {
+      ::encode(nearfull_ratio, bl);
+      ::encode(full_ratio, bl);
+    }
     ENCODE_FINISH(bl); // osd-only data
   }
 
@@ -2190,7 +2262,7 @@ void OSDMap::decode(bufferlist::iterator& bl)
   }
 
   {
-    DECODE_START(1, bl); // extended, osd-only data
+    DECODE_START(2, bl); // extended, osd-only data
     ::decode(osd_addrs->hb_back_addr, bl);
     ::decode(osd_info, bl);
     ::decode(blacklist, bl);
@@ -2200,6 +2272,13 @@ void OSDMap::decode(bufferlist::iterator& bl)
     ::decode(*osd_uuid, bl);
     ::decode(osd_xinfo, bl);
     ::decode(osd_addrs->hb_front_addr, bl);
+    if (struct_v >= 2) {
+      ::decode(nearfull_ratio, bl);
+      ::decode(full_ratio, bl);
+    } else {
+      nearfull_ratio = 0;
+      full_ratio = 0;
+    }
     DECODE_FINISH(bl); // osd-only data
   }
 
@@ -2272,6 +2351,8 @@ void OSDMap::dump(Formatter *f) const
   f->dump_stream("created") << get_created();
   f->dump_stream("modified") << get_modified();
   f->dump_string("flags", get_flag_string());
+  f->dump_float("full_ratio", full_ratio);
+  f->dump_float("nearfull_ratio", nearfull_ratio);
   f->dump_string("cluster_snapshot", get_cluster_snapshot());
   f->dump_int("pool_max", get_pool_max());
   f->dump_int("max_osd", get_max_osd());
@@ -2416,6 +2497,8 @@ string OSDMap::get_flag_string(unsigned f)
     s += ",require_jewel_osds";
   if (f & CEPH_OSDMAP_REQUIRE_KRAKEN)
     s += ",require_kraken_osds";
+  if (f & CEPH_OSDMAP_REQUIRE_LUMINOUS)
+    s += ",require_luminous_osds";
   if (s.length())
     s.erase(0, 1);
   return s;
@@ -2462,6 +2545,8 @@ void OSDMap::print(ostream& out) const
       << "modified " << get_modified() << "\n";
 
   out << "flags " << get_flag_string() << "\n";
+  out << "full_ratio " << full_ratio << "\n";
+  out << "nearfull_ratio " << nearfull_ratio << "\n";
   if (get_cluster_snapshot().length())
     out << "cluster_snapshot " << get_cluster_snapshot() << "\n";
   out << "\n";
@@ -2532,7 +2617,7 @@ public:
   }
 
 protected:
-  virtual void dump_item(const CrushTreeDumper::Item &qi, TextTable *tbl) {
+  void dump_item(const CrushTreeDumper::Item &qi, TextTable *tbl) override {
 
     *tbl << qi.id
 	 << weightf_t(qi.weight);
@@ -2585,7 +2670,7 @@ public:
   }
 
 protected:
-  virtual void dump_item_fields(const CrushTreeDumper::Item &qi, Formatter *f) {
+  void dump_item_fields(const CrushTreeDumper::Item &qi, Formatter *f) override {
     Parent::dump_item_fields(qi, f);
     if (!qi.is_bucket())
     {

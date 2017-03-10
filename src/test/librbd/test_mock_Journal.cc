@@ -10,10 +10,10 @@
 #include "common/Mutex.h"
 #include "cls/journal/cls_journal_types.h"
 #include "journal/Journaler.h"
-#include "librbd/AioCompletion.h"
-#include "librbd/AioObjectRequest.h"
 #include "librbd/Journal.h"
 #include "librbd/Utils.h"
+#include "librbd/io/AioCompletion.h"
+#include "librbd/io/ObjectRequest.h"
 #include "librbd/journal/Replay.h"
 #include "librbd/journal/RemoveRequest.h"
 #include "librbd/journal/CreateRequest.h"
@@ -234,7 +234,7 @@ public:
   TestMockJournal() : m_lock("lock") {
   }
 
-  ~TestMockJournal() {
+  ~TestMockJournal() override {
     assert(m_commit_contexts.empty());
   }
 
@@ -250,7 +250,7 @@ public:
                    const ReplayAction &replay_action)
       : replay_handler(replay_handler), replay_action(replay_action) {
     }
-    virtual void finish(int r) {
+    void finish(int r) override {
       if (replay_action) {
         replay_action(*replay_handler);
       }
@@ -426,9 +426,9 @@ public:
 
   uint64_t when_append_io_event(MockJournalImageCtx &mock_image_ctx,
                                 MockJournal &mock_journal,
-                                AioObjectRequest<> *object_request = nullptr) {
+                                io::ObjectRequest<> *object_request = nullptr) {
     RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
-    MockJournal::AioObjectRequests object_requests;
+    MockJournal::IOObjectRequests object_requests;
     if (object_request != nullptr) {
       object_requests.push_back(object_request);
     }
@@ -1018,7 +1018,7 @@ TEST_F(TestMockJournal, EventCommitError) {
   };
 
   C_SaferCond object_request_ctx;
-  AioObjectRemove *object_request = new AioObjectRemove(
+  auto object_request = new io::ObjectRemoveRequest(
     ictx, "oid", 0, {}, &object_request_ctx);
 
   ::journal::MockFuture mock_future;
@@ -1059,7 +1059,7 @@ TEST_F(TestMockJournal, EventCommitErrorWithPendingWriteback) {
   };
 
   C_SaferCond object_request_ctx;
-  AioObjectRemove *object_request = new AioObjectRemove(
+  auto object_request = new io::ObjectRemoveRequest(
     ictx, "oid", 0, {}, &object_request_ctx);
 
   ::journal::MockFuture mock_future;
@@ -1239,13 +1239,13 @@ TEST_F(TestMockJournal, CloseListenerEvent) {
 
   struct Listener : public journal::Listener {
     C_SaferCond ctx;
-    virtual void handle_close() {
+    void handle_close() override {
       ctx.complete(0);
     }
-    virtual void handle_resync() {
+    void handle_resync() override {
       ADD_FAILURE() << "unexpected resync request";
     }
-    virtual void handle_promoted() {
+    void handle_promoted() override {
       ADD_FAILURE() << "unexpected promotion event";
     }
   } listener;
@@ -1273,13 +1273,13 @@ TEST_F(TestMockJournal, ResyncRequested) {
 
   struct Listener : public journal::Listener {
     C_SaferCond ctx;
-    virtual void handle_close() {
+    void handle_close() override {
       ADD_FAILURE() << "unexpected close action";
     }
-    virtual void handle_resync() {
+    void handle_resync() override {
       ctx.complete(0);
     }
-    virtual void handle_promoted() {
+    void handle_promoted() override {
       ADD_FAILURE() << "unexpected promotion event";
     }
   } listener;
@@ -1325,13 +1325,13 @@ TEST_F(TestMockJournal, ForcePromoted) {
 
   struct Listener : public journal::Listener {
     C_SaferCond ctx;
-    virtual void handle_close() {
+    void handle_close() override {
       ADD_FAILURE() << "unexpected close action";
     }
-    virtual void handle_resync() {
+    void handle_resync() override {
       ADD_FAILURE() << "unexpected resync event";
     }
-    virtual void handle_promoted() {
+    void handle_promoted() override {
       ctx.complete(0);
     }
   } listener;

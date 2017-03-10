@@ -20,8 +20,7 @@ namespace librbd {
 namespace managed_lock {
 
 using util::create_context_callback;
-using util::create_rados_ack_callback;
-using util::create_rados_safe_callback;
+using util::create_rados_callback;
 
 namespace {
 
@@ -37,7 +36,7 @@ struct C_BlacklistClient : public Context {
       expire_seconds(expire_seconds), on_finish(on_finish) {
   }
 
-  virtual void finish(int r) override {
+  void finish(int r) override {
     librados::Rados rados(ioctx);
     r = rados.blacklist_add(locker_address, expire_seconds);
     on_finish->complete(r);
@@ -73,7 +72,7 @@ void BreakRequest<I>::send_get_watchers() {
 
   using klass = BreakRequest<I>;
   librados::AioCompletion *rados_completion =
-    create_rados_ack_callback<klass, &klass::handle_get_watchers>(this);
+    create_rados_callback<klass, &klass::handle_get_watchers>(this);
   m_out_bl.clear();
   int r = m_ioctx.aio_operate(m_oid, rados_completion, &op, &m_out_bl);
   assert(r == 0);
@@ -119,7 +118,15 @@ void BreakRequest<I>::send_blacklist() {
     return;
   }
 
-  ldout(m_cct, 10) << dendl;
+  entity_name_t entity_name = entity_name_t::CLIENT(m_ioctx.get_instance_id());
+  ldout(m_cct, 10) << "local entity=" << entity_name << ", "
+                   << "locker entity=" << m_locker.entity << dendl;
+
+  if (m_locker.entity == entity_name) {
+    lderr(m_cct) << "attempting to self-blacklist" << dendl;
+    finish(-EINVAL);
+    return;
+  }
 
   // TODO: need async version of RadosClient::blacklist_add
   using klass = BreakRequest<I>;
@@ -153,7 +160,7 @@ void BreakRequest<I>::send_break_lock() {
 
   using klass = BreakRequest<I>;
   librados::AioCompletion *rados_completion =
-    create_rados_safe_callback<klass, &klass::handle_break_lock>(this);
+    create_rados_callback<klass, &klass::handle_break_lock>(this);
   int r = m_ioctx.aio_operate(m_oid, rados_completion, &op);
   assert(r == 0);
   rados_completion->release();

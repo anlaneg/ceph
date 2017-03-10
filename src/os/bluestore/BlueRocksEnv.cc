@@ -43,7 +43,7 @@ class BlueRocksSequentialFile : public rocksdb::SequentialFile {
   // If an error was encountered, returns a non-OK status.
   //
   // REQUIRES: External synchronization
-  rocksdb::Status Read(size_t n, rocksdb::Slice* result, char* scratch) {
+  rocksdb::Status Read(size_t n, rocksdb::Slice* result, char* scratch) override {
     int r = fs->read(h, &h->buf, h->buf.pos, n, NULL, scratch);
     assert(r >= 0);
     *result = rocksdb::Slice(scratch, r);
@@ -57,7 +57,7 @@ class BlueRocksSequentialFile : public rocksdb::SequentialFile {
   // file, and Skip will return OK.
   //
   // REQUIRES: External synchronization
-  rocksdb::Status Skip(uint64_t n) {
+  rocksdb::Status Skip(uint64_t n) override {
     h->buf.skip(n);
     return rocksdb::Status::OK();
   }
@@ -65,7 +65,7 @@ class BlueRocksSequentialFile : public rocksdb::SequentialFile {
   // Remove any kind of caching of data from the offset to offset+length
   // of this file. If the length is 0, then it refers to the end of file.
   // If the system is not caching the file contents, then this is a noop.
-  rocksdb::Status InvalidateCache(size_t offset, size_t length) {
+  rocksdb::Status InvalidateCache(size_t offset, size_t length) override {
     fs->invalidate_cache(h->file, offset, length);
     return rocksdb::Status::OK();
   }
@@ -91,7 +91,7 @@ class BlueRocksRandomAccessFile : public rocksdb::RandomAccessFile {
   //
   // Safe for concurrent use by multiple threads.
   rocksdb::Status Read(uint64_t offset, size_t n, rocksdb::Slice* result,
-		       char* scratch) const {
+		       char* scratch) const override {
     int r = fs->read_random(h, offset, n, scratch);
     assert(r >= 0);
     *result = rocksdb::Slice(scratch, r);
@@ -100,13 +100,13 @@ class BlueRocksRandomAccessFile : public rocksdb::RandomAccessFile {
 
   // Used by the file_reader_writer to decide if the ReadAhead wrapper
   // should simply forward the call and do not enact buffering or locking.
-  bool ShouldForwardRawRequest() const {
+  bool ShouldForwardRawRequest() const override {
     return false;
   }
 
   // For cases when read-ahead is implemented in the platform dependent
   // layer
-  void EnableReadAhead() {}
+  void EnableReadAhead() override {}
 
   // Tries to get an unique ID for this file that will be the same each time
   // the file is opened (and will stay the same while the file is open).
@@ -123,14 +123,14 @@ class BlueRocksRandomAccessFile : public rocksdb::RandomAccessFile {
   // a single varint.
   //
   // Note: these IDs are only valid for the duration of the process.
-  size_t GetUniqueId(char* id, size_t max_size) const {
+  size_t GetUniqueId(char* id, size_t max_size) const override {
     return snprintf(id, max_size, "%016llx",
 		    (unsigned long long)h->file->fnode.ino);
   };
 
   //enum AccessPattern { NORMAL, RANDOM, SEQUENTIAL, WILLNEED, DONTNEED };
 
-  void Hint(AccessPattern pattern) {
+  void Hint(AccessPattern pattern) override {
     if (pattern == RANDOM)
       h->buf.max_prefetch = 4096;
     else if (pattern == SEQUENTIAL)
@@ -140,7 +140,7 @@ class BlueRocksRandomAccessFile : public rocksdb::RandomAccessFile {
   // Remove any kind of caching of data from the offset to offset+length
   // of this file. If the length is 0, then it refers to the end of file.
   // If the system is not caching the file contents, then this is a noop.
-  rocksdb::Status InvalidateCache(size_t offset, size_t length) {
+  rocksdb::Status InvalidateCache(size_t offset, size_t length) override {
     fs->invalidate_cache(h->file, offset, length);
     return rocksdb::Status::OK();
   }
@@ -171,7 +171,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
     return c_DefaultPageSize;
     }*/
 
-  rocksdb::Status Append(const rocksdb::Slice& data) {
+  rocksdb::Status Append(const rocksdb::Slice& data) override {
     h->append(data.data(), data.size());
     return rocksdb::Status::OK();
   }
@@ -180,7 +180,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
   // to simple append as most of the tests are buffered by default
   rocksdb::Status PositionedAppend(
     const rocksdb::Slice& /* data */,
-    uint64_t /* offset */) {
+    uint64_t /* offset */) override {
     return rocksdb::Status::NotSupported();
   }
 
@@ -188,7 +188,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
   // before closing. It is not always possible to keep track of the file
   // size due to whole pages writes. The behavior is undefined if called
   // with other writes to follow.
-  rocksdb::Status Truncate(uint64_t size) {
+  rocksdb::Status Truncate(uint64_t size) override {
     // we mirror the posix env, which does nothing here; instead, it
     // truncates to the final size on close.  whatever!
     return rocksdb::Status::OK();
@@ -196,7 +196,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
     //  return err_to_status(r);
   }
 
-  rocksdb::Status Close() {
+  rocksdb::Status Close() override {
     Flush();
 
     // mimic posix env, here.  shrug.
@@ -212,19 +212,19 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
     return rocksdb::Status::OK();
   }
 
-  rocksdb::Status Flush() {
+  rocksdb::Status Flush() override {
     fs->flush(h);
     return rocksdb::Status::OK();
   }
 
-  rocksdb::Status Sync() { // sync data
+  rocksdb::Status Sync() override { // sync data
     fs->fsync(h);
     return rocksdb::Status::OK();
   }
 
   // true if Sync() and Fsync() are safe to call concurrently with Append()
   // and Flush().
-  bool IsSyncThreadSafe() const {
+  bool IsSyncThreadSafe() const override {
     return true;
   }
 
@@ -237,12 +237,12 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
   /*
    * Get the size of valid data in the file.
    */
-  uint64_t GetFileSize() {
+  uint64_t GetFileSize() override {
     return h->file->fnode.size + h->buffer.length();;
   }
 
   // For documentation, refer to RandomAccessFile::GetUniqueId()
-  size_t GetUniqueId(char* id, size_t max_size) const {
+  size_t GetUniqueId(char* id, size_t max_size) const override {
     return snprintf(id, max_size, "%016llx",
 		    (unsigned long long)h->file->fnode.ino);
   }
@@ -251,7 +251,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
   // of this file. If the length is 0, then it refers to the end of file.
   // If the system is not caching the file contents, then this is a noop.
   // This call has no effect on dirty pages in the cache.
-  rocksdb::Status InvalidateCache(size_t offset, size_t length) {
+  rocksdb::Status InvalidateCache(size_t offset, size_t length) override {
     fs->invalidate_cache(h->file, offset, length);
     return rocksdb::Status::OK();
   }
@@ -294,7 +294,7 @@ class BlueRocksDirectory : public rocksdb::Directory {
   explicit BlueRocksDirectory(BlueFS *f) : fs(f) {}
 
   // Fsync directory. Can be called concurrently from multiple threads.
-  rocksdb::Status Fsync() {
+  rocksdb::Status Fsync() override {
     // it is sufficient to flush the log.
     fs->sync_metadata();
     return rocksdb::Status::OK();

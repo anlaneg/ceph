@@ -11,16 +11,15 @@
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
-#define dout_prefix *_dout << "librbd::exclusive_lock::PreAcquireRequest: "
+#define dout_prefix *_dout << "librbd::exclusive_lock::PreAcquireRequest: " \
+                           << this << " " << __func__ << ": "
 
 namespace librbd {
 namespace exclusive_lock {
 
 using util::create_async_context_callback;
 using util::create_context_callback;
-using util::create_rados_ack_callback;
-using util::create_rados_safe_callback;
-
+using util::create_rados_callback;
 
 template <typename I>
 PreAcquireRequest<I>* PreAcquireRequest<I>::create(I &image_ctx,
@@ -47,7 +46,7 @@ void PreAcquireRequest<I>::send() {
 template <typename I>
 void PreAcquireRequest<I>::send_prepare_lock() {
   CephContext *cct = m_image_ctx.cct;
-  ldout(cct, 10) << __func__ << dendl;
+  ldout(cct, 10) << dendl;
 
   // acquire the lock if the image is not busy performing other actions
   Context *ctx = create_context_callback<
@@ -58,7 +57,7 @@ void PreAcquireRequest<I>::send_prepare_lock() {
 template <typename I>
 void PreAcquireRequest<I>::handle_prepare_lock(int r) {
   CephContext *cct = m_image_ctx.cct;
-  ldout(cct, 10) << __func__ << ": r=" << r << dendl;
+  ldout(cct, 10) << "r=" << r << dendl;
 
   send_flush_notifies();
 }
@@ -66,7 +65,7 @@ void PreAcquireRequest<I>::handle_prepare_lock(int r) {
 template <typename I>
 void PreAcquireRequest<I>::send_flush_notifies() {
   CephContext *cct = m_image_ctx.cct;
-  ldout(cct, 10) << __func__ << dendl;
+  ldout(cct, 10) << dendl;
 
   using klass = PreAcquireRequest<I>;
   Context *ctx = create_context_callback<klass, &klass::handle_flush_notifies>(
@@ -77,7 +76,7 @@ void PreAcquireRequest<I>::send_flush_notifies() {
 template <typename I>
 void PreAcquireRequest<I>::handle_flush_notifies(int r) {
   CephContext *cct = m_image_ctx.cct;
-  ldout(cct, 10) << __func__ << dendl;
+  ldout(cct, 10) << dendl;
 
   assert(r == 0);
   finish();

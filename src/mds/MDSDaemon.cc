@@ -56,6 +56,7 @@
 #include "messages/MCommandReply.h"
 
 #include "auth/AuthAuthorizeHandler.h"
+#include "auth/RotatingKeyRing.h"
 #include "auth/KeyRing.h"
 
 #include "common/config.h"
@@ -68,35 +69,13 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << name << ' '
 
-/**
- * Helper for simple callbacks that call a void fn with no args.
- */
-class C_VoidFn : public Context
-{
-  typedef void (MDSDaemon::*fn_ptr)();
-  protected:
-   MDSDaemon *mds;
-   fn_ptr fn;
-  public:
-  C_VoidFn(MDSDaemon *mds_, fn_ptr fn_)
-    : mds(mds_), fn(fn_)
-  {
-    assert(mds_);
-    assert(fn_);
-  }
-
-  void finish(int r)
-  {
-    (mds->*fn)();
-  }
-};
 
 class MDSDaemon::C_MDS_Tick : public Context {
   protected:
     MDSDaemon *mds_daemon;
 public:
   explicit C_MDS_Tick(MDSDaemon *m) : mds_daemon(m) {}
-  void finish(int r) {
+  void finish(int r) override {
     assert(mds_daemon->mds_lock.is_locked_by_me());
 
     mds_daemon->tick_event = 0;
@@ -155,7 +134,7 @@ class MDSSocketHook : public AdminSocketHook {
 public:
   explicit MDSSocketHook(MDSDaemon *m) : mds(m) {}
   bool call(std::string command, cmdmap_t& cmdmap, std::string format,
-	    bufferlist& out) {
+	    bufferlist& out) override {
     stringstream ss;
     bool r = mds->asok_command(command, cmdmap, format, ss);
     out.append(ss);
@@ -194,9 +173,9 @@ void MDSDaemon::dump_status(Formatter *f)
   f->open_object_section("status");
   f->dump_stream("cluster_fsid") << monc->get_fsid();
   if (mds_rank) {
-    f->dump_unsigned("whoami", mds_rank->get_nodeid());
+    f->dump_int("whoami", mds_rank->get_nodeid());
   } else {
-    f->dump_unsigned("whoami", MDS_RANK_NONE);
+    f->dump_int("whoami", MDS_RANK_NONE);
   }
 
   f->dump_int("id", monc->get_global_id());
@@ -373,9 +352,10 @@ const char** MDSDaemon::get_tracked_conf_keys() const
     "clog_to_syslog",
     "clog_to_syslog_facility",
     "clog_to_syslog_level",
-    // StrayManager
+    // PurgeQueue
     "mds_max_purge_ops",
     "mds_max_purge_ops_per_pg",
+    "mds_max_purge_files",
     "clog_to_graylog",
     "clog_to_graylog_host",
     "clog_to_graylog_port",
@@ -436,7 +416,7 @@ void MDSDaemon::handle_conf_change(const struct md_config_t *conf,
   }
 
   if (mds_rank) {
-    mds_rank->mdcache->handle_conf_change(conf, changed);
+    mds_rank->handle_conf_change(conf, changed);
   }
 
   if (!initially_locked) {
@@ -716,7 +696,7 @@ int MDSDaemon::_handle_command(
 
     public:
     explicit SuicideLater(MDSDaemon *mds_) : mds(mds_) {}
-    void finish(int r) {
+    void finish(int r) override {
       // Wait a little to improve chances of caller getting
       // our response before seeing us disappear from mdsmap
       sleep(1);
@@ -733,7 +713,7 @@ int MDSDaemon::_handle_command(
     public:
 
     explicit RespawnLater(MDSDaemon *mds_) : mds(mds_) {}
-    void finish(int r) {
+    void finish(int r) override {
       // Wait a little to improve chances of caller getting
       // our response before seeing us disappear from mdsmap
       sleep(1);
@@ -872,7 +852,7 @@ int MDSDaemon::_handle_command_legacy(std::vector<std::string> args)
   }
   else if (args[0] == "heap") {
     if (!ceph_using_tcmalloc())
-      clog->info() << "tcmalloc not enabled, can't use heap profiler commands\n";
+      clog->info() << "tcmalloc not enabled, can't use heap profiler commands";
     else {
       ostringstream ss;
       vector<std::string> cmdargs;
@@ -996,8 +976,8 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
     if (mds_rank == NULL) {
       mds_rank = new MDSRankDispatcher(whoami, mds_lock, clog,
           timer, beacon, mdsmap, messenger, monc,
-          new C_VoidFn(this, &MDSDaemon::respawn),
-          new C_VoidFn(this, &MDSDaemon::suicide));
+          new FunctionContext([this](int r){respawn();}),
+          new FunctionContext([this](int r){suicide();}));
       dout(10) <<  __func__ << ": initializing MDS rank "
                << mds_rank->get_nodeid() << dendl;
       mds_rank->init();
@@ -1185,7 +1165,7 @@ bool MDSDaemon::ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bo
       return false;
   }
 
-  *authorizer = monc->auth->build_authorizer(dest_type);
+  *authorizer = monc->build_authorizer(dest_type);
   return *authorizer != NULL;
 }
 
@@ -1389,7 +1369,7 @@ bool MDSDaemon::ms_verify_authorizer(Connection *con, int peer_type,
         dout(1) << __func__ << ": auth cap parse error: " << errstr.str()
 		<< " parsing '" << auth_cap_str << "'" << dendl;
 	clog->warn() << name << " mds cap '" << auth_cap_str
-		     << "' does not parse: " << errstr.str() << "\n";
+		     << "' does not parse: " << errstr.str();
       }
     } catch (buffer::error& e) {
       // Assume legacy auth, defaults to:

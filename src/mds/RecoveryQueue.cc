@@ -30,11 +30,11 @@ class C_MDC_Recover : public MDSIOContextBase {
 protected:
   RecoveryQueue *rq;
   CInode *in;
-  void finish(int r) {
+  void finish(int r) override {
     rq->_recovered(in, r, size, mtime);
   }
 
-  MDSRank *get_mds() {
+  MDSRank *get_mds() override {
     return rq->mds;
   }
 
@@ -90,7 +90,7 @@ void RecoveryQueue::_start(CInode *in)
   // blech
   if (pi->client_ranges.size() && !pi->get_max_size()) {
     mds->clog->warn() << "bad client_range " << pi->client_ranges
-		      << " on ino " << pi->ino << "\n";
+		      << " on ino " << pi->ino;
   }
 
   if (pi->client_ranges.size() && pi->get_max_size()) {

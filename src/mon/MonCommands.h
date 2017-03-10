@@ -123,8 +123,6 @@
 
 COMMAND("pg stat", "show placement group status.", "pg", "r", "cli,rest")
 COMMAND("pg getmap", "get binary pg map to -o/stdout", "pg", "r", "cli,rest")
-COMMAND("pg send_pg_creates", "trigger pg creates to be issued",\
-	"pg", "rw", "cli,rest")
 COMMAND("pg dump " \
 	"name=dumpcontents,type=CephChoices,strings=all|summary|sum|delta|pools|osds|pgs|pgs_brief,n=N,req=false", \
 	"show human-readable versions of pg map (only 'all' valid with plain)", "pg", "r", "cli,rest")
@@ -376,7 +374,8 @@ COMMAND_WITH_FLAG("mds newfs " \
 COMMAND("fs new " \
 	"name=fs_name,type=CephString " \
 	"name=metadata,type=CephString " \
-	"name=data,type=CephString ", \
+	"name=data,type=CephString " \
+	"name=force,type=CephChoices,strings=--force,req=false", \
 	"make new filesystem using named pools <metadata> and <data>", \
 	"fs", "rw", "cli,rest")
 COMMAND("fs rm " \
@@ -442,22 +441,15 @@ COMMAND("mon remove " \
 COMMAND("mon rm " \
 	"name=name,type=CephString", \
 	"remove monitor named <name>", "mon", "rw", "cli,rest")
-COMMAND("mon debug set_feature" \
-        "name=feature_type,type=CephChoices,strings=persistent|optional " \
+COMMAND("mon feature list " \
+        "name=with_value,type=CephChoices,strings=--with-value,req=false", \
+        "list available mon map features to be set/unset", \
+        "mon", "r", "cli,rest")
+COMMAND("mon feature set " \
         "name=feature_name,type=CephString " \
         "name=sure,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
         "set provided feature on mon map", \
-        "mon", "rw", "cli")
-COMMAND("mon debug list_features " \
-        "name=feature_type,type=CephString,req=false", \
-        "list available mon map features to be set/unset", \
-        "mon", "rw", "cli")
-COMMAND("mon debug unset_feature " \
-        "name=feature_type,type=CephChoices,strings=persistent|optional " \
-        "name=feature_name,type=CephString " \
-        "name=sure,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
-        "unset provided feature from monmap", \
-        "mon", "rw", "cli")
+        "mon", "rw", "cli,rest")
 
 /*
  * OSD commands
@@ -629,6 +621,14 @@ COMMAND("osd crush tree",
 COMMAND("osd setmaxosd " \
 	"name=newmax,type=CephInt,range=0", \
 	"set new maximum osd value", "osd", "rw", "cli,rest")
+COMMAND("osd set-full-ratio " \
+	"name=ratio,type=CephFloat,range=0.0|1.0", \
+	"set usage ratio at which OSDs are marked full",
+	"osd", "rw", "cli,rest")
+COMMAND("osd set-nearfull-ratio " \
+	"name=ratio,type=CephFloat,range=0.0|1.0", \
+	"set usage ratio at which OSDs are marked near-full",
+	"osd", "rw", "cli,rest")
 COMMAND("osd pause", "pause osd", "osd", "rw", "cli,rest")
 COMMAND("osd unpause", "unpause osd", "osd", "rw", "cli,rest")
 COMMAND("osd erasure-code-profile set " \
@@ -648,10 +648,10 @@ COMMAND("osd erasure-code-profile ls", \
 	"list all erasure code profiles", \
 	"osd", "r", "cli,rest")
 COMMAND("osd set " \
-	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent|sortbitwise|require_jewel_osds|require_kraken_osds", \
+	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent|sortbitwise|require_jewel_osds|require_kraken_osds|require_luminous_osds", \
 	"set <key>", "osd", "rw", "cli,rest")
 COMMAND("osd unset " \
-	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent|sortbitwise", \
+	"name=key,type=CephChoices,strings=full|pause|noup|nodown|noout|noin|nobackfill|norebalance|norecover|noscrub|nodeep-scrub|notieragent", \
 	"unset <key>", "osd", "rw", "cli,rest")
 COMMAND("osd cluster_snap", "take cluster snapshot (disabled)", \
 	"osd", "r", "")

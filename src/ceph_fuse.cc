@@ -47,18 +47,18 @@ using namespace std;
 
 static void fuse_usage()
 {
-  const char **argv = (const char **) malloc((2) * sizeof(char *));
-  argv[0] = "ceph-fuse";
-  argv[1] = "-h";
+  const char* argv[] = {
+    "ceph-fuse",
+    "-h",
+  };
   struct fuse_args args = FUSE_ARGS_INIT(2, (char**)argv);
   if (fuse_parse_cmdline(&args, NULL, NULL, NULL) == -1) {
     derr << "fuse_parse_cmdline failed." << dendl;
-    fuse_opt_free_args(&args);
   }
-
-  assert(args.allocated);  // Checking fuse has realloc'd args so we can free newargv
-  free(argv);
+  assert(args.allocated);
+  fuse_opt_free_args(&args);
 }
+
 void usage()
 {
   cout <<
@@ -115,28 +115,32 @@ int main(int argc, const char **argv, const char *envp[]) {
     cerr << std::endl;
   }
 
-  global_init_prefork(g_ceph_context);
   Preforker forker;
   if (g_conf->daemonize) {
+    global_init_prefork(g_ceph_context);
+    int r;
     string err;
-    if (forker.prefork(err)) {
-      cerr << "ceph-fuse[" << err << std::endl;
-      return 1;
+    r = forker.prefork(err);
+    if (r < 0 || forker.is_parent()) {
+      // Start log if current process is about to exit. Otherwise, we hit an assert
+      // in the Ceph context destructor.
+      g_ceph_context->_log->start();
+    }
+    if (r < 0) {
+      cerr << "ceph-fuse " << err << std::endl;
+      return r;
+    }
+    if (forker.is_parent()) {
+      r = forker.parent_wait(err);
+      if (r < 0) {
+	cerr << "ceph-fuse " << err << std::endl;
+      }
+      return r;
     }
     global_init_postfork_start(cct.get());
   }
 
-
-  if (forker.is_parent()) {
-    string err;
-    int r = forker.parent_wait(err);
-    if (r) {
-      cerr << "ceph-fuse" << err << std::endl;
-    }
-    return r;
-  }
-
-  if (forker.is_child()) {
+  {
     common_init_finish(g_ceph_context);
 
     //cout << "child, mounting" << std::endl;
@@ -149,8 +153,8 @@ int main(int argc, const char **argv, const char *envp[]) {
 	cfuse = cf;
 	client = cl;
       }
-      virtual ~RemountTest() {}
-      virtual void *entry() {
+      ~RemountTest() override {}
+      void *entry() override {
 #if defined(__linux__)
 	int ver = get_linux_version();
 	assert(ver != 0);
@@ -205,9 +209,9 @@ int main(int argc, const char **argv, const char *envp[]) {
 
     // start up network
     messenger = Messenger::create_client_messenger(g_ceph_context, "client");
-    messenger->set_default_policy(Messenger::Policy::lossy_client(0, 0));
+    messenger->set_default_policy(Messenger::Policy::lossy_client(0));
     messenger->set_policy(entity_name_t::TYPE_MDS,
-			  Messenger::Policy::lossless_client(0, 0));
+			  Messenger::Policy::lossless_client(0));
 
     client = new Client(messenger, mc);
     if (filer_flags) {

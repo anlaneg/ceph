@@ -382,13 +382,15 @@ int main(int argc, const char **argv)
       derr << TEXT_RED << " ** ERROR: error flushing journal " << g_conf->osd_journal
 	   << " for object store " << g_conf->osd_data
 	   << ": " << cpp_strerror(-err) << TEXT_NORMAL << dendl;
-      exit(1);
+      goto flushjournal_out;
     }
     store->umount();
     derr << "flushed journal " << g_conf->osd_journal
 	 << " for object store " << g_conf->osd_data
 	 << dendl;
-    exit(0);
+flushjournal_out:
+    delete store;
+    exit(err < 0 ? 1 : 0);
   }
 
   //dump journal
@@ -473,29 +475,31 @@ int main(int argc, const char **argv)
 	 << TEXT_NORMAL << dendl;
   }
 
-  Messenger *ms_public = Messenger::create(g_ceph_context, g_conf->ms_type,
+  std::string public_msgr_type = g_conf->ms_public_type.empty() ? g_conf->ms_type : g_conf->ms_public_type;
+  std::string cluster_msgr_type = g_conf->ms_cluster_type.empty() ? g_conf->ms_type : g_conf->ms_cluster_type;
+  Messenger *ms_public = Messenger::create(g_ceph_context, public_msgr_type,
 					   entity_name_t::OSD(whoami), "client",
 					   getpid(),
 					   Messenger::HAS_HEAVY_TRAFFIC |
 					   Messenger::HAS_MANY_CONNECTIONS);
-  Messenger *ms_cluster = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_cluster = Messenger::create(g_ceph_context, cluster_msgr_type,
 					    entity_name_t::OSD(whoami), "cluster",
 					    getpid(),
 					    Messenger::HAS_HEAVY_TRAFFIC |
 					    Messenger::HAS_MANY_CONNECTIONS);
-  Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, cluster_msgr_type,
 					     entity_name_t::OSD(whoami), "hb_back_client",
 					     getpid(), Messenger::HEARTBEAT);
-  Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, public_msgr_type,
 					     entity_name_t::OSD(whoami), "hb_front_client",
 					     getpid(), Messenger::HEARTBEAT);
-  Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, cluster_msgr_type,
 						   entity_name_t::OSD(whoami), "hb_back_server",
 						   getpid(), Messenger::HEARTBEAT);
-  Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, public_msgr_type,
 						    entity_name_t::OSD(whoami), "hb_front_server",
 						    getpid(), Messenger::HEARTBEAT);
-  Messenger *ms_objecter = Messenger::create(g_ceph_context, g_conf->ms_type,
+  Messenger *ms_objecter = Messenger::create(g_ceph_context, public_msgr_type,
 					     entity_name_t::OSD(whoami), "ms_objecter",
 					     getpid(), 0);
   //创建messenger
@@ -521,56 +525,46 @@ int main(int argc, const char **argv)
     new Throttle(g_ceph_context, "osd_client_messages",
 		 g_conf->osd_client_message_cap));
 
-  uint64_t supported =
-    CEPH_FEATURE_UID | 
-    CEPH_FEATURE_NOSRCADDR |
-    CEPH_FEATURE_PGID64 |
-    CEPH_FEATURE_MSG_AUTH |
-    CEPH_FEATURE_OSD_ERASURE_CODES;
-
   // All feature bits 0 - 34 should be present from dumpling v0.67 forward
   uint64_t osd_required =
     CEPH_FEATURE_UID |
     CEPH_FEATURE_PGID64 |
     CEPH_FEATURE_OSDENC;
 
-  ms_public->set_default_policy(Messenger::Policy::stateless_server(supported, 0));
+  ms_public->set_default_policy(Messenger::Policy::stateless_server(0));
   ms_public->set_policy_throttlers(entity_name_t::TYPE_CLIENT,
 				   client_byte_throttler.get(),
 				   client_msg_throttler.get());
   ms_public->set_policy(entity_name_t::TYPE_MON,
-                               Messenger::Policy::lossy_client(supported,
-							       CEPH_FEATURE_UID |
+                               Messenger::Policy::lossy_client(CEPH_FEATURE_UID |
 							       CEPH_FEATURE_PGID64 |
 							       CEPH_FEATURE_OSDENC));
   ms_public->set_policy(entity_name_t::TYPE_MGR,
-                               Messenger::Policy::lossy_client(supported,
-							       CEPH_FEATURE_UID |
+                               Messenger::Policy::lossy_client(CEPH_FEATURE_UID |
 							       CEPH_FEATURE_PGID64 |
 							       CEPH_FEATURE_OSDENC));
 
   //try to poison pill any OSD connections on the wrong address
   ms_public->set_policy(entity_name_t::TYPE_OSD,
-			Messenger::Policy::stateless_server(0,0));
+			Messenger::Policy::stateless_server(0));
 
-  ms_cluster->set_default_policy(Messenger::Policy::stateless_server(0, 0));
-  ms_cluster->set_policy(entity_name_t::TYPE_MON, Messenger::Policy::lossy_client(0,0));
+  ms_cluster->set_default_policy(Messenger::Policy::stateless_server(0));
+  ms_cluster->set_policy(entity_name_t::TYPE_MON, Messenger::Policy::lossy_client(0));
   ms_cluster->set_policy(entity_name_t::TYPE_OSD,
-			 Messenger::Policy::lossless_peer(supported,
-							  osd_required));
+			 Messenger::Policy::lossless_peer(osd_required));
   ms_cluster->set_policy(entity_name_t::TYPE_CLIENT,
-			 Messenger::Policy::stateless_server(0, 0));
+			 Messenger::Policy::stateless_server(0));
 
   ms_hb_front_client->set_policy(entity_name_t::TYPE_OSD,
-			  Messenger::Policy::lossy_client(0, 0));
+			  Messenger::Policy::lossy_client(0));
   ms_hb_back_client->set_policy(entity_name_t::TYPE_OSD,
-			  Messenger::Policy::lossy_client(0, 0));
+			  Messenger::Policy::lossy_client(0));
   ms_hb_back_server->set_policy(entity_name_t::TYPE_OSD,
-				Messenger::Policy::stateless_server(0, 0));
+				Messenger::Policy::stateless_server(0));
   ms_hb_front_server->set_policy(entity_name_t::TYPE_OSD,
-				 Messenger::Policy::stateless_server(0, 0));
+				 Messenger::Policy::stateless_server(0));
 
-  ms_objecter->set_default_policy(Messenger::Policy::lossy_client(0, CEPH_FEATURE_OSDREPLYMUX));
+  ms_objecter->set_default_policy(Messenger::Policy::lossy_client(CEPH_FEATURE_OSDREPLYMUX));
 
   r = ms_public->bind(g_conf->public_addr);
   if (r < 0)

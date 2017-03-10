@@ -264,7 +264,6 @@ private:
     aio_info(bufferlist& b, uint64_t o, uint64_t s)
       : iov(NULL), done(false), off(o), len(b.length()), seq(s) {
       bl.claim(b);
-      memset((void*)&iocb, 0, sizeof(iocb));
     }
     ~aio_info() {
       delete[] iov;
@@ -478,6 +477,8 @@ private:
   void write_header_sync();
 
   void set_wait_on_full(bool b) { wait_on_full = b; }
+
+  off64_t get_journal_size_estimate();
 
   // reads
 

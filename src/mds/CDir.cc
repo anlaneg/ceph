@@ -49,7 +49,7 @@ class CDirContext : public MDSInternalContextBase
 {
 protected:
   CDir *dir;
-  MDSRank* get_mds() {return dir->cache->mds;}
+  MDSRank* get_mds() override {return dir->cache->mds;}
 
 public:
   explicit CDirContext(CDir *d) : dir(d) {
@@ -62,7 +62,7 @@ class CDirIOContext : public MDSIOContextBase
 {
 protected:
   CDir *dir;
-  MDSRank* get_mds() {return dir->cache->mds;}
+  MDSRank* get_mds() override {return dir->cache->mds;}
 
 public:
   explicit CDirIOContext(CDir *d) : dir(d) {
@@ -198,9 +198,6 @@ CDir::CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth) :
   num_dentries_auth_subtree_nested(0),
   dir_auth(CDIR_AUTH_DEFAULT)
 {
-  g_num_dir++;
-  g_num_dira++;
-
   state = STATE_INITIAL;
 
   memset(&fnode, 0, sizeof(fnode));
@@ -1494,7 +1491,7 @@ public:
 
   C_IO_Dir_OMAP_Fetched(CDir *d, MDSInternalContextBase *f) :
     CDirIOContext(d), fin(f), ret1(0), ret2(0), ret3(0) { }
-  void finish(int r) {
+  void finish(int r) override {
     // check the correctness of backtrace
     if (r >= 0 && ret3 != -ECANCELED)
       dir->inode->verify_diri_backtrace(btbl, ret3);
@@ -1683,10 +1680,6 @@ CDentry *CDir::_load_dentry(
         if (in->inode.is_dirty_rstat())
           in->mark_dirty_rstat();
 
-        if (inode->is_stray()) {
-	  cache->notify_stray_loaded(dn);
-        }
-
         //in->hack_accessed = false;
         //in->hack_load_stamp = ceph_clock_now();
         //num_new_inodes_loaded++;
@@ -1701,7 +1694,7 @@ CDentry *CDir::_load_dentry(
           << " [" << first << "," << last << "] v" << inode_data.inode.version
           << " at " << dirpath << "/" << dname
           << ", but inode " << in->vino() << " v" << in->inode.version
-          << " already exists at " << inopath << "\n";
+	  << " already exists at " << inopath;
         return dn;
       }
     }
@@ -1975,7 +1968,7 @@ class C_IO_Dir_Committed : public CDirIOContext {
   version_t version;
 public:
   C_IO_Dir_Committed(CDir *d, version_t v) : CDirIOContext(d), version(v) { }
-  void finish(int r) {
+  void finish(int r) override {
     dir->_committed(r, version);
   }
 };
@@ -2221,7 +2214,7 @@ void CDir::_committed(int r, version_t v)
     if (r < 0) {
       dout(1) << "commit error " << r << " v " << v << dendl;
       cache->mds->clog->error() << "failed to commit dir " << dirfrag() << " object,"
-				<< " errno " << r << "\n";
+				<< " errno " << r;
       cache->mds->handle_write_error(r);
       return;
     }
@@ -2363,7 +2356,8 @@ void CDir::decode_import(bufferlist::iterator& blp, utime_t now, LogSegment *ls)
   unsigned s;
   ::decode(s, blp);
   state &= MASK_STATE_IMPORT_KEPT;
-  state |= (s & MASK_STATE_EXPORTED);
+  state_set(STATE_AUTH | (s & MASK_STATE_EXPORTED));
+
   if (is_dirty()) {
     get(PIN_DIRTY);
     _mark_dirty(ls);
@@ -2763,7 +2757,7 @@ CDir *CDir::get_frozen_tree_root()
 class C_Dir_AuthUnpin : public CDirContext {
   public:
   explicit C_Dir_AuthUnpin(CDir *d) : CDirContext(d) {}
-  void finish(int r) {
+  void finish(int r) override {
     dir->auth_unpin(dir->get_inode());
   }
 };

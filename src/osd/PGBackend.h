@@ -96,8 +96,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
      virtual void on_peer_recover(
        pg_shard_t peer,
        const hobject_t &oid,
-       const ObjectRecoveryInfo &recovery_info,
-       const object_stat_sum_t &stat
+       const ObjectRecoveryInfo &recovery_info
        ) = 0;
 
      virtual void begin_peer_recover(
@@ -141,7 +140,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual std::string gen_dbg_prefix() const = 0;
 
-     virtual const map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &get_missing_loc_shards()
+     virtual const map<hobject_t, set<pg_shard_t>> &get_missing_loc_shards()
        const = 0;
 
      virtual const pg_missing_tracker_t &get_local_missing() const = 0;
@@ -187,7 +186,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual ObjectContextRef get_obc(
        const hobject_t &hoid,
-       map<string, bufferlist> &attrs) = 0;
+       const map<string, bufferlist> &attrs) = 0;
 
      virtual bool try_lock_for_read(
        const hobject_t &hoid,
@@ -204,7 +203,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual void log_operation(
        const vector<pg_log_entry_t> &logv,
-       boost::optional<pg_hit_set_history_t> &hset_history,
+       const boost::optional<pg_hit_set_history_t> &hset_history,
        const eversion_t &trim_to,
        const eversion_t &roll_forward_to,
        bool transaction_applied,
@@ -244,7 +243,6 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
      virtual pg_shard_t primary_shard() const = 0;
 
      virtual uint64_t min_peer_features() const = 0;
-     virtual bool sort_bitwise() const = 0;
 
      virtual hobject_t get_temp_recovery_object(eversion_t version,
 						snapid_t snap) = 0;
@@ -373,20 +371,20 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
    virtual void dump_recovery_info(Formatter *f) const = 0;
 
  private:
-   set<hobject_t, hobject_t::BitwiseComparator> temp_contents;
+   set<hobject_t> temp_contents;
  public:
    // Track contents of temp collection, clear on reset
    void add_temp_obj(const hobject_t &oid) {
      temp_contents.insert(oid);
    }
-   void add_temp_objs(const set<hobject_t, hobject_t::BitwiseComparator> &oids) {
+   void add_temp_objs(const set<hobject_t> &oids) {
      temp_contents.insert(oids.begin(), oids.end());
    }
    void clear_temp_obj(const hobject_t &oid) {
      temp_contents.erase(oid);
    }
-   void clear_temp_objs(const set<hobject_t, hobject_t::BitwiseComparator> &oids) {
-     for (set<hobject_t, hobject_t::BitwiseComparator>::const_iterator i = oids.begin();
+   void clear_temp_objs(const set<hobject_t> &oids) {
+     for (set<hobject_t>::const_iterator i = oids.begin();
 	  i != oids.end();
 	  ++i) {
        temp_contents.erase(*i);
@@ -544,10 +542,10 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
    void be_compare_scrubmaps(
      const map<pg_shard_t,ScrubMap*> &maps,
      bool repair,
-     map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &missing,
-     map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &inconsistent,
-     map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator> &authoritative,
-     map<hobject_t, pair<uint32_t,uint32_t>, hobject_t::BitwiseComparator> &missing_digest,
+     map<hobject_t, set<pg_shard_t>> &missing,
+     map<hobject_t, set<pg_shard_t>> &inconsistent,
+     map<hobject_t, list<pg_shard_t>> &authoritative,
+     map<hobject_t, pair<uint32_t,uint32_t>> &missing_digest,
      int &shallow_errors, int &deep_errors,
      Scrub::Store *store,
      const spg_t& pgid,

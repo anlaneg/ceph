@@ -50,7 +50,7 @@ class Processor::C_processor_accept : public EventCallback {
 
  public:
   explicit C_processor_accept(Processor *p): pro(p) {}
-  void do_request(int id) {
+  void do_request(int id) override {
     pro->accept();
   }
 };
@@ -213,9 +213,13 @@ void Processor::stop()
 
 
 struct StackSingleton {
+  CephContext *cct;
   std::shared_ptr<NetworkStack> stack;
-  StackSingleton(CephContext *c) {
-    stack = NetworkStack::create(c, c->_conf->ms_async_transport_type);
+
+  StackSingleton(CephContext *c): cct(c) {}
+  void ready(std::string &type) {
+    if (!stack)
+      stack = NetworkStack::create(cct, type);
   }
   ~StackSingleton() {
     stack->stop();
@@ -228,7 +232,7 @@ class C_handle_reap : public EventCallback {
 
   public:
   explicit C_handle_reap(AsyncMessenger *m): msgr(m) {}
-  void do_request(int id) {
+  void do_request(int id) override {
     // judge whether is a time event
     msgr->reap_dead();
   }
@@ -239,7 +243,7 @@ class C_handle_reap : public EventCallback {
  */
 
 AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
-                               string mname, uint64_t _nonce)
+                               const std::string &type, string mname, uint64_t _nonce)
   : SimplePolicyMessenger(cct, name,mname, _nonce),
     dispatch_queue(cct, this, mname),
     lock("AsyncMessenger::lock"),
@@ -247,9 +251,16 @@ AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
     global_seq(0), deleted_lock("AsyncMessenger::deleted_lock"),
     cluster_protocol(0), stopped(true)
 {
+  std::string transport_type = "posix";
+  if (type.find("rdma") != std::string::npos)
+    transport_type = "rdma";
+  else if (type.find("dpdk") != std::string::npos)
+    transport_type = "dpdk";
+
   ceph_spin_init(&global_seq_lock);
   StackSingleton *single;
-  cct->lookup_or_create_singleton_object<StackSingleton>(single, "AsyncMessenger::NetworkStack");
+  cct->lookup_or_create_singleton_object<StackSingleton>(single, "AsyncMessenger::NetworkStack::"+transport_type);
+  single->ready(transport_type);
   stack = single->stack.get();
   stack->start();
   local_worker = stack->get_worker();
@@ -382,18 +393,16 @@ int AsyncMessenger::rebind(const set<int>& avoid_ports)
 
 int AsyncMessenger::client_bind(const entity_addr_t &bind_addr)
 {
-  lock.Lock();
+  Mutex::Locker l(lock);
   if (did_bind) {
     assert(my_inst.addr == bind_addr);
     return 0;
   }
   if (started) {
     ldout(cct, 10) << __func__ << " already started" << dendl;
-    lock.Unlock();
     return -1;
   }
   ldout(cct, 10) << __func__ << " " << bind_addr << dendl;
-  lock.Unlock();
 
   set_myaddr(bind_addr);
   return 0;
@@ -600,12 +609,6 @@ void AsyncMessenger::set_addr_unknowns(const entity_addr_t &addr)
     my_inst.addr.set_port(port);
     _init_local_connection();
   }
-}
-
-int AsyncMessenger::send_keepalive(Connection *con)
-{
-  con->send_keepalive();
-  return 0;
 }
 
 void AsyncMessenger::shutdown_connections(bool queue_reset)

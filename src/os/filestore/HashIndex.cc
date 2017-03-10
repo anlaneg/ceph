@@ -316,6 +316,8 @@ int HashIndex::split_dirs(const vector<string> &path) {
   }
 
   if (must_split(info)) {
+    dout(1) << __func__ << " " << path << " has " << info.objs
+            << " objects, starting split." << dendl;
     r = initiate_split(path, info);
     if (r < 0) {
       dout(10) << "error initiating split on " << path << ": "
@@ -324,6 +326,8 @@ int HashIndex::split_dirs(const vector<string> &path) {
     }
 
     r = complete_split(path, info);
+    dout(1) << __func__ << " " << path << " split completed."
+            << dendl;
     if (r < 0) {
       dout(10) << "error completing split on " << path << ": "
 	       << cpp_strerror(r) << dendl;
@@ -379,10 +383,15 @@ int HashIndex::_created(const vector<string> &path,
     return r;
 
   if (must_split(info)) {
+    dout(1) << __func__ << " " << path << " has " << info.objs
+            << " objects, starting split." << dendl;
     int r = initiate_split(path, info);
     if (r < 0)
       return r;
-    return complete_split(path, info);
+    r = complete_split(path, info);
+    dout(1) << __func__ << " " << path << " split completed."
+            << dendl;
+    return r;
   } else {
     return 0;
   }
@@ -441,7 +450,6 @@ int HashIndex::_lookup(const ghobject_t &oid,
 //同下层函数一个功能,不过加入对next不为空的支持.列出当前coll的所有对象.
 int HashIndex::_collection_list_partial(const ghobject_t &start,
 					const ghobject_t &end,
-					bool sort_bitwise,
 					int max_count,
 					vector<ghobject_t> *ls,
 					ghobject_t *next) {
@@ -451,7 +459,7 @@ int HashIndex::_collection_list_partial(const ghobject_t &start,
     next = &_next;
   *next = start;
   dout(20) << __func__ << " start:" << start << " end:" << end << "-" << max_count << " ls.size " << ls->size() << dendl;
-  return list_by_hash(path, end, sort_bitwise, max_count, next, ls);
+  return list_by_hash(path, end, max_count, next, ls);
 }
 
 int HashIndex::prep_delete() {
@@ -907,7 +915,7 @@ int HashIndex::get_path_contents_by_hash_bitwise(//返回path路径下,所有比
   for (map<string, ghobject_t>::iterator i = rev_objects.begin();
        i != rev_objects.end();
        ++i) {
-    if (next_object && cmp_bitwise(i->second, *next_object) < 0)//排除掉比next_object小的对象
+    if (next_object && i->second < *next_object)
       continue;
     string hash_prefix = get_path_str(i->second);
     hash_prefixes->insert(hash_prefix);//加入其hash值
@@ -950,74 +958,16 @@ int HashIndex::get_path_contents_by_hash_bitwise(//返回path路径下,所有比
   return 0;
 }
 
-int HashIndex::get_path_contents_by_hash_nibblewise(
-  const vector<string> &path,
-  const ghobject_t *next_object,
-  set<string> *hash_prefixes,
-  set<pair<string, ghobject_t>, CmpPairNibblewise > *objects)
-{
-  map<string, ghobject_t> rev_objects;
-  int r;
-  r = list_objects(path, 0, 0, &rev_objects);
-  if (r < 0)
-    return r;
-
-  for (map<string, ghobject_t>::iterator i = rev_objects.begin();
-       i != rev_objects.end();
-       ++i) {
-    string hash_prefix = get_path_str(i->second);
-    if (next_object && cmp_nibblewise(i->second, *next_object) < 0)
-      continue;
-    hash_prefixes->insert(hash_prefix);
-    objects->insert(pair<string, ghobject_t>(hash_prefix, i->second));
-  }
-
-  vector<string> subdirs;
-  r = list_subdirs(path, &subdirs);
-  if (r < 0)
-    return r;
-
-  // sort nibblewise (string sort of (reversed) hex digits)
-  std::sort(subdirs.begin(), subdirs.end());
-
-  string cur_prefix;
-  for (vector<string>::const_iterator i = path.begin();
-       i != path.end();
-       ++i) {
-    cur_prefix.append(*i);
-  }
-  string next_object_string;
-  if (next_object)
-    next_object_string = get_path_str(*next_object);
-
-  for (vector<string>::iterator i = subdirs.begin();
-       i != subdirs.end();
-       ++i) {
-    string candidate = cur_prefix + *i;
-    if (next_object) {
-      if (next_object->is_max())
-	continue;
-      if (candidate < next_object_string.substr(0, candidate.size()))
-	continue;
-    }
-    hash_prefixes->insert(cur_prefix + *i);
-  }
-  return 0;
-}
 
 //列出对象,不同的比对方式,采用的回调不同
 int HashIndex::list_by_hash(const vector<string> &path,
 			    const ghobject_t &end,
-			    bool sort_bitwise,
 			    int max_count,
 			    ghobject_t *next,
 			    vector<ghobject_t> *out)
 {
   assert(out);
-  if (sort_bitwise)
-    return list_by_hash_bitwise(path, end, max_count, next, out);
-  else
-    return list_by_hash_nibblewise(path, end, max_count, next, out);
+  return list_by_hash_bitwise(path, end, max_count, next, out);
 }
 
 //递归目录查找path从next到end之间所有的对象,将找到的对象置入out中,对象总数受max_count控制
@@ -1069,12 +1019,12 @@ int HashIndex::list_by_hash_bitwise(
 	    *next = j->second;//设置next返回.
 	  return 0;
 	}
-	if (cmp_bitwise(j->second, end) >= 0) {//如果到达指定结尾,返回结束
+	if (j->second >= end) {
 	  if (next)
 	    *next = j->second;
 	  return 0;
 	}
-	if (!next || cmp_bitwise(j->second, *next) >= 0) {//不关心next或者比next还要大,则向out中加入,
+	if (!next || j->second >= *next) {
 	  dout(20) << __func__ << " prefix " << *i << " ob " << j->second << dendl;
 	  out->push_back(j->second);
 	}
@@ -1087,67 +1037,4 @@ int HashIndex::list_by_hash_bitwise(
   return 0;
 }
 
-int HashIndex::list_by_hash_nibblewise(
-  const vector<string> &path,
-  const ghobject_t& end,
-  int max_count,
-  ghobject_t *next,
-  vector<ghobject_t> *out)
-{
-  vector<string> next_path = path;
-  next_path.push_back("");
-  set<string> hash_prefixes;
-  set<pair<string, ghobject_t>, CmpPairNibblewise> objects;
-  int r = get_path_contents_by_hash_nibblewise(path,
-					       next,
-					       &hash_prefixes,
-					       &objects);
-  if (r < 0)
-    return r;
-  for (set<string>::iterator i = hash_prefixes.begin();
-       i != hash_prefixes.end();
-       ++i) {
-    dout(20) << __func__ << " prefix " << *i << dendl;
-    set<pair<string, ghobject_t>, CmpPairNibblewise >::iterator j =
-      objects.lower_bound(make_pair(*i, ghobject_t()));
-    if (j == objects.end() || j->first != *i) {
-      *(next_path.rbegin()) = *(i->rbegin());
-      ghobject_t next_recurse;
-      if (next)
-	next_recurse = *next;
-      r = list_by_hash_nibblewise(next_path,
-				  end,
-				  max_count,
-				  &next_recurse,
-				  out);
 
-      if (r < 0)
-	return r;
-      if (!next_recurse.is_max()) {
-	if (next)
-	  *next = next_recurse;
-	return 0;
-      }
-    } else {
-      while (j != objects.end() && j->first == *i) {
-	if (max_count > 0 && out->size() == (unsigned)max_count) {
-	  if (next)
-	    *next = j->second;
-	  return 0;
-	}
-	if (cmp_nibblewise(j->second, end) >= 0) {
-	  if (next)
-	    *next = j->second;
-	  return 0;
-	}
-	if (!next || cmp_nibblewise(j->second, *next) >= 0) {
-	  out->push_back(j->second);
-	}
-	++j;
-      }
-    }
-  }
-  if (next)
-    *next = ghobject_t::get_max();
-  return 0;
-}

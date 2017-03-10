@@ -476,6 +476,7 @@ int Client::init()
   messenger->add_dispatcher_tail(objecter);
   messenger->add_dispatcher_tail(this);
 
+  monclient->set_want_keys(CEPH_ENTITY_TYPE_MDS | CEPH_ENTITY_TYPE_OSD);
   int r = monclient->init();
   if (r < 0) {
     // need to do cleanup because we're in an intermediate init state
@@ -487,8 +488,6 @@ int Client::init()
     return r;
   }
   objecter->start();
-
-  monclient->set_want_keys(CEPH_ENTITY_TYPE_MDS | CEPH_ENTITY_TYPE_OSD);
 
   // logger
   PerfCountersBuilder plb(cct, "client", l_c_first, l_c_last);
@@ -2224,6 +2223,7 @@ void Client::handle_client_request_forward(MClientRequestForward *fwd)
 	   << dendl;
   
   request->mds = -1;
+  request->item.remove_myself();
   request->num_fwd = fwd->get_num_fwd();
   request->resend_mds = fwd->get_dest_mds();
   request->caller_cond->Signal();
@@ -2260,17 +2260,11 @@ void Client::handle_client_reply(MClientReply *reply)
     reply->put();
     return;
   }
+  MetaRequest *request = mds_requests.at(tid);
 
   ldout(cct, 20) << "handle_client_reply got a reply. Safe:" << is_safe
 		 << " tid " << tid << dendl;
-  MetaRequest *request = mds_requests[tid];
-  if (!request) {
-    ldout(cct, 0) << "got an unknown reply (probably duplicate) on tid " << tid << " from mds "
-      << mds_num << " safe: " << is_safe << dendl;
-    reply->put();
-    return;
-  }
-    
+
   if (request->got_unsafe && !is_safe) {
     //duplicate response
     ldout(cct, 0) << "got a duplicate reply on tid " << tid << " from mds "
@@ -2984,7 +2978,7 @@ private:
   InodeRef inode;
 public:
   C_Client_FlushComplete(Client *c, Inode *in) : client(c), inode(in) { }
-  void finish(int r) {
+  void finish(int r) override {
     assert(client->client_lock.is_locked_by_me());
     if (r != 0) {
       client_t const whoami = client->whoami;  // For the benefit of ldout prefix
@@ -3632,7 +3626,7 @@ public:
     else
       ino = in->vino();
   }
-  void finish(int r) {
+  void finish(int r) override {
     // _async_invalidate takes the lock when it needs to, call this back from outside of lock.
     assert(!client->client_lock.is_locked_by_me());
     client->_async_invalidate(ino, offset, length);
@@ -3939,7 +3933,7 @@ private:
   Client *client;
 public:
   explicit C_Client_Remount(Client *c) : client(c) {}
-  void finish(int r) {
+  void finish(int r) override {
     assert (r == 0);
     r = client->remount_cb(client->callback_handle);
     if (r != 0) {
@@ -4834,7 +4828,7 @@ public:
       if (!del)
 	ino.ino = inodeno_t();
   }
-  void finish(int r) {
+  void finish(int r) override {
     // _async_dentry_invalidate is responsible for its own locking
     assert(!client->client_lock.is_locked_by_me());
     client->_async_dentry_invalidate(dirino, ino, name);
@@ -5811,7 +5805,7 @@ class C_C_Tick : public Context {
   Client *client;
 public:
   explicit C_C_Tick(Client *c) : client(c) {}
-  void finish(int r) {
+  void finish(int r) override {
     // Called back via Timer, which takes client_lock for us
     assert(client->client_lock.is_locked_by_me());
     client->tick();
@@ -8144,16 +8138,16 @@ void Client::_put_fh(Fh *f)
 int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp,
 		  const UserPerm& perms)
 {
+  if (in->snapid != CEPH_NOSNAP &&
+      (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND))) {
+    return -EROFS;
+  }
+
   int cmode = ceph_flags_to_mode(flags);
   if (cmode < 0)
     return -EINVAL;
   int want = ceph_caps_for_mode(cmode);
   int result = 0;
-
-  if (in->snapid != CEPH_NOSNAP &&
-      (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND))) {
-    return -EROFS;
-  }
 
   in->get_open_ref(cmode);  // make note of pending open, since it effects _wanted_ caps.
 
@@ -10283,6 +10277,8 @@ int Client::fremovexattr(int fd, const char *name, const UserPerm& perms)
 int Client::setxattr(const char *path, const char *name, const void *value,
 		     size_t size, int flags, const UserPerm& perms)
 {
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
+
   Mutex::Locker lock(client_lock);
   InodeRef in;
   int r = Client::path_walk(path, &in, perms, true);
@@ -10294,6 +10290,8 @@ int Client::setxattr(const char *path, const char *name, const void *value,
 int Client::lsetxattr(const char *path, const char *name, const void *value,
 		      size_t size, int flags, const UserPerm& perms)
 {
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
+
   Mutex::Locker lock(client_lock);
   InodeRef in;
   int r = Client::path_walk(path, &in, perms, false);
@@ -10305,6 +10303,8 @@ int Client::lsetxattr(const char *path, const char *name, const void *value,
 int Client::fsetxattr(int fd, const char *name, const void *value, size_t size,
 		      int flags, const UserPerm& perms)
 {
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
+
   Mutex::Locker lock(client_lock);
   Fh *f = get_filehandle(fd);
   if (!f)
@@ -10556,7 +10556,7 @@ int Client::_setxattr(InodeRef &in, const char *name, const void *value,
   return _setxattr(in.get(), name, value, size, flags, perms);
 }
 
-int Client::check_data_pool_exist(string name, string value, const OSDMap *osdmap)
+int Client::_setxattr_check_data_pool(string& name, string& value, const OSDMap *osdmap)
 {
   string tmp;
   if (name == "layout") {
@@ -10596,18 +10596,17 @@ int Client::check_data_pool_exist(string name, string value, const OSDMap *osdma
   return 0;
 }
 
-int Client::ll_setxattr(Inode *in, const char *name, const void *value,
-			size_t size, int flags, const UserPerm& perms)
+void Client::_setxattr_maybe_wait_for_osdmap(const char *name, const void *value, size_t size)
 {
   // For setting pool of layout, MetaRequest need osdmap epoch.
   // There is a race which create a new data pool but client and mds both don't have.
   // Make client got the latest osdmap which make mds quickly judge whether get newer osdmap.
-  if (strcmp(name, "ceph.file.layout.pool") == 0 ||  strcmp(name, "ceph.dir.layout.pool") == 0 ||
+  if (strcmp(name, "ceph.file.layout.pool") == 0 || strcmp(name, "ceph.dir.layout.pool") == 0 ||
       strcmp(name, "ceph.file.layout") == 0 || strcmp(name, "ceph.dir.layout") == 0) {
     string rest(strstr(name, "layout"));
-    string v((const char*)value);
+    string v((const char*)value, size);
     int r = objecter->with_osdmap([&](const OSDMap& o) {
-      return check_data_pool_exist(rest, v, &o);
+      return _setxattr_check_data_pool(rest, v, &o);
     });
 
     if (r == -ENOENT) {
@@ -10616,6 +10615,12 @@ int Client::ll_setxattr(Inode *in, const char *name, const void *value,
       ctx.wait();
     }
   }
+}
+
+int Client::ll_setxattr(Inode *in, const char *name, const void *value,
+			size_t size, int flags, const UserPerm& perms)
+{
+  _setxattr_maybe_wait_for_osdmap(name, value, size);
 
   Mutex::Locker lock(client_lock);
 
@@ -11540,11 +11545,14 @@ int Client::_rename(Inode *fromdir, const char *fromname, Inode *todir, const ch
       return -EROFS;
   }
   if (cct->_conf->client_quota &&
-      fromdir != todir &&
-      (fromdir->quota.is_enable() ||
-       todir->quota.is_enable() ||
-       get_quota_root(fromdir, perm) != get_quota_root(todir, perm))) {
-    return -EXDEV;
+      fromdir != todir) {
+    Inode *fromdir_root =
+      fromdir->quota.is_enable() ? fromdir : get_quota_root(fromdir, perm);
+    Inode *todir_root =
+      todir->quota.is_enable() ? todir : get_quota_root(todir, perm);
+    if (fromdir_root != todir_root) {
+      return -EXDEV;
+    }
   }
 
   InodeRef target;
@@ -12437,7 +12445,7 @@ public:
   C_Client_RequestInterrupt(Client *c, MetaRequest *r) : client(c), req(r) {
     req->get();
   }
-  void finish(int r) {
+  void finish(int r) override {
     Mutex::Locker l(client->client_lock);
     assert(req->head.op == CEPH_MDS_OP_SETFILELOCK);
     client->_interrupt_filelock(req);
@@ -12725,7 +12733,7 @@ bool Client::ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bool 
 {
   if (dest_type == CEPH_ENTITY_TYPE_MON)
     return true;
-  *authorizer = monclient->auth->build_authorizer(dest_type);
+  *authorizer = monclient->build_authorizer(dest_type);
   return true;
 }
 

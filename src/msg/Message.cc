@@ -60,6 +60,7 @@ using namespace std;
 #include "messages/MOSDPGTemp.h"
 #include "messages/MOSDFailure.h"
 #include "messages/MOSDMarkMeDown.h"
+#include "messages/MOSDFull.h"
 #include "messages/MOSDPing.h"
 #include "messages/MOSDOp.h"
 #include "messages/MOSDOpReply.h"
@@ -77,11 +78,11 @@ using namespace std;
 #include "messages/MOSDPGInfo.h"
 #include "messages/MOSDPGCreate.h"
 #include "messages/MOSDPGTrim.h"
-#include "messages/MOSDPGMissing.h"
 #include "messages/MOSDScrub.h"
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDPGScan.h"
 #include "messages/MOSDPGBackfill.h"
+#include "messages/MOSDBackoff.h"
 
 #include "messages/MRemoveSnaps.h"
 
@@ -433,6 +434,9 @@ Message *decode_message(CephContext *cct, int crcflags,
   case MSG_OSD_MARK_ME_DOWN:
     m = new MOSDMarkMeDown();
     break;
+  case MSG_OSD_FULL:
+    m = new MOSDFull();
+    break;
   case MSG_OSD_PING:
     m = new MOSDPing();
     break;
@@ -459,6 +463,9 @@ Message *decode_message(CephContext *cct, int crcflags,
     break;
   case MSG_OSD_PG_UPDATE_LOG_MISSING_REPLY:
     m = new MOSDPGUpdateLogMissingReply();
+    break;
+  case CEPH_MSG_OSD_BACKOFF:
+    m = new MOSDBackoff;
     break;
 
   case CEPH_MSG_OSD_MAP:
@@ -496,9 +503,6 @@ Message *decode_message(CephContext *cct, int crcflags,
     break;
   case MSG_REMOVE_SNAPS:
     m = new MRemoveSnaps;
-    break;
-  case MSG_OSD_PG_MISSING:
-    m = new MOSDPGMissing;
     break;
   case MSG_OSD_REP_SCRUB:
     m = new MOSDRepScrub;

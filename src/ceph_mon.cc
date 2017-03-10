@@ -659,7 +659,9 @@ int main(int argc, const char **argv)
 
   // bind
   int rank = monmap.get_rank(g_conf->name.get_id());//获取rank
-  Messenger *msgr = Messenger::create(g_ceph_context, g_conf->ms_type,//创建指定类型的消息
+  std::string public_msgr_type = g_conf->ms_public_type.empty() ? g_conf->ms_type : g_conf->ms_public_type;
+  //创建指定类型的消息
+  Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
 				      entity_name_t::MON(rank), "mon",//rank的entity_name_t
 				      0, Messenger::HAS_MANY_CONNECTIONS);
   if (!msgr)
@@ -667,28 +669,20 @@ int main(int argc, const char **argv)
   msgr->set_cluster_protocol(CEPH_MON_PROTOCOL);
   msgr->set_default_send_priority(CEPH_MSG_PRIO_HIGH);
 
-  uint64_t supported =
-    CEPH_FEATURE_UID |
-    CEPH_FEATURE_NOSRCADDR |
-    DEPRECATED_CEPH_FEATURE_MONCLOCKCHECK |
-    CEPH_FEATURE_PGID64 |
-    CEPH_FEATURE_MSG_AUTH;
-  msgr->set_default_policy(Messenger::Policy::stateless_server(supported, 0));
+  msgr->set_default_policy(Messenger::Policy::stateless_server(0));
   msgr->set_policy(entity_name_t::TYPE_MON,
                    Messenger::Policy::lossless_peer_reuse(
-                       supported,
-                       CEPH_FEATURE_UID |
-                       CEPH_FEATURE_PGID64 |
-                       CEPH_FEATURE_MON_SINGLE_PAXOS));
+		     CEPH_FEATURE_UID |
+		     CEPH_FEATURE_PGID64 |
+		     CEPH_FEATURE_MON_SINGLE_PAXOS));
   msgr->set_policy(entity_name_t::TYPE_OSD,
                    Messenger::Policy::stateless_server(
-                       supported,
-                       CEPH_FEATURE_PGID64 |
-                       CEPH_FEATURE_OSDENC));
+		     CEPH_FEATURE_PGID64 |
+		     CEPH_FEATURE_OSDENC));
   msgr->set_policy(entity_name_t::TYPE_CLIENT,
-                   Messenger::Policy::stateless_server(supported, 0));
+                   Messenger::Policy::stateless_server(0));
   msgr->set_policy(entity_name_t::TYPE_MDS,
-                   Messenger::Policy::stateless_server(supported, 0));
+                   Messenger::Policy::stateless_server(0));
 
   // throttle client traffic
   Throttle *client_throttler = new Throttle(g_ceph_context, "mon_client_bytes",

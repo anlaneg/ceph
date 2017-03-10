@@ -39,15 +39,23 @@ public:
     RWLock::RLocker locker(m_watch_lock);
     return m_watch_state == WATCH_STATE_REGISTERED;
   }
+  bool is_unregistered() const {
+    RWLock::RLocker locker(m_watch_lock);
+    return m_watch_state == WATCH_STATE_UNREGISTERED;
+  }
 
 protected:
   enum WatchState {
     WATCH_STATE_UNREGISTERED,
+    WATCH_STATE_REGISTERING,
     WATCH_STATE_REGISTERED,
     WATCH_STATE_ERROR,
     WATCH_STATE_REWATCHING
   };
 
+  librados::IoCtx& m_ioctx;
+  ContextWQ *m_work_queue;
+  std::string m_oid;
   CephContext *m_cct;
   mutable RWLock m_watch_lock;
   uint64_t m_watch_handle;
@@ -58,7 +66,7 @@ protected:
                    Context *on_finish = nullptr);
 
   virtual void handle_notify(uint64_t notify_id, uint64_t handle,
-                             bufferlist &bl) = 0;
+                             uint64_t notifier_id, bufferlist &bl) = 0;
 
   virtual void handle_error(uint64_t cookie, int err);
 
@@ -77,6 +85,8 @@ private:
    * UNREGISTERED
    *    |
    *    | (register_watch)
+   *    |
+   * REGISTERING
    *    |
    *    v      (watch error)
    * REGISTERED * * * * * * * > ERROR
@@ -104,11 +114,11 @@ private:
 
     WatchCtx(Watcher &parent) : watcher(parent) {}
 
-    virtual void handle_notify(uint64_t notify_id,
-                               uint64_t handle,
-      			       uint64_t notifier_id,
-                               bufferlist& bl);
-    virtual void handle_error(uint64_t handle, int err);
+    void handle_notify(uint64_t notify_id,
+                       uint64_t handle,
+                       uint64_t notifier_id,
+                       bufferlist& bl) override;
+    void handle_error(uint64_t handle, int err) override;
   };
 
   struct C_RegisterWatch : public Context {
@@ -118,20 +128,15 @@ private:
     C_RegisterWatch(Watcher *watcher, Context *on_finish)
        : watcher(watcher), on_finish(on_finish) {
     }
-    virtual void finish(int r) override {
-      watcher->handle_register_watch(r);
-      on_finish->complete(r);
+    void finish(int r) override {
+      watcher->handle_register_watch(r, on_finish);
     }
   };
-
-  librados::IoCtx& m_ioctx;
-  ContextWQ *m_work_queue;
-  std::string m_oid;
 
   WatchCtx m_watch_ctx;
   Context *m_unregister_watch_ctx = nullptr;
 
-  void handle_register_watch(int r);
+  void handle_register_watch(int r, Context *on_finish);
 
   void rewatch();
   void handle_rewatch(int r);

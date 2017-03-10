@@ -144,7 +144,7 @@ void Elector::reset_timer(double plus)
     Elector *elector;
   public:
     explicit C_ElectionExpire(Elector *e) : elector(e) { }
-    void finish(int r) {
+    void finish(int r) override {
       elector->expire();//如果无人长时间响应，则自然当选
     }
   };
@@ -547,6 +547,5 @@ void Elector::start_participating()
 {
   if (!participating) {
     participating = true;
-    call_election();
   }
 }

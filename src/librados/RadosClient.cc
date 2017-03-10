@@ -60,7 +60,7 @@ bool librados::RadosClient::ms_get_authorizer(int dest_type,
   /* monitor authorization is being handled on different layer */
   if (dest_type == CEPH_ENTITY_TYPE_MON)
     return true;
-  *authorizer = monclient.auth->build_authorizer(dest_type);
+  *authorizer = monclient.build_authorizer(dest_type);
   return *authorizer != NULL;
 }
 
@@ -89,8 +89,18 @@ int64_t librados::RadosClient::lookup_pool(const char *name)
     return r;
   }
 
-  return objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
-			       name);
+  int64_t ret = objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
+                                 name);
+  if (-ENOENT == ret) {
+    // Make sure we have the latest map
+    int r = wait_for_latest_osdmap();
+    if (r < 0)
+      return r;
+    ret = objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
+                                 name);
+  }
+
+  return ret;
 }
 
 bool librados::RadosClient::pool_requires_alignment(int64_t pool_id)
@@ -250,7 +260,7 @@ int librados::RadosClient::connect()
   // require OSDREPLYMUX feature.  this means we will fail to talk to
   // old servers.  this is necessary because otherwise we won't know
   // how to decompose the reply data into its constituent pieces.
-  messenger->set_default_policy(Messenger::Policy::lossy_client(0, CEPH_FEATURE_OSDREPLYMUX));
+  messenger->set_default_policy(Messenger::Policy::lossy_client(CEPH_FEATURE_OSDREPLYMUX));
 
   ldout(cct, 1) << "starting msgr at " << messenger->get_myaddr() << dendl;
 
@@ -396,7 +406,7 @@ struct C_aio_watch_flush_Complete : public Context {
     c->get();
   }
 
-  virtual void finish(int r) {
+  void finish(int r) override {
     c->lock.Lock();
     c->rval = r;
     c->complete = true;
@@ -437,15 +447,7 @@ int librados::RadosClient::create_ioctx(const char *name, IoCtxImpl **io)
 {
   int64_t poolid = lookup_pool(name);
   if (poolid < 0) {
-    // Make sure we have the latest map
-    int r = wait_for_latest_osdmap();
-    if (r < 0)
-      return r;
-
-    poolid = lookup_pool(name);
-    if (poolid < 0) {
-      return (int)poolid;
-    }
+    return (int)poolid;
   }
 
   *io = new librados::IoCtxImpl(this, objecter, poolid, CEPH_NOSNAP);

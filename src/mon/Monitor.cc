@@ -141,6 +141,7 @@ Monitor::Monitor(CephContext* cct_, string nm, MonitorDBStore *s,
   con_self(m ? m->get_loopback_connection() : NULL),
   lock("Monitor::lock"),
   timer(cct_, lock),
+  cpu_tp(cct, "Monitor::cpu_tp", "cpu_tp", g_conf->mon_cpu_threads),
   has_ever_joined(false),
   logger(NULL), cluster_logger(NULL), cluster_logger_registered(false),
   monmap(map),
@@ -263,7 +264,7 @@ class AdminHook : public AdminSocketHook {
 public:
   explicit AdminHook(Monitor *m) : mon(m) {}
   bool call(std::string command, cmdmap_t& cmdmap, std::string format,
-	    bufferlist& out) {
+	    bufferlist& out) override {
     stringstream ss;
     mon->do_admin_command(command, cmdmap, format, ss);
     out.append(ss);
@@ -330,123 +331,6 @@ void Monitor::do_admin_command(string command, cmdmap_t& cmdmap, string format,
     if (f) {
       f->flush(ss);
     }
-  } else if (boost::starts_with(command, "debug mon features")) {
-  
-    // check if unsupported feature is set
-    if (!cct->check_experimental_feature_enabled("mon_debug_features_commands")) {
-      ss << "error: this is an experimental feature and is not enabled.";
-      goto abort;
-    }
-
-    if (command == "debug mon features list") {
-
-      mon_feature_t supported = ceph::features::mon::get_supported();
-      mon_feature_t persistent = ceph::features::mon::get_persistent();
-
-      if (f) {
-
-        f->open_object_section("features");
-        f->open_object_section("ceph-mon");
-        supported.dump_with_value(f.get(), "supported");
-        persistent.dump_with_value(f.get(), "persistent");
-        f->close_section(); // ceph-mon
-        f->open_object_section("monmap");
-        monmap->persistent_features.dump_with_value(f.get(), "persistent");
-        monmap->optional_features.dump_with_value(f.get(), "optional");
-        mon_feature_t required = monmap->get_required_features();
-        required.dump_with_value(f.get(), "required");
-        f->close_section(); // monmap
-        f->close_section(); // features
-
-        f->flush(ss);
-      } else {
-        ss << "only structured formats allowed when listing";
-      }
-    } else if (command == "debug mon features set" ||
-               command == "debug mon features set_val" ||
-               command == "debug mon features unset" ||
-               command == "debug mon features unset_val") {
-
-      string n;
-      if (!cmd_getval(cct, cmdmap, "feature", n)) {
-        ss << "missing feature to set";
-        goto abort;
-      }
-
-      string f_type;
-      bool do_persistent = false, do_optional = false;
-
-      if (cmd_getval(cct, cmdmap, "feature_type", f_type)) {
-        if (f_type == "--persistent") {
-          do_persistent = true;
-        } else {
-          do_optional = true;
-        }
-      }
-
-      mon_feature_t feature;
-
-      if (command == "debug mon features set" ||
-          command == "debug mon features unset") {
-        feature = ceph::features::mon::get_feature_by_name(n);
-        if (feature == ceph::features::mon::FEATURE_NONE) {
-          ss << "no such feature '" << n << "'";
-          goto abort;
-        }
-      } else {
-        uint64_t feature_val;
-        string interr;
-        feature_val = strict_strtoll(n.c_str(), 10, &interr);
-        if (!interr.empty()) {
-          ss << "unable to parse feature value: " << interr;
-          goto abort;
-        }
-
-        feature = mon_feature_t(feature_val);
-      }
-
-      bool do_unset = false;
-      if (boost::ends_with(command, "unset") ||
-          boost::ends_with(command, "unset_val")) {
-        do_unset = true;
-      }
-
-      ss << (do_unset? "un" : "") << "setting feature '";
-      feature.print_with_value(ss);
-      ss << "' on current monmap\n";
-      ss << "please note this change is not persistent; "
-         << "changes to monmap will overwrite the changes\n";
-
-      if (!do_persistent && !do_optional) {
-        if (ceph::features::mon::get_persistent().contains_all(feature)) {
-          do_persistent = true;
-        } else {
-          do_optional = true;
-        }
-      }
-
-      ss << "\n" << (do_unset ? "un" : "") << "setting ";
-
-      mon_feature_t &target_feature = (do_persistent ?
-          monmap->persistent_features : monmap->optional_features);
-
-      if (do_persistent) {
-        ss << "persistent feature";
-      } else {
-        ss << "optional feature";
-      }
-
-      if (do_unset) {
-        target_feature.unset_feature(feature);
-      } else {
-        target_feature.set_feature(feature);
-      }
-
-    } else {
-
-      ss << "unrecognized command";
-    }
-
   } else {
     assert(0 == "bad AdminSocket command binding");
   }
@@ -547,7 +431,7 @@ void Monitor::read_features()
   read_features_off_disk(store, &features);
   dout(10) << "features " << features << dendl;
 
-  apply_compatset_features_to_quorum_requirements();
+  calc_quorum_requirements();
   dout(10) << "required_features " << required_features << dendl;
 }
 
@@ -940,6 +824,8 @@ int Monitor::init()
   timer.init();
   new_tick();
 
+  cpu_tp.start();
+
   // i'm ready!
   messenger->add_dispatcher_tail(this);
 
@@ -1063,6 +949,8 @@ void Monitor::shutdown()
   finish_contexts(g_ceph_context, maybe_wait_for_quorum, -ECANCELED);
 
   timer.shutdown();
+
+  cpu_tp.stop();
 
   remove_all_sessions();
 
@@ -1989,7 +1877,7 @@ void Monitor::start_election()//开始选举
   logger->inc(l_mon_num_elections);
   logger->inc(l_mon_election_call);
 
-  clog->info() << "mon." << name << " calling new monitor election\n";
+  clog->info() << "mon." << name << " calling new monitor election";
   elector.call_election();
 }
 
@@ -2057,7 +1945,7 @@ void Monitor::win_election(epoch_t epoch, set<int>& active, uint64_t features,
   outside_quorum.clear();
 
   clog->info() << "mon." << name << "@" << rank
-		<< " won leader election with quorum " << quorum << "\n";
+		<< " won leader election with quorum " << quorum;
 
   set_leader_supported_commands(cmdset, cmdsize);
 
@@ -2152,7 +2040,7 @@ void Monitor::_apply_compatset_features(CompatSet &new_features)
     write_features(t);
     store->apply_transaction(t);
 
-    apply_compatset_features_to_quorum_requirements();
+    calc_quorum_requirements();
   }
 }
 
@@ -2194,16 +2082,19 @@ void Monitor::apply_monmap_to_compatset_features()
     assert(ceph::features::mon::get_persistent().contains_all(
            ceph::features::mon::FEATURE_KRAKEN));
     // this feature should only ever be set if the quorum supports it.
-    assert(quorum_con_features & CEPH_FEATURE_SERVER_KRAKEN);
+    assert(HAVE_FEATURE(quorum_con_features, SERVER_KRAKEN));
     new_features.incompat.insert(CEPH_MON_FEATURE_INCOMPAT_KRAKEN);
   }
+
   dout(5) << __func__ << dendl;
   _apply_compatset_features(new_features);
 }
 
-void Monitor::apply_compatset_features_to_quorum_requirements()
+void Monitor::calc_quorum_requirements()
 {
   required_features = 0;
+
+  // compatset
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_OSD_ERASURE_CODES)) {
     required_features |= CEPH_FEATURE_OSD_ERASURE_CODES;
   }
@@ -2217,7 +2108,17 @@ void Monitor::apply_compatset_features_to_quorum_requirements()
     required_features |= CEPH_FEATURE_ERASURE_CODE_PLUGINS_V3;
   }
   if (features.incompat.contains(CEPH_MON_FEATURE_INCOMPAT_KRAKEN)) {
-    required_features |= CEPH_FEATURE_SERVER_KRAKEN;
+    required_features |= CEPH_FEATUREMASK_SERVER_KRAKEN;
+  }
+
+  // monmap
+  if (monmap->get_required_features().contains_all(
+	ceph::features::mon::FEATURE_KRAKEN)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_KRAKEN;
+  }
+  if (monmap->get_required_features().contains_all(
+	ceph::features::mon::FEATURE_LUMINOUS)) {
+    required_features |= CEPH_FEATUREMASK_SERVER_LUMINOUS;
   }
   dout(10) << __func__ << " required_features " << required_features << dendl;
 }
@@ -3841,6 +3742,7 @@ void Monitor::dispatch_op(MonOpRequestRef op)
     case CEPH_MSG_MON_GET_OSDMAP:
     case CEPH_MSG_POOLOP:
     case MSG_OSD_MARK_ME_DOWN:
+    case MSG_OSD_FULL:
     case MSG_OSD_FAILURE:
     case MSG_OSD_BOOT:
     case MSG_OSD_ALIVE:
@@ -4403,9 +4305,9 @@ void Monitor::handle_timecheck_leader(MonOpRequestRef op)
   ostringstream ss;
   health_status_t status = timecheck_status(ss, skew_bound, latency);
   if (status == HEALTH_ERR)
-    clog->error() << other << " " << ss.str() << "\n";
+    clog->error() << other << " " << ss.str();
   else if (status == HEALTH_WARN)
-    clog->warn() << other << " " << ss.str() << "\n";
+    clog->warn() << other << " " << ss.str();
 
   dout(10) << __func__ << " from " << other << " ts " << m->timestamp
 	   << " delta " << delta << " skew_bound " << skew_bound
@@ -4747,7 +4649,7 @@ int Monitor::scrub_start()
   assert(is_leader());
 
   if (!scrub_result.empty()) {
-    clog->info() << "scrub already in progress\n";
+    clog->info() << "scrub already in progress";
     return -EBUSY;
   }
 
@@ -4935,13 +4837,13 @@ void Monitor::scrub_check_results()
       continue;
     if (p->second != mine) {
       ++errors;
-      clog->error() << "scrub mismatch" << "\n";
-      clog->error() << " mon." << rank << " " << mine << "\n";
-      clog->error() << " mon." << p->first << " " << p->second << "\n";
+      clog->error() << "scrub mismatch";
+      clog->error() << " mon." << rank << " " << mine;
+      clog->error() << " mon." << p->first << " " << p->second;
     }
   }
   if (!errors)
-    clog->info() << "scrub ok on " << quorum << ": " << mine << "\n";
+    clog->info() << "scrub ok on " << quorum << ": " << mine;
 }
 
 inline void Monitor::scrub_timeout()
@@ -5002,7 +4904,7 @@ void Monitor::scrub_event_start()
   struct C_Scrub : public Context {
     Monitor *mon;
     explicit C_Scrub(Monitor *m) : mon(m) { }
-    void finish(int r) {
+    void finish(int r) override {
       mon->scrub_start();
     }
   };
@@ -5036,7 +4938,7 @@ void Monitor::scrub_reset_timeout()
   struct C_ScrubTimeout : public Context {
     Monitor *mon;
     explicit C_ScrubTimeout(Monitor *m) : mon(m) { }
-    void finish(int r) {
+    void finish(int r) override {
       mon->scrub_timeout();
     }
   };
@@ -5051,7 +4953,7 @@ class C_Mon_Tick : public Context {
   Monitor *mon;
 public:
   explicit C_Mon_Tick(Monitor *m) : mon(m) {}
-  void finish(int r) {
+  void finish(int r) override {
     mon->tick();
   }
 };

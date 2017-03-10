@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.11)
 
 project(ceph)
-set(VERSION 11.1.0)
+set(VERSION 12.0.0)
 
 if(POLICY CMP0046)
   # Tweak policies (this one disables "missing" dependency warning)
@@ -173,7 +173,7 @@ else(ENABLE_SHARED)
 endif(ENABLE_SHARED)
 set(CMAKE_POSITION_INDEPENDENT_CODE ${ENABLE_SHARED})
 
-option(WITH_RDMA "Enable RDMA in async messenger" OFF)
+option(WITH_RDMA "Enable RDMA in async messenger" ON)
 if(WITH_RDMA)
   find_package(rdma REQUIRED)
   set(HAVE_RDMA ${RDMA_FOUND})
@@ -286,15 +286,14 @@ else(ALLOCATOR)
   elseif(JEMALLOC_FOUND)
     set(ALLOCATOR jemalloc)
   else()
-    message(WARNING "tcmalloc and jemalloc not found, falling back to libc")
+    if(NOT FREEBSD)
+      # FreeBSD already has jemalloc as its default allocator
+      message(WARNING "tcmalloc and jemalloc not found, falling back to libc")
+    endif()
     set(ALLOCATOR "libc")
   endif(GPERFTOOLS_FOUND)
 endif(ALLOCATOR)
 
-# jemalloc does not support mallinfo
-if(NOT JEMALLOC_FOUND)
-  CHECK_FUNCTION_EXISTS(mallinfo HAVE_MALLINFO)
-endif()
 
 if(WITH_LIBCEPHFS OR WITH_KRBD)
   find_package(keyutils REQUIRED)

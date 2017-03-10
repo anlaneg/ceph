@@ -14,7 +14,7 @@
 #
 # Please submit bugfixes or comments via http://tracker.ceph.com/
 # 
-%bcond_with ocf
+%bcond_without ocf
 %bcond_without cephfs_java
 %if 0%{?suse_version}
 %bcond_with ceph_test_package
@@ -56,7 +56,8 @@
 # unify libexec for all targets
 %global _libexecdir %{_exec_prefix}/lib
 
-
+# disable dwz which compresses the debuginfo
+%global _find_debuginfo_dwz_opts %{nil}
 #################################################################################
 # common
 #################################################################################
@@ -95,10 +96,7 @@ BuildRequires:	checkpolicy
 BuildRequires:	selinux-policy-devel
 BuildRequires:	/usr/share/selinux/devel/policyhelp
 %endif
-BuildRequires:	boost-devel
-%if ! 0%{?suse_version}
-BuildRequires:	boost-python
-%endif
+BuildRequires:	bc
 BuildRequires:  cmake
 BuildRequires:	cryptsetup
 BuildRequires:	fuse-devel
@@ -134,6 +132,7 @@ BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	yasm
+BuildRequires:	libibverbs-devel
 
 #################################################################################
 # distro-conditional dependencies
@@ -232,6 +231,7 @@ Requires:      logrotate
 Requires:      util-linux
 Requires:      cryptsetup
 Requires:      findutils
+Requires:      psmisc
 Requires:      which
 %if 0%{?suse_version}
 Recommends:    ntp-daemon
@@ -571,7 +571,9 @@ Summary:	Python 2 libraries for Ceph distributed file system
 Group:		System Environment/Libraries
 License:	LGPL-2.0
 Requires:	libcephfs2 = %{epoch}:%{version}-%{release}
-Requires:	python-rados = %{epoch}:%{version}-%{release}
+%if 0%{?suse_version}
+Recommends: python-rados = %{epoch}:%{version}-%{release}
+%endif
 Obsoletes:	python-ceph < %{epoch}:%{version}-%{release}
 %description -n python-cephfs
 This package contains Python 2 libraries for interacting with Cephs distributed
@@ -1354,7 +1356,7 @@ fi
 %defattr(-,root,root,-)
 %{_libdir}/librados.so.*
 %dir %{_libdir}/ceph
-%{_libdir}/ceph/libceph-common.so
+%{_libdir}/ceph/libceph-common.so*
 %if %{with lttng}
 %{_libdir}/librados_tp.so.*
 %endif

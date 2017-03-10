@@ -65,6 +65,7 @@
 #define MSG_OSD_FAILURE      72
 #define MSG_OSD_ALIVE        73
 #define MSG_OSD_MARK_ME_DOWN 74
+#define MSG_OSD_FULL         75
 
 #define MSG_OSD_SUBOP        76
 #define MSG_OSD_SUBOPREPLY   77
@@ -85,7 +86,7 @@
 #define MSG_REMOVE_SNAPS       90
 
 #define MSG_OSD_SCRUB          91
-#define MSG_OSD_PG_MISSING     92
+//#define MSG_OSD_PG_MISSING     92  // obsolete
 #define MSG_OSD_REP_SCRUB      93
 
 #define MSG_OSD_PG_SCAN        94
@@ -287,7 +288,7 @@ public:
   }
 
 protected:
-  virtual ~Message() {
+  ~Message() override {
     if (byte_throttler)
       byte_throttler->put(payload.length() + middle.length() + data.length());
     release_message_throttle();
@@ -376,6 +377,7 @@ public:
       byte_throttler->take(data.length());
   }
 
+  const bufferlist& get_data() const { return data; }
   bufferlist& get_data() { return data; }
   void claim_data(bufferlist& bl,
 		  unsigned int flags = buffer::list::CLAIM_DEFAULT) {

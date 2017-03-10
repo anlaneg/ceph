@@ -31,6 +31,7 @@
 #include "StrayManager.h"
 #include "MDSContext.h"
 #include "MDSMap.h"
+#include "Mutation.h"
 
 #include "messages/MClientRequest.h"
 #include "messages/MMDSSlaveRequest.h"
@@ -68,24 +69,19 @@ class MMDSFragmentNotify;
 
 class ESubtreeMap;
 
-struct MDRequestImpl;
-typedef ceph::shared_ptr<MDRequestImpl> MDRequestRef;
-struct MDSlaveUpdate;
-
 enum {
   l_mdc_first = 3000,
   // How many inodes currently in stray dentries
   l_mdc_num_strays,
-  // How many stray dentries are currently being purged
-  l_mdc_num_strays_purging,
   // How many stray dentries are currently delayed for purge due to refs
   l_mdc_num_strays_delayed,
-  // How many purge RADOS ops might currently be in flight?
-  l_mdc_num_purge_ops,
+  // How many stray dentries are currently being enqueued for purge
+  l_mdc_num_strays_enqueuing,
+
   // How many dentries have ever been added to stray dir
   l_mdc_strays_created,
-  // How many dentries have ever finished purging from stray dir
-  l_mdc_strays_purged,
+  // How many dentries have been passed on to PurgeQueue
+  l_mdc_strays_enqueued,
   // How many strays have been reintegrated?
   l_mdc_strays_reintegrated,
   // How many strays have been migrated?
@@ -146,6 +142,10 @@ public:
     stray_index = (stray_index+1)%NUM_STRAY;
   }
 
+  void activate_stray_manager() {
+    stray_manager.activate();
+  }
+
   /**
    * Call this when you know that a CDentry is ready to be passed
    * on to StrayManager (i.e. this is a stray you've just created)
@@ -155,13 +155,6 @@ public:
     stray_manager.eval_stray(dn);
   }
 
-  void notify_stray_loaded(CDentry *dn) {
-    stray_manager.notify_stray_loaded(dn);
-  }
-
-  void handle_conf_change(const struct md_config_t *conf,
-                          const std::set <std::string> &changed);
-
   void maybe_eval_stray(CInode *in, bool delay=false);
   bool is_readonly() { return readonly; }
   void force_readonly();
@@ -169,7 +162,6 @@ public:
   DecayRate decayrate;
 
   int num_inodes_with_caps;
-  int num_caps;
 
   unsigned max_dir_commit_size;
 
@@ -216,10 +208,21 @@ public:
     frag_t frag;
     snapid_t snap;
     filepath want_path;
+    MDSCacheObject *base;
     bool want_base_dir;
     bool want_xlocked;
 
-    discover_info_t() : tid(0), mds(-1), snap(CEPH_NOSNAP), want_base_dir(false), want_xlocked(false) {}
+    discover_info_t() :
+      tid(0), mds(-1), snap(CEPH_NOSNAP), base(NULL),
+      want_base_dir(false), want_xlocked(false) {}
+    ~discover_info_t() {
+      if (base)
+	base->put(MDSCacheObject::PIN_DISCOVERBASE);
+    }
+    void pin_base(MDSCacheObject *b) {
+      base = b;
+      base->get(MDSCacheObject::PIN_DISCOVERBASE);
+    }
   };
 
   map<ceph_tid_t, discover_info_t> discovers;
@@ -245,11 +248,6 @@ public:
   void discover_path(CDir *base, snapid_t snap, filepath want_path, MDSInternalContextBase *onfinish,
 		     bool want_xlocked=false);
   void kick_discovers(mds_rank_t who);  // after a failure.
-
-
-public:
-  int get_num_inodes() { return inode_map.size(); }
-  int get_num_dentries() { return lru.lru_get_size(); }
 
 
   // -- subtrees --
@@ -350,7 +348,7 @@ public:
   void project_rstat_inode_to_frag(CInode *cur, CDir *parent, snapid_t first,
 				   int linkunlink, SnapRealm *prealm);
   void _project_rstat_inode_to_frag(inode_t& inode, snapid_t ofirst, snapid_t last,
-				    CDir *parent, int linkunlink=0);
+				    CDir *parent, int linkunlink, bool update_inode);
   void project_rstat_frag_to_inode(nest_info_t& rstat, nest_info_t& accounted_rstat,
 				   snapid_t ofirst, snapid_t last, 
 				   CInode *pin, bool cow_head);
@@ -368,6 +366,10 @@ public:
   }
   void wait_for_uncommitted_master(metareqid_t reqid, MDSInternalContextBase *c) {
     uncommitted_masters[reqid].waiters.push_back(c);
+  }
+  bool have_uncommitted_master(metareqid_t reqid, mds_rank_t from) {
+    auto p = uncommitted_masters.find(reqid);
+    return p != uncommitted_masters.end() && p->second.slaves.count(from) > 0;
   }
   void log_master_commit(metareqid_t reqid);
   void logged_master_update(metareqid_t reqid);
@@ -426,7 +428,8 @@ protected:
   void process_delayed_resolve();
   void discard_delayed_resolve(mds_rank_t who);
   void maybe_resolve_finish();
-  void disambiguate_imports();
+  void disambiguate_my_imports();
+  void disambiguate_other_imports();
   void trim_unlinked_inodes();
   void add_uncommitted_slave_update(metareqid_t reqid, mds_rank_t master, MDSlaveUpdate*);
   void finish_uncommitted_slave_update(metareqid_t reqid, mds_rank_t master);
@@ -436,17 +439,19 @@ public:
   void remove_inode_recursive(CInode *in);
 
   bool is_ambiguous_slave_update(metareqid_t reqid, mds_rank_t master) {
-    return ambiguous_slave_updates.count(master) &&
-	   ambiguous_slave_updates[master].count(reqid);
+    auto p = ambiguous_slave_updates.find(master);
+    return p != ambiguous_slave_updates.end() && p->second.count(reqid);
   }
   void add_ambiguous_slave_update(metareqid_t reqid, mds_rank_t master) {
     ambiguous_slave_updates[master].insert(reqid);
   }
   void remove_ambiguous_slave_update(metareqid_t reqid, mds_rank_t master) {
-    assert(ambiguous_slave_updates[master].count(reqid));
-    ambiguous_slave_updates[master].erase(reqid);
-    if (ambiguous_slave_updates[master].empty())
-      ambiguous_slave_updates.erase(master);
+    auto p = ambiguous_slave_updates.find(master);
+    auto q = p->second.find(reqid);
+    assert(q != p->second.end());
+    p->second.erase(q);
+    if (p->second.empty())
+      ambiguous_slave_updates.erase(p);
   }
 
   void add_rollback(metareqid_t reqid, mds_rank_t master) {
@@ -642,7 +647,7 @@ public:
   std::unique_ptr<Migrator> migrator;
 
  public:
-  explicit MDCache(MDSRank *m);
+  explicit MDCache(MDSRank *m, PurgeQueue &purge_queue_);
   ~MDCache();
   
   // debug
@@ -1116,9 +1121,6 @@ public:
   void process_delayed_expire(CDir *dir);
   void discard_delayed_expire(CDir *dir);
 
-  void notify_mdsmap_changed();
-  void notify_osdmap_changed();
-
 protected:
   void dump_cache(const char *fn, Formatter *f,
 		  const std::string& dump_root = "",
@@ -1176,7 +1178,7 @@ class C_MDS_RetryRequest : public MDSInternalContext {
   MDRequestRef mdr;
  public:
   C_MDS_RetryRequest(MDCache *c, MDRequestRef& r);
-  virtual void finish(int r);
+  void finish(int r) override;
 };
 
 #endif

@@ -64,6 +64,10 @@
 #include "include/types.h"
 #include "common/BackTrace.h"
 
+#ifdef HAVE_SYS_PRCTL_H
+#include <sys/prctl.h>
+#endif
+
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
@@ -149,7 +153,7 @@ static void check_curl()
 class C_InitTimeout : public Context {
 public:
   C_InitTimeout() {}
-  void finish(int r) {
+  void finish(int r) override {
     derr << "Initialization timeout, failed to initialize" << dendl;
     exit(1);
   }
@@ -201,7 +205,7 @@ int main(int argc, const char **argv)
   // dout() messages will be sent to stderr, but FCGX wants messages on stdout
   // Redirect stderr to stdout.
   TEMP_FAILURE_RETRY(close(STDERR_FILENO));
-  if (TEMP_FAILURE_RETRY(dup2(STDOUT_FILENO, STDERR_FILENO) < 0)) {
+  if (TEMP_FAILURE_RETRY(dup2(STDOUT_FILENO, STDERR_FILENO)) < 0) {
     int err = errno;
     cout << "failed to redirect stderr to stdout: " << cpp_strerror(err)
          << std::endl;
@@ -250,6 +254,7 @@ int main(int argc, const char **argv)
     RGWFrontendConfig *config = new RGWFrontendConfig(f);
     int r = config->init();
     if (r < 0) {
+      delete config;
       cerr << "ERROR: failed to init config: " << f << std::endl;
       return EINVAL;
     }
@@ -458,26 +463,7 @@ int main(int argc, const char **argv)
     RGWFrontendConfig *config = fiter->second;
     string framework = config->get_framework();
     RGWFrontend *fe = NULL;
-#if defined(WITH_RADOSGW_ASIO_FRONTEND)
-    if ((framework == "asio") &&
-	cct->check_experimental_feature_enabled("rgw-asio-frontend")) {
-      int port;
-      config->get_val("port", 80, &port);
-      std::string uri_prefix;
-      config->get_val("prefix", "", &uri_prefix);
-      RGWProcessEnv env{ store, &rest, olog, port, uri_prefix };
-      fe = new RGWAsioFrontend(env);
-    }
-#endif /* WITH_RADOSGW_ASIO_FRONTEND */
-#if defined(WITH_RADOSGW_FCGI_FRONTEND)
-    if (framework == "fastcgi" || framework == "fcgi") {
-      std::string uri_prefix;
-      config->get_val("prefix", "", &uri_prefix);
-      RGWProcessEnv fcgi_pe = { store, &rest, olog, 0, uri_prefix };
 
-      fe = new RGWFCGXFrontend(fcgi_pe, config);
-    }
-#endif /* WITH_RADOSGW_FCGI_FRONTEND */
     if (framework == "civetweb" || framework == "mongoose") {
       int port;
       config->get_val("port", 80, &port);
@@ -488,7 +474,7 @@ int main(int argc, const char **argv)
 
       fe = new RGWCivetWebFrontend(env, config);
     }
-    if (framework == "loadgen") {
+    else if (framework == "loadgen") {
       int port;
       config->get_val("port", 80, &port);
       std::string uri_prefix;
@@ -498,10 +484,32 @@ int main(int argc, const char **argv)
 
       fe = new RGWLoadGenFrontend(env, config);
     }
+#if defined(WITH_RADOSGW_ASIO_FRONTEND)
+    else if ((framework == "asio") &&
+	cct->check_experimental_feature_enabled("rgw-asio-frontend")) {
+      int port;
+      config->get_val("port", 80, &port);
+      std::string uri_prefix;
+      config->get_val("prefix", "", &uri_prefix);
+      RGWProcessEnv env{ store, &rest, olog, port, uri_prefix };
+      fe = new RGWAsioFrontend(env);
+    }
+#endif /* WITH_RADOSGW_ASIO_FRONTEND */
+#if defined(WITH_RADOSGW_FCGI_FRONTEND)
+    else if (framework == "fastcgi" || framework == "fcgi") {
+      std::string uri_prefix;
+      config->get_val("prefix", "", &uri_prefix);
+      RGWProcessEnv fcgi_pe = { store, &rest, olog, 0, uri_prefix };
+
+      fe = new RGWFCGXFrontend(fcgi_pe, config);
+    }
+#endif /* WITH_RADOSGW_FCGI_FRONTEND */
+
     if (fe == NULL) {
       dout(0) << "WARNING: skipping unknown framework: " << framework << dendl;
       continue;
     }
+
     dout(0) << "starting handler: " << fiter->first << dendl;
     int r = fe->init();
     if (r < 0) {
@@ -527,6 +535,12 @@ int main(int argc, const char **argv)
   RGWRealmWatcher realm_watcher(g_ceph_context, store->realm);
   realm_watcher.add_watcher(RGWRealmNotify::Reload, reloader);
   realm_watcher.add_watcher(RGWRealmNotify::ZonesNeedPeriod, pusher);
+
+#if defined(HAVE_SYS_PRCTL_H)
+  if (prctl(PR_SET_DUMPABLE, 1) == -1) {
+    cerr << "warning: unable to set dumpable flag: " << cpp_strerror(errno) << std::endl;
+  }
+#endif
 
   wait_shutdown();
 

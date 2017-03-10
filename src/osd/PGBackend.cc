@@ -110,7 +110,7 @@ struct Trimmer : public ObjectModDesc::Visitor {
     PGBackend *pg,
     ObjectStore::Transaction *t)
     : soid(soid), pg(pg), t(t) {}
-  void rmobject(version_t old_version) {
+  void rmobject(version_t old_version) override {
     pg->trim_rollback_object(
       soid,
       old_version,
@@ -174,7 +174,7 @@ void PGBackend::on_change_cleanup(ObjectStore::Transaction *t)
 {
   dout(10) << __func__ << dendl;
   // clear temp
-  for (set<hobject_t, hobject_t::BitwiseComparator>::iterator i = temp_contents.begin();
+  for (set<hobject_t>::iterator i = temp_contents.begin();
        i != temp_contents.end();
        ++i) {
     dout(10) << __func__ << ": Removing oid "
@@ -211,9 +211,8 @@ int PGBackend::objects_list_partial(
     vector<ghobject_t> objects;
     r = store->collection_list(
       ch,
-      _next,//起始
-      ghobject_t::get_max(),//终止
-      parent->sort_bitwise(),
+      _next,
+      ghobject_t::get_max(),
       max - ls->size(),
       &objects,
       &_next);
@@ -250,7 +249,6 @@ int PGBackend::objects_list_range(//返回start,end之间所有的对象
     ch,
     ghobject_t(start, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
     ghobject_t(end, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-    parent->sort_bitwise(),
     INT_MAX,
     &objects,
     NULL);
@@ -628,7 +626,7 @@ map<pg_shard_t, ScrubMap *>::const_iterator
   for (map<pg_shard_t, ScrubMap *>::const_iterator j = maps.begin();
        j != maps.end();
        ++j) {
-    map<hobject_t, ScrubMap::object, hobject_t::BitwiseComparator>::iterator i =
+    map<hobject_t, ScrubMap::object>::iterator i =
       j->second->objects.find(obj);
     if (i == j->second->objects.end()) {
       continue;
@@ -719,19 +717,19 @@ out:
 void PGBackend::be_compare_scrubmaps(//这个函数写的非常的乱,向作者致敬.
   const map<pg_shard_t,ScrubMap*> &maps,
   bool repair,
-  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &missing,//缺
-  map<hobject_t, set<pg_shard_t>, hobject_t::BitwiseComparator> &inconsistent,//不一致
-  map<hobject_t, list<pg_shard_t>, hobject_t::BitwiseComparator> &authoritative,//权威
-  map<hobject_t, pair<uint32_t,uint32_t>, hobject_t::BitwiseComparator> &missing_digest,//缺crc
+  map<hobject_t, set<pg_shard_t>> &missing,//缺
+  map<hobject_t, set<pg_shard_t>> &inconsistent,//不一致
+  map<hobject_t, list<pg_shard_t>> &authoritative,//权威
+  map<hobject_t, pair<uint32_t,uint32_t>> &missing_digest,//缺crc
   int &shallow_errors, int &deep_errors,
   Scrub::Store *store,
   const spg_t& pgid,
   const vector<int> &acting,
   ostream &errorstream)
 {
-  map<hobject_t,ScrubMap::object, hobject_t::BitwiseComparator>::const_iterator i;
-  map<pg_shard_t, ScrubMap *, hobject_t::BitwiseComparator>::const_iterator j;
-  set<hobject_t, hobject_t::BitwiseComparator> master_set;
+  map<hobject_t,ScrubMap::object>::const_iterator i;
+  map<pg_shard_t, ScrubMap *>::const_iterator j;
+  set<hobject_t> master_set;
   utime_t now = ceph_clock_now();
 
   // Construct master set
@@ -744,7 +742,7 @@ void PGBackend::be_compare_scrubmaps(//这个函数写的非常的乱,向作者�
   // Check maps against master set and each other
   //遍历合集中的每一个对象,针对每个对象在maps中找出来一个权威信息,它必须是自完整的.
   //如果没有找到,则这个对象明显是不一致的,而且各osd均不一致,此对象加入object_error
-  for (set<hobject_t, hobject_t::BitwiseComparator>::const_iterator k = master_set.begin();
+  for (set<hobject_t>::const_iterator k = master_set.begin();
        k != master_set.end();
        ++k) {
     object_info_t auth_oi;

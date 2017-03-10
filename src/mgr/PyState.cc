@@ -19,6 +19,7 @@
 #include "Mgr.h"
 
 #include "mon/MonClient.h"
+#include "common/version.h"
 
 #include "PyState.h"
 
@@ -43,12 +44,12 @@ public:
     Py_INCREF(python_completion);
   }
 
-  ~MonCommandCompletion()
+  ~MonCommandCompletion() override
   {
     Py_DECREF(python_completion);
   }
 
-  void finish(int r)
+  void finish(int r) override
   {
     PyGILState_STATE gstate;
     gstate = PyGILState_Ensure();
@@ -223,6 +224,12 @@ ceph_log(PyObject *self, PyObject *args)
   Py_RETURN_NONE;
 }
 
+static PyObject *
+ceph_get_version(PyObject *self, PyObject *args)
+{
+  return PyString_FromString(pretty_version_to_str().c_str());
+}
+
 static PyObject*
 get_counter(PyObject *self, PyObject *args)
 {
@@ -262,6 +269,8 @@ PyMethodDef CephStateMethods[] = {
       "Get a performance counter"},
     {"log", ceph_log, METH_VARARGS,
      "Emit a (local) log message"},
+    {"get_version", ceph_get_version, METH_VARARGS,
+     "Get the ceph version of this process"},
     {NULL, NULL, 0, NULL}
 };
 

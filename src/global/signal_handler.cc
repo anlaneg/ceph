@@ -241,7 +241,7 @@ struct SignalHandler : public Thread {
     create("signal_handler");
   }
 
-  ~SignalHandler() {
+  ~SignalHandler() override {
     shutdown();
   }
 
@@ -257,7 +257,7 @@ struct SignalHandler : public Thread {
   }
 
   // thread entry point
-  void *entry() {
+  void *entry() override {
     while (!stop) {
       // build fd list
       struct pollfd fds[33];

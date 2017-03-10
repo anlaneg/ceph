@@ -43,7 +43,7 @@ class StatusCommand : public MirrorAdminSocketCommand {
 public:
   explicit StatusCommand(Mirror *mirror) : mirror(mirror) {}
 
-  bool call(Formatter *f, stringstream *ss) {
+  bool call(Formatter *f, stringstream *ss) override {
     mirror->print_status(f, ss);
     return true;
   }
@@ -56,7 +56,7 @@ class StartCommand : public MirrorAdminSocketCommand {
 public:
   explicit StartCommand(Mirror *mirror) : mirror(mirror) {}
 
-  bool call(Formatter *f, stringstream *ss) {
+  bool call(Formatter *f, stringstream *ss) override {
     mirror->start();
     return true;
   }
@@ -69,7 +69,7 @@ class StopCommand : public MirrorAdminSocketCommand {
 public:
   explicit StopCommand(Mirror *mirror) : mirror(mirror) {}
 
-  bool call(Formatter *f, stringstream *ss) {
+  bool call(Formatter *f, stringstream *ss) override {
     mirror->stop();
     return true;
   }
@@ -82,7 +82,7 @@ class RestartCommand : public MirrorAdminSocketCommand {
 public:
   explicit RestartCommand(Mirror *mirror) : mirror(mirror) {}
 
-  bool call(Formatter *f, stringstream *ss) {
+  bool call(Formatter *f, stringstream *ss) override {
     mirror->restart();
     return true;
   }
@@ -95,8 +95,21 @@ class FlushCommand : public MirrorAdminSocketCommand {
 public:
   explicit FlushCommand(Mirror *mirror) : mirror(mirror) {}
 
-  bool call(Formatter *f, stringstream *ss) {
+  bool call(Formatter *f, stringstream *ss) override {
     mirror->flush();
+    return true;
+  }
+
+private:
+  Mirror *mirror;
+};
+
+class LeaderReleaseCommand : public MirrorAdminSocketCommand {
+public:
+  explicit LeaderReleaseCommand(Mirror *mirror) : mirror(mirror) {}
+
+  bool call(Formatter *f, stringstream *ss) override {
+    mirror->release_leader();
     return true;
   }
 
@@ -147,9 +160,16 @@ public:
     if (r == 0) {
       commands[command] = new FlushCommand(mirror);
     }
+
+    command = "rbd mirror leader release";
+    r = admin_socket->register_command(command, command, this,
+				       "release rbd mirror leader");
+    if (r == 0) {
+      commands[command] = new LeaderReleaseCommand(mirror);
+    }
   }
 
-  ~MirrorAdminSocketHook() {
+  ~MirrorAdminSocketHook() override {
     for (Commands::const_iterator i = commands.begin(); i != commands.end();
 	 ++i) {
       (void)admin_socket->unregister_command(i->first);
@@ -158,7 +178,7 @@ public:
   }
 
   bool call(std::string command, cmdmap_t& cmdmap, std::string format,
-	    bufferlist& out) {
+	    bufferlist& out) override {
     Commands::const_iterator i = commands.find(command);
     assert(i != commands.end());
     Formatter *f = Formatter::create(format);
@@ -353,6 +373,21 @@ void Mirror::flush()
   for (auto it = m_replayers.begin(); it != m_replayers.end(); it++) {
     auto &replayer = it->second;
     replayer->flush();
+  }
+}
+
+void Mirror::release_leader()
+{
+  dout(20) << "enter" << dendl;
+  Mutex::Locker l(m_lock);
+
+  if (m_stopping.read()) {
+    return;
+  }
+
+  for (auto it = m_replayers.begin(); it != m_replayers.end(); it++) {
+    auto &replayer = it->second;
+    replayer->release_leader();
   }
 }
 

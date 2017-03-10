@@ -31,14 +31,16 @@ static ostream& _prefix(std::ostream *_dout, const PGLog *pglog)
 
 //////////////////// PGLog::IndexedLog ////////////////////
 
-PGLog::IndexedLog PGLog::IndexedLog::split_out_child(
+void PGLog::IndexedLog::split_out_child(
   pg_t child_pgid,
-  unsigned split_bits)
+  unsigned split_bits,
+  PGLog::IndexedLog *target)
 {
-  IndexedLog ret(pg_log_t::split_out_child(child_pgid, split_bits));
+  unindex();
+  *target = pg_log_t::split_out_child(child_pgid, split_bits);
   index();
+  target->index();
   reset_rollback_info_trimmed_to_riter();
-  return ret;
 }
 
 void PGLog::IndexedLog::trim(
@@ -136,7 +138,9 @@ void PGLog::trim(
 
 void PGLog::proc_replica_log(
   ObjectStore::Transaction& t,
-  pg_info_t &oinfo, const pg_log_t &olog, pg_missing_t& omissing,
+  pg_info_t &oinfo,
+  const pg_log_t &olog,
+  pg_missing_t& omissing,
   pg_shard_t from) const
 {
   dout(10) << "proc_replica_log for osd." << from << ": "
@@ -165,7 +169,7 @@ void PGLog::proc_replica_log(
   */
 
   //显示下,副本提交上来的missing集
-  for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i = omissing.get_items().begin();
+  for (map<hobject_t, pg_missing_item>::const_iterator i = omissing.get_items().begin();
        i != omissing.get_items().end();
        ++i) {
     dout(20) << " before missing " << i->first << " need " << i->second.need
@@ -299,7 +303,7 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   assert(log.head >= olog.tail && olog.head >= log.tail);//日志一定是有交集才能走到这个流程(前面选权威时来保证这点)
 
   //missing拿出来显示下.
-  for (map<hobject_t, pg_missing_item, hobject_t::BitwiseComparator>::const_iterator i = missing.get_items().begin();
+  for (map<hobject_t, pg_missing_item>::const_iterator i = missing.get_items().begin();
        i != missing.get_items().end();
        ++i) {
     dout(20) << "pg_missing_t sobject: " << i->first << dendl;

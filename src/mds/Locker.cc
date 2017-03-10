@@ -59,7 +59,7 @@ static ostream& _prefix(std::ostream *_dout, MDSRank *mds) {
 class LockerContext : public MDSInternalContextBase {
 protected:
   Locker *locker;
-  MDSRank *get_mds()
+  MDSRank *get_mds() override
   {
     return locker->mds;
   }
@@ -73,7 +73,7 @@ public:
 class LockerLogContext : public MDSLogContextBase {
 protected:
   Locker *locker;
-  MDSRank *get_mds()
+  MDSRank *get_mds() override
   {
     return locker->mds;
   }
@@ -330,8 +330,16 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
 
     dout(10) << " must authpin " << *object << dendl;
 
-    if (mdr->is_auth_pinned(object)) 
-      continue;
+    if (mdr->is_auth_pinned(object)) {
+      if (object != (MDSCacheObject*)auth_pin_freeze)
+	continue;
+      if (mdr->more()->is_remote_frozen_authpin) {
+	if (mdr->more()->rename_inode == auth_pin_freeze)
+	  continue;
+	// unfreeze auth pin for the wrong inode
+	mustpin_remote[mdr->more()->rename_inode->authority().first].size();
+      }
+    }
     
     if (!object->is_auth()) {
       if (!mdr->locks.empty())
@@ -471,7 +479,7 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
     }
     
     // hose any stray locks
-    if (*existing == *p) {
+    if (existing != mdr->locks.end() && *existing == *p) {
       assert(need_wrlock || need_remote_wrlock);
       SimpleLock *lock = *existing;
       if (mdr->wrlocks.count(lock)) {
@@ -531,7 +539,8 @@ bool Locker::acquire_locks(MDRequestRef& mdr,
 	  remote_wrlock_start(*p, (*remote_wrlocks)[*p], mdr);
 	  goto out;
 	}
-	if (!wrlock_start(*p, mdr))
+	// nowait if we have already gotten remote wrlock
+	if (!wrlock_start(*p, mdr, need_remote_wrlock))
 	  goto out;
 	dout(10) << " got wrlock on " << **p << " " << *(*p)->get_parent() << dendl;
       }
@@ -1006,7 +1015,7 @@ public:
     assert(locker->mds->mds_lock.is_locked_by_me());
     p->get(MDSCacheObject::PIN_PTRWAITER);    
   }
-  void finish(int r) {
+  void finish(int r) override {
     p->put(MDSCacheObject::PIN_PTRWAITER);
     locker->try_eval(p, mask);
   }
@@ -1717,7 +1726,7 @@ public:
       ack(ac) {
     in->get(CInode::PIN_PTRWAITER);
   }
-  void finish(int r) {
+  void finish(int r) override {
     locker->file_update_finish(in, mut, share, client, cap, ack);
   }
 };
@@ -2094,7 +2103,7 @@ public:
   C_MDL_RequestInodeFileCaps(Locker *l, CInode *i) : LockerContext(l), in(i) {
     in->get(CInode::PIN_PTRWAITER);
   }
-  void finish(int r) {
+  void finish(int r) override {
     in->put(CInode::PIN_PTRWAITER);
     if (!in->is_auth())
       locker->request_inode_file_caps(in);
@@ -2171,7 +2180,7 @@ public:
   {
     in->get(CInode::PIN_PTRWAITER);
   }
-  void finish(int r) {
+  void finish(int r) override {
     in->put(CInode::PIN_PTRWAITER);
     if (in->is_auth())
       locker->check_inode_max_size(in, false, new_max_size, newsize, mtime);
@@ -2279,7 +2288,7 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
     }
   }
 
-  auto mut(std::make_shared<MutationImpl>());
+  MutationRef mut(new MutationImpl());
   mut->ls = mds->mdlog->get_current_segment();
     
   inode_t *pi = in->project_inode();
@@ -2577,7 +2586,7 @@ void Locker::handle_client_caps(MClientCaps *m)
 	ss << "client." << session->get_client() << " does not advance its oldest_flush_tid ("
 	   << m->get_oldest_flush_tid() << "), "
 	   << session->get_num_completed_flushes()
-	   << " completed flushes recorded in session\n";
+	   << " completed flushes recorded in session";
 	mds->clog->warn() << ss.str();
 	dout(20) << __func__ << " " << ss.str() << dendl;
       }
@@ -2789,7 +2798,7 @@ class C_Locker_RetryRequestCapRelease : public LockerContext {
 public:
   C_Locker_RetryRequestCapRelease(Locker *l, client_t c, const ceph_mds_request_release& it) :
     LockerContext(l), client(c), item(it) { }
-  void finish(int r) {
+  void finish(int r) override {
     string dname;
     MDRequestRef null_ref;
     locker->process_request_cap_release(null_ref, client, item, dname);
@@ -2889,7 +2898,7 @@ public:
     LockerContext(l), in(i), client(c), seq(s) {
     in->get(CInode::PIN_PTRWAITER);
   }
-  void finish(int r) {
+  void finish(int r) override {
     locker->kick_issue_caps(in, client, seq);
     in->put(CInode::PIN_PTRWAITER);
   }
@@ -2955,7 +2964,7 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
 
   EUpdate *le = new EUpdate(mds->mdlog, "snap flush");
   mds->mdlog->start_entry(le);
-  auto mut(std::make_shared<MutationImpl>());
+  MutationRef mut = new MutationImpl();
   mut->ls = mds->mdlog->get_current_segment();
 
   // normal metadata updates that we can apply to the head as well.
@@ -3250,7 +3259,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   inode_t *pi = in->project_inode(px);
   pi->version = in->pre_dirty();
 
-  auto mut(std::make_shared<MutationImpl>());
+  MutationRef mut(new MutationImpl());
   mut->ls = mds->mdlog->get_current_segment();
 
   _update_cap_fields(in, dirty, m, pi);
@@ -3348,7 +3357,7 @@ public:
   C_Locker_RetryCapRelease(Locker *l, client_t c, inodeno_t i, uint64_t id,
 			   ceph_seq_t mseq, ceph_seq_t seq) :
     LockerContext(l), client(c), ino(i), cap_id(id), migrate_seq(mseq), issue_seq(seq) {}
-  void finish(int r) {
+  void finish(int r) override {
     locker->_do_cap_release(client, ino, cap_id, migrate_seq, issue_seq);
   }
 };
@@ -3490,7 +3499,7 @@ void Locker::caps_tick()
       stringstream ss;
       ss << "client." << cap->get_client() << " isn't responding to mclientcaps(revoke), ino "
 	 << cap->get_inode()->ino() << " pending " << ccap_string(cap->pending())
-	 << " issued " << ccap_string(cap->issued()) << ", sent " << age << " seconds ago\n";
+	 << " issued " << ccap_string(cap->issued()) << ", sent " << age << " seconds ago";
       mds->clog->warn() << ss.str();
       dout(20) << __func__ << " " << ss.str() << dendl;
     } else {
@@ -4244,7 +4253,7 @@ class C_Locker_ScatterWB : public LockerLogContext {
 public:
   C_Locker_ScatterWB(Locker *l, ScatterLock *sl, MutationRef& m) :
     LockerLogContext(l), lock(sl), mut(m) {}
-  void finish(int r) { 
+  void finish(int r) override { 
     locker->scatter_writebehind_finish(lock, mut); 
   }
 };
@@ -4255,7 +4264,7 @@ void Locker::scatter_writebehind(ScatterLock *lock)
   dout(10) << "scatter_writebehind " << in->inode.mtime << " on " << *lock << " on " << *in << dendl;
 
   // journal
-  auto mut(std::make_shared<MutationImpl>());
+  MutationRef mut(new MutationImpl());
   mut->ls = mds->mdlog->get_current_segment();
 
   // forcefully take a wrlock

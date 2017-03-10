@@ -44,7 +44,7 @@ public:
    *
    * @return A const Policy reference.
    */
-  virtual Policy get_policy(int t) {
+  Policy get_policy(int t) override {
     Mutex::Locker l(policy_lock);
     map<int, Policy>::iterator iter =
       policy_map.find(t);
@@ -54,7 +54,7 @@ public:
       return default_policy;
   }
 
-  virtual Policy get_default_policy() {
+  Policy get_default_policy() override {
     Mutex::Locker l(policy_lock);
     return default_policy;
   }
@@ -67,7 +67,7 @@ public:
    *
    * @param p The Policy to apply.
    */
-  virtual void set_default_policy(Policy p) {
+  void set_default_policy(Policy p) override {
     Mutex::Locker l(policy_lock);
     default_policy = p;
   }
@@ -79,7 +79,7 @@ public:
    * @param type The peer type this policy applies to.
    * @param p The policy to apply.
    */
-  virtual void set_policy(int type, Policy p) {
+  void set_policy(int type, Policy p) override {
     Mutex::Locker l(policy_lock);
     policy_map[type] = p;
   }
@@ -97,7 +97,7 @@ public:
    */
   void set_policy_throttlers(int type,
 			     Throttle *byte_throttle,
-			     Throttle *msg_throttle) {
+			     Throttle *msg_throttle) override {
     Mutex::Locker l(policy_lock);
     map<int, Policy>::iterator iter =
       policy_map.find(type);

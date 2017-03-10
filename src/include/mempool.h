@@ -30,6 +30,7 @@
 #include <typeinfo>
 
 #include <common/Formatter.h>
+#include "include/assert.h"
 
 
 /*
@@ -139,15 +140,18 @@ namespace mempool {
 // define memory pools
 
 #define DEFINE_MEMORY_POOLS_HELPER(f) \
-  f(unittest_1)			      \
-  f(unittest_2)			      \
-  f(buffer_meta)		      \
-  f(buffer_data)		      \
-  f(osd)			      \
+  f(bloom_filter)		      \
   f(bluestore_meta_onode)	      \
   f(bluestore_meta_other)	      \
   f(bluestore_alloc)		      \
-  f(bluefs)
+  f(bluefs)			      \
+  f(buffer_meta)		      \
+  f(buffer_data)		      \
+  f(osd)			      \
+  f(osdmap_mapping)		      \
+  f(unittest_1)			      \
+  f(unittest_2)
+
 
 // give them integer ids
 #define P(x) mempool_##x,
@@ -372,11 +376,12 @@ public:
                                                                         \
     template<typename k,typename v, typename cmp = std::less<k> >	\
     using map = std::map<k, v, cmp,					\
-			 pool_allocator<std::pair<k,v>>>;		\
+			 pool_allocator<std::pair<const k,v>>>;		\
                                                                         \
     template<typename k,typename v, typename cmp = std::less<k> >	\
     using multimap = std::multimap<k,v,cmp,				\
-				   pool_allocator<std::pair<k,v>>>;	\
+				   pool_allocator<std::pair<const k,	\
+							    v>>>;	\
                                                                         \
     template<typename k, typename cmp = std::less<k> >			\
     using set = std::set<k,cmp,pool_allocator<k>>;			\
@@ -391,7 +396,7 @@ public:
 	     typename h=std::hash<k>,					\
 	     typename eq = std::equal_to<k>>				\
     using unordered_map =						\
-      std::unordered_map<k,v,h,eq,pool_allocator<std::pair<k,v>>>;	\
+      std::unordered_map<k,v,h,eq,pool_allocator<std::pair<const k,v>>>;\
                                                                         \
     inline size_t allocated_bytes() {					\
       return mempool::get_pool(id).allocated_bytes();			\
@@ -411,6 +416,13 @@ DEFINE_MEMORY_POOLS_HELPER(P)
 
 // Use this for any type that is contained by a container (unless it
 // is a class you defined; see below).
+#define MEMPOOL_DECLARE_FACTORY(obj, factoryname, pool)			\
+  namespace mempool {							\
+    namespace pool {							\
+      extern pool_allocator<obj> alloc_##factoryname;			\
+    }									\
+  }
+
 #define MEMPOOL_DEFINE_FACTORY(obj, factoryname, pool)			\
   namespace mempool {							\
     namespace pool {							\

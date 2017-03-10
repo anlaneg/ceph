@@ -40,7 +40,7 @@ using std::string;
 class RocksDBStore::MergeOperatorRouter : public rocksdb::AssociativeMergeOperator {
   RocksDBStore& store;
   public:
-  const char *Name() const {
+  const char *Name() const override {
     // Construct a name that rocksDB will validate against. We want to
     // do this in a way that doesn't constrain the ordering of calls
     // to set_merge_operator, so sort the merge operators and then
@@ -59,11 +59,11 @@ class RocksDBStore::MergeOperatorRouter : public rocksdb::AssociativeMergeOperat
 
   MergeOperatorRouter(RocksDBStore &_store) : store(_store) {}
 
-  virtual bool Merge(const rocksdb::Slice& key,
+  bool Merge(const rocksdb::Slice& key,
                      const rocksdb::Slice* existing_value,
                      const rocksdb::Slice& value,
                      std::string* new_value,
-                     rocksdb::Logger* logger) const {
+                     rocksdb::Logger* logger) const override {
     // Check each prefix
     for (auto& p : store.merge_ops) {
       if (p.first.compare(0, p.first.length(),
@@ -101,12 +101,12 @@ public:
   explicit CephRocksdbLogger(CephContext *c) : cct(c) {
     cct->get();
   }
-  ~CephRocksdbLogger() {
+  ~CephRocksdbLogger() override {
     cct->put();
   }
 
   // Write an entry to the log file with the specified format.
-  void Logv(const char* format, va_list ap) {
+  void Logv(const char* format, va_list ap) override {
     Logv(rocksdb::INFO_LEVEL, format, ap);
   }
 
@@ -115,7 +115,7 @@ public:
   // of *this (see @SetInfoLogLevel and @GetInfoLogLevel) will not be
   // printed.
   void Logv(const rocksdb::InfoLogLevel log_level, const char* format,
-	    va_list ap) {
+	    va_list ap) override {
     int v = rocksdb::NUM_INFO_LOG_LEVELS - log_level - 1;
     dout(v);
     char buf[65536];
@@ -373,6 +373,15 @@ void RocksDBStore::close()
     cct->get_perfcounters_collection()->remove(logger);
 }
 
+void RocksDBStore::split_stats(const std::string &s, char delim, std::vector<std::string> &elems) {
+    std::stringstream ss;
+    ss.str(s);
+    std::string item;
+    while (std::getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+}
+
 void RocksDBStore::get_statistics(Formatter *f)
 {
   if (!g_conf->rocksdb_perf)  {
@@ -382,18 +391,29 @@ void RocksDBStore::get_statistics(Formatter *f)
   }
 
   if (g_conf->rocksdb_collect_compaction_stats) {
-    std::string stats;
-    bool status = db->GetProperty("rocksdb.stats", &stats);
+    std::string stat_str;
+    bool status = db->GetProperty("rocksdb.stats", &stat_str);
     if (status) {
       f->open_object_section("rocksdb_statistics");
-      f->dump_string("rocksdb_compaction_statistics", stats);
+      f->dump_string("rocksdb_compaction_statistics", "");
+      vector<string> stats;
+      split_stats(stat_str, '\n', stats);
+      for (auto st :stats) {
+        f->dump_string("", st);
+      }
       f->close_section();
     }
   }
   if (g_conf->rocksdb_collect_extended_stats) {
     if (dbstats) {
       f->open_object_section("rocksdb_extended_statistics");
-      f->dump_string("rocksdb_extended_statistics", dbstats->ToString().c_str());
+      string stat_str = dbstats->ToString();
+      vector<string> stats;
+      split_stats(stat_str, '\n', stats);
+      f->dump_string("rocksdb_extended_statistics", "");
+      for (auto st :stats) {
+        f->dump_string(".", st);
+      }
       f->close_section();
     }
     f->open_object_section("rocksdbstore_perf_counters");
@@ -883,6 +903,16 @@ bool RocksDBStore::RocksDBWholeSpaceIteratorImpl::raw_key_is_prefixed(const stri
 bufferlist RocksDBStore::RocksDBWholeSpaceIteratorImpl::value()
 {
   return to_bufferlist(dbiter->value());
+}
+
+size_t RocksDBStore::RocksDBWholeSpaceIteratorImpl::key_size()
+{
+  return dbiter->key().size();
+}
+
+size_t RocksDBStore::RocksDBWholeSpaceIteratorImpl::value_size()
+{
+  return dbiter->value().size();
 }
 
 bufferptr RocksDBStore::RocksDBWholeSpaceIteratorImpl::value_as_ptr()

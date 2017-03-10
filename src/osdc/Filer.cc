@@ -43,7 +43,7 @@ public:
   ceph::real_time mtime;
   C_Probe(Filer *f, Probe *p, object_t o) : filer(f), probe(p), oid(o),
 					    size(0) {}
-  void finish(int r) {
+  void finish(int r) override {
     if (r == -ENOENT) {
       r = 0;
       assert(size == 0);
@@ -302,7 +302,7 @@ struct PurgeRange {
   int flags;
   Context *oncommit;
   int uncommitted;
-  PurgeRange(inodeno_t i, file_layout_t& l, const SnapContext& sc,
+  PurgeRange(inodeno_t i, const file_layout_t& l, const SnapContext& sc,
 	     uint64_t fo, uint64_t no, ceph::real_time t, int fl,
 	     Context *fin)
     : ino(i), layout(l), snapc(sc), first(fo), num(no), mtime(t), flags(fl),
@@ -310,7 +310,7 @@ struct PurgeRange {
 };
 
 int Filer::purge_range(inodeno_t ino,
-		       file_layout_t *layout,
+		       const file_layout_t *layout,
 		       const SnapContext& snapc,
 		       uint64_t first_obj, uint64_t num_obj,
 		       ceph::real_time mtime,
@@ -338,7 +338,7 @@ struct C_PurgeRange : public Context {
   Filer *filer;
   PurgeRange *pr;
   C_PurgeRange(Filer *f, PurgeRange *p) : filer(f), pr(p) {}
-  void finish(int r) {
+  void finish(int r) override {
     filer->_do_purge_range(pr, 1);
   }
 };

@@ -541,8 +541,8 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   next_osr_id(0),
   m_disable_wbthrottle(cct->_conf->filestore_odsync_write ||
                       !cct->_conf->filestore_wbthrottle_enable),
-  throttle_ops(cct->_conf->filestore_caller_concurrency),
-  throttle_bytes(cct->_conf->filestore_caller_concurrency),
+  throttle_ops(cct, "filestore_ops", cct->_conf->filestore_caller_concurrency),
+  throttle_bytes(cct, "filestore_bytes", cct->_conf->filestore_caller_concurrency),
   m_ondisk_finisher_num(cct->_conf->filestore_ondisk_finisher_threads),
   m_apply_finisher_num(cct->_conf->filestore_apply_finisher_threads),
   op_tp(cct, "FileStore::op_tp", "tp_fstore_op", cct->_conf->filestore_op_threads, "filestore_op_threads"),
@@ -720,6 +720,14 @@ int FileStore::statfs(struct store_statfs_t *buf0)
   }
   buf0->total = buf.f_blocks * buf.f_bsize;
   buf0->available = buf.f_bavail * buf.f_bsize;
+  // Adjust for writes pending in the journal
+  if (journal) {
+    uint64_t estimate = journal->get_journal_size_estimate();
+    if (buf0->available > estimate)
+      buf0->available -= estimate;
+    else
+      buf0->available = 0;
+  }
   return 0;
 }
 
@@ -2000,8 +2008,7 @@ void FileStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
   if (cct->_conf->filestore_inject_stall) {
     int orig = cct->_conf->filestore_inject_stall;
     dout(5) << "_do_op filestore_inject_stall " << orig << ", sleeping" << dendl;
-    for (int n = 0; n < cct->_conf->filestore_inject_stall; n++)
-      sleep(1);
+    sleep(orig);
     cct->_conf->set_val("filestore_inject_stall", "0");//这里清空了(为什么?)
     dout(5) << "_do_op done stalling" << dendl;
   }
@@ -2057,7 +2064,7 @@ struct C_JournaledAhead : public Context {
   C_JournaledAhead(FileStore *f, FileStore::OpSequencer *os, FileStore::Op *o, Context *ondisk):
     fs(f), osr(os), o(o), ondisk(ondisk) { }
   //日志完成后,此函数将被调用.
-  void finish(int r) {
+  void finish(int r) override {
     fs->_journaled_ahead(osr, o, ondisk);
   }
 };
@@ -3017,7 +3024,7 @@ void FileStore::_do_transaction(
 	} else if (r == -ENOSPC) {
 	  // For now, if we hit _any_ ENOSPC, crash, before we do any damage
 	  // by partially applying transactions.
-	  msg = "ENOSPC handling not implemented";
+	  msg = "ENOSPC from disk filesystem, misconfigured cluster";
 	} else if (r == -ENOTEMPTY) {
 	  msg = "ENOTEMPTY suggests garbage data in osd data dir";
 	} else if (r == -EPERM) {
@@ -3820,7 +3827,7 @@ public:
   {
   }
 
-  void finish(int r) {
+  void finish(int r) override {
     BackTrace *bt = new BackTrace(1);
     generic_dout(-1) << "FileStore: sync_entry timed out after "
 	   << m_commit_timeo << " seconds.\n";
@@ -4635,7 +4642,7 @@ int FileStore::_collection_remove_recursive(const coll_t &cid,
   vector<ghobject_t> objects;
   ghobject_t max;
   while (!max.is_max()) {
-    r = collection_list(cid, max, ghobject_t::get_max(), true,
+    r = collection_list(cid, max, ghobject_t::get_max(),
 			300, &objects, &max);
     if (r < 0)
       return r;
@@ -4766,7 +4773,7 @@ int FileStore::collection_empty(const coll_t& c, bool *empty)
   RWLock::RLocker l((index.index)->access_lock);
 
   vector<ghobject_t> ls;
-  r = index->collection_list_partial(ghobject_t(), ghobject_t::get_max(), true,
+  r = index->collection_list_partial(ghobject_t(), ghobject_t::get_max(),
 				     1, &ls, NULL);
   if (r < 0) {
     derr << __func__ << " collection_list_partial returned: "
@@ -4781,7 +4788,7 @@ int FileStore::collection_empty(const coll_t& c, bool *empty)
 int FileStore::collection_list(const coll_t& c,
 			       const ghobject_t& orig_start,
 			       const ghobject_t& end,
-			       bool sort_bitwise, int max,
+			       int max,
 			       vector<ghobject_t> *ls, ghobject_t *next)
 {
   ghobject_t start = orig_start;
@@ -4819,10 +4826,10 @@ int FileStore::collection_list(const coll_t& c,
   sep.hobj.pool = -1;
   sep.set_shard(shard);
   if (!c.is_temp() && !c.is_meta()) {
-    if (cmp_bitwise(start, sep) < 0) { // bitwise vs nibble doesn't matter here
+    if (start < sep) {
       dout(10) << __func__ << " first checking temp pool" << dendl;
       coll_t temp = c.get_temp();
-      int r = collection_list(temp, start, end, sort_bitwise, max, ls, next);//先从temp中拿,换coll_t,递归
+      int r = collection_list(temp, start, end, max, ls, next);
       if (r < 0)
 	return r;
       if (*next != ghobject_t::get_max())
@@ -4843,7 +4850,8 @@ int FileStore::collection_list(const coll_t& c,
   assert(NULL != index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
-  r = index->collection_list_partial(start, end, sort_bitwise, max, ls, next);//列出start,end之间所有的对象,最多max个.ls是返回的对象,next是下次遍历时需要起点
+  //列出start,end之间所有的对象,最多max个.ls是返回的对象,next是下次遍历时需要起点
+  r = index->collection_list_partial(start, end, max, ls, next);
 
   if (r < 0) {
     assert(!m_filestore_fail_eio || r != -EIO);
@@ -5350,6 +5358,11 @@ int FileStore::_omap_setkeys(const coll_t& cid, const ghobject_t &hoid,
     }
   }
 skip:
+  if (g_conf->subsys.should_gather(ceph_subsys_filestore, 20)) {
+    for (auto& p : aset) {
+      dout(20) << __func__ << "  set " << p.first << dendl;
+    }
+  }
   r = object_map->set_keys(hoid, aset, &spos);
   dout(20) << __func__ << " " << cid << "/" << hoid << " = " << r << dendl;
   return r;
@@ -5477,7 +5490,6 @@ int FileStore::_split_collection(const coll_t& cid,
       collection_list(
 	cid,
 	next, ghobject_t::get_max(),
-	true,
 	get_ideal_list_max(),
 	&objects,
 	&next);
@@ -5497,7 +5509,6 @@ int FileStore::_split_collection(const coll_t& cid,
       collection_list(
 	dest,
 	next, ghobject_t::get_max(),
-	true,
 	get_ideal_list_max(),
 	&objects,
 	&next);

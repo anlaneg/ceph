@@ -31,6 +31,7 @@
 
 #include "rgw_ldap.h"
 #include "rgw_token.h"
+#include "rgw_rest_role.h"
 #include "include/assert.h"
 
 #define dout_context g_ceph_context
@@ -518,7 +519,7 @@ void RGWListBucket_ObjStore_S3::send_versioned_response()
       s->formatter->open_array_section("Entries");
     }
 
-    vector<RGWObjEnt>::iterator iter;
+    vector<rgw_bucket_dir_entry>::iterator iter;
     for (iter = objs.begin(); iter != objs.end(); ++iter) {
       const char *section_name = (iter->is_delete_marker() ? "DeleteMarker"
 				  : "Version");
@@ -526,14 +527,15 @@ void RGWListBucket_ObjStore_S3::send_versioned_response()
       if (objs_container) {
         s->formatter->dump_bool("IsDeleteMarker", iter->is_delete_marker());
       }
+      rgw_obj_key key(iter->key);
       if (encode_key) {
 	string key_name;
-	url_encode(iter->key.name, key_name);
+	url_encode(key.name, key_name);
 	s->formatter->dump_string("Key", key_name);
       } else {
-	s->formatter->dump_string("Key", iter->key.name);
+	s->formatter->dump_string("Key", key.name);
       }
-      string version_id = iter->key.instance;
+      string version_id = key.instance;
       if (version_id.empty()) {
 	version_id = "null";
       }
@@ -542,18 +544,18 @@ void RGWListBucket_ObjStore_S3::send_versioned_response()
           s->formatter->dump_int("VersionedEpoch", iter->versioned_epoch);
         }
         s->formatter->dump_string("RgwxTag", iter->tag);
-        utime_t ut(iter->mtime);
+        utime_t ut(iter->meta.mtime);
         ut.gmtime_nsec(s->formatter->dump_stream("RgwxMtime"));
       }
       s->formatter->dump_string("VersionId", version_id);
       s->formatter->dump_bool("IsLatest", iter->is_current());
-      dump_time(s, "LastModified", &iter->mtime);
+      dump_time(s, "LastModified", &iter->meta.mtime);
       if (!iter->is_delete_marker()) {
-	s->formatter->dump_format("ETag", "\"%s\"", iter->etag.c_str());
-	s->formatter->dump_int("Size", iter->accounted_size);
+	s->formatter->dump_format("ETag", "\"%s\"", iter->meta.etag.c_str());
+	s->formatter->dump_int("Size", iter->meta.accounted_size);
 	s->formatter->dump_string("StorageClass", "STANDARD");
       }
-      dump_owner(s, iter->owner, iter->owner_display_name);
+      dump_owner(s, iter->meta.owner, iter->meta.owner_display_name);
       s->formatter->close_section();
     }
     if (objs_container) {
@@ -612,21 +614,22 @@ void RGWListBucket_ObjStore_S3::send_response()
   }
 
   if (op_ret >= 0) {
-    vector<RGWObjEnt>::iterator iter;
+    vector<rgw_bucket_dir_entry>::iterator iter;
     for (iter = objs.begin(); iter != objs.end(); ++iter) {
+      rgw_obj_key key(iter->key);
       s->formatter->open_array_section("Contents");
       if (encode_key) {
 	string key_name;
-	url_encode(iter->key.name, key_name);
+	url_encode(key.name, key_name);
 	s->formatter->dump_string("Key", key_name);
       } else {
-	s->formatter->dump_string("Key", iter->key.name);
+	s->formatter->dump_string("Key", key.name);
       }
-      dump_time(s, "LastModified", &iter->mtime);
-      s->formatter->dump_format("ETag", "\"%s\"", iter->etag.c_str());
-      s->formatter->dump_int("Size", iter->accounted_size);
+      dump_time(s, "LastModified", &iter->meta.mtime);
+      s->formatter->dump_format("ETag", "\"%s\"", iter->meta.etag.c_str());
+      s->formatter->dump_int("Size", iter->meta.accounted_size);
       s->formatter->dump_string("StorageClass", "STANDARD");
-      dump_owner(s, iter->owner, iter->owner_display_name);
+      dump_owner(s, iter->meta.owner, iter->meta.owner_display_name);
       if (s->system_request) {
         s->formatter->dump_string("RgwxTag", iter->tag);
       }
@@ -697,7 +700,7 @@ void RGWGetBucketVersioning_ObjStore_S3::send_response()
 
 class RGWSetBucketVersioningParser : public RGWXMLParser
 {
-  XMLObj *alloc_obj(const char *el) {
+  XMLObj *alloc_obj(const char *el) override {
     return new XMLObj;
   }
 
@@ -900,7 +903,7 @@ class RGWLocationConstraint : public XMLObj
 public:
   RGWLocationConstraint() {}
   ~RGWLocationConstraint() {}
-  bool xml_end(const char *el) {
+  bool xml_end(const char *el) override {
     if (!el)
       return false;
 
@@ -921,7 +924,7 @@ public:
 
 class RGWCreateBucketParser : public RGWXMLParser
 {
-  XMLObj *alloc_obj(const char *el) {
+  XMLObj *alloc_obj(const char *el) override {
     return new XMLObj;
   }
 
@@ -2544,7 +2547,7 @@ void RGWGetRequestPayment_ObjStore_S3::send_response()
 
 class RGWSetRequestPaymentParser : public RGWXMLParser
 {
-  XMLObj *alloc_obj(const char *el) {
+  XMLObj *alloc_obj(const char *el) override {
     return new XMLObj;
   }
 
@@ -2799,7 +2802,7 @@ void RGWListBucketMultiparts_ObjStore_S3::send_response()
       dump_owner(s, s->user->user_id, s->user->display_name, "Initiator");
       dump_owner(s, s->user->user_id, s->user->display_name);
       s->formatter->dump_string("StorageClass", "STANDARD");
-      dump_time(s, "Initiated", &iter->obj.mtime);
+      dump_time(s, "Initiated", &iter->obj.meta.mtime);
       s->formatter->close_section();
     }
     if (!common_prefixes.empty()) {
@@ -2899,6 +2902,38 @@ void RGWDeleteMultiObj_ObjStore_S3::end_response()
   rgw_flush_formatter_and_reset(s, s->formatter);
 }
 
+void RGWGetObjLayout_ObjStore_S3::send_response()
+{
+  if (op_ret)
+    set_req_state_err(s, op_ret);
+  dump_errno(s);
+  end_header(s, this, "application/json");
+
+  JSONFormatter f;
+
+  if (op_ret < 0) {
+    return;
+  }
+
+  f.open_object_section("result");
+  ::encode_json("head", head_obj, &f);
+  ::encode_json("manifest", *manifest, &f);
+  f.open_array_section("data_location");
+  for (auto miter = manifest->obj_begin(); miter != manifest->obj_end(); ++miter) {
+    f.open_object_section("obj");
+    rgw_raw_obj raw_loc = miter.get_location().get_raw_obj(store);
+    ::encode_json("ofs", miter.get_ofs(), &f);
+    ::encode_json("loc", raw_loc, &f);
+    ::encode_json("loc_ofs", miter.location_ofs(), &f);
+    ::encode_json("loc_size", miter.get_stripe_size(), &f);
+    f.close_section();
+    rgw_flush_formatter(s, &f);
+  }
+  f.close_section();
+  f.close_section();
+  rgw_flush_formatter(s, &f);
+}
+
 RGWOp *RGWHandler_REST_Service_S3::op_get()
 {
   if (is_usage_op()) {
@@ -2911,6 +2946,32 @@ RGWOp *RGWHandler_REST_Service_S3::op_get()
 RGWOp *RGWHandler_REST_Service_S3::op_head()
 {
   return new RGWListBuckets_ObjStore_S3;
+}
+
+RGWOp *RGWHandler_REST_Service_S3::op_post()
+{
+  if (s->info.args.exists("Action")) {
+    string action = s->info.args.get("Action");
+    if (action.compare("CreateRole") == 0)
+      return new RGWCreateRole;
+    if (action.compare("DeleteRole") == 0)
+      return new RGWDeleteRole;
+    if (action.compare("GetRole") == 0)
+      return new RGWGetRole;
+    if (action.compare("UpdateAssumeRolePolicy") == 0)
+      return new RGWModifyRole;
+    if (action.compare("ListRoles") == 0)
+      return new RGWListRoles;
+    if (action.compare("PutRolePolicy") == 0)
+      return new RGWPutRolePolicy;
+    if (action.compare("GetRolePolicy") == 0)
+      return new RGWGetRolePolicy;
+    if (action.compare("ListRolePolicies") == 0)
+      return new RGWListRolePolicies;
+    if (action.compare("DeleteRolePolicy") == 0)
+      return new RGWDeleteRolePolicy;
+  }
+  return NULL;
 }
 
 RGWOp *RGWHandler_REST_Bucket_S3::get_obj_op(bool get_data)
@@ -3036,6 +3097,8 @@ RGWOp *RGWHandler_REST_Obj_S3::op_get()
     return new RGWGetACLs_ObjStore_S3;
   } else if (s->info.args.exists("uploadId")) {
     return new RGWListMultipart_ObjStore_S3;
+  } else if (s->info.args.exists("layout")) {
+    return new RGWGetObjLayout_ObjStore_S3;
   }
   return get_obj_op(true);
 }
@@ -3533,8 +3596,6 @@ int RGW_Auth_S3::authorize_v4(RGWRados *store, struct req_state *s, bool force_b
   if (!store->ctx()->_conf->rgw_s3_auth_use_rados) {
     return -EPERM;
   }
-
-  string algorithm = "AWS4-HMAC-SHA256";
 
   try {
     s->aws4_auth = std::unique_ptr<rgw_aws4_auth>(new rgw_aws4_auth);

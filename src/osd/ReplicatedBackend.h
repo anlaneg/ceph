@@ -97,14 +97,14 @@ public:
   virtual void dump_recovery_info(Formatter *f) const {
     {
       f->open_array_section("pull_from_peer");
-      for (map<pg_shard_t, set<hobject_t, hobject_t::BitwiseComparator> >::const_iterator i = pull_from_peer.begin();
+      for (map<pg_shard_t, set<hobject_t> >::const_iterator i = pull_from_peer.begin();
 	   i != pull_from_peer.end();
 	   ++i) {
 	f->open_object_section("pulling_from");
 	f->dump_stream("pull_from") << i->first;
 	{
 	  f->open_array_section("pulls");
-	  for (set<hobject_t, hobject_t::BitwiseComparator>::const_iterator j = i->second.begin();
+	  for (set<hobject_t>::const_iterator j = i->second.begin();
 	       j != i->second.end();
 	       ++j) {
 	    f->open_object_section("pull_info");
@@ -120,7 +120,7 @@ public:
     }
     {
       f->open_array_section("pushing");
-      for (map<hobject_t, map<pg_shard_t, PushInfo>, hobject_t::BitwiseComparator>::const_iterator i =
+      for (map<hobject_t, map<pg_shard_t, PushInfo>>::const_iterator i =
 	     pushing.begin();
 	   i != pushing.end();
 	   ++i) {
@@ -184,7 +184,7 @@ private:
       }
     }
   };
-  map<hobject_t, map<pg_shard_t, PushInfo>, hobject_t::BitwiseComparator> pushing;
+  map<hobject_t, map<pg_shard_t, PushInfo>> pushing;
 
   // pull
   struct PullInfo {
@@ -216,12 +216,12 @@ private:
     }
   };
 
-  map<hobject_t, PullInfo, hobject_t::BitwiseComparator> pulling;
+  map<hobject_t, PullInfo> pulling;
 
   // Reverse mapping from osd peer to objects beging pulled from that peer
-  map<pg_shard_t, set<hobject_t, hobject_t::BitwiseComparator> > pull_from_peer;
+  map<pg_shard_t, set<hobject_t> > pull_from_peer;
   void clear_pull(
-    map<hobject_t, PullInfo, hobject_t::BitwiseComparator>::iterator piter,
+    map<hobject_t, PullInfo>::iterator piter,
     bool clear_pull_from_peer = true);
 
   void sub_op_push(OpRequestRef op);
@@ -240,19 +240,18 @@ private:
   void do_pull(OpRequestRef op);
   void do_push_reply(OpRequestRef op);
 
-  bool handle_push_reply(pg_shard_t peer, PushReplyOp &op, PushOp *reply);
+  bool handle_push_reply(pg_shard_t peer, const PushReplyOp &op, PushOp *reply);
   void handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply);
 
   struct pull_complete_info {
     hobject_t hoid;
-    ObjectContextRef obc;
     object_stat_sum_t stat;
   };
   bool handle_pull_response(
-    pg_shard_t from, PushOp &op, PullOp *response,
+    pg_shard_t from, const PushOp &op, PullOp *response,
     list<pull_complete_info> *to_continue,
     ObjectStore::Transaction *t);
-  void handle_push(pg_shard_t from, PushOp &op, PushReplyOp *response,
+  void handle_push(pg_shard_t from, const PushOp &op, PushReplyOp *response,
 		   ObjectStore::Transaction *t);
 
   static void trim_pushed_data(const interval_set<uint64_t> &copy_subset,
@@ -279,24 +278,24 @@ private:
 		    PushOp *out_op,
 		    object_stat_sum_t *stat = 0,
                     bool cache_dont_need = true);
-  void submit_push_data(ObjectRecoveryInfo &recovery_info,
+  void submit_push_data(const ObjectRecoveryInfo &recovery_info,
 			bool first,
 			bool complete,
 			bool cache_dont_need,
 			const interval_set<uint64_t> &intervals_included,
 			bufferlist data_included,
 			bufferlist omap_header,
-			map<string, bufferlist> &attrs,
-			map<string, bufferlist> &omap_entries,
+			const map<string, bufferlist> &attrs,
+			const map<string, bufferlist> &omap_entries,
 			ObjectStore::Transaction *t);
-  void submit_push_complete(ObjectRecoveryInfo &recovery_info,
+  void submit_push_complete(const ObjectRecoveryInfo &recovery_info,
 			    ObjectStore::Transaction *t);
 
   void calc_clone_subsets(
     SnapSet& snapset, const hobject_t& poid, const pg_missing_t& missing,
     const hobject_t &last_backfill,
     interval_set<uint64_t>& data_subset,
-    map<hobject_t, interval_set<uint64_t>, hobject_t::BitwiseComparator>& clone_subsets,
+    map<hobject_t, interval_set<uint64_t>>& clone_subsets,
     ObcLockManager &lock_manager);
   void prepare_pull(
     eversion_t v,
@@ -320,7 +319,7 @@ private:
     const hobject_t& soid, pg_shard_t peer,
     eversion_t version,
     interval_set<uint64_t> &data_subset,
-    map<hobject_t, interval_set<uint64_t>, hobject_t::BitwiseComparator>& clone_subsets,
+    map<hobject_t, interval_set<uint64_t>>& clone_subsets,
     PushOp *op,
     bool cache,
     ObcLockManager &&lock_manager);
@@ -329,7 +328,7 @@ private:
     const pg_missing_t& missing,
     const hobject_t &last_backfill,
     interval_set<uint64_t>& data_subset,
-    map<hobject_t, interval_set<uint64_t>, hobject_t::BitwiseComparator>& clone_subsets,
+    map<hobject_t, interval_set<uint64_t>>& clone_subsets,
     ObcLockManager &lock_manager);
   ObjectRecoveryInfo recalc_subsets(
     const ObjectRecoveryInfo& recovery_info,

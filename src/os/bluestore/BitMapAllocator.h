@@ -15,7 +15,6 @@ class BitMapAllocator : public Allocator {
   std::mutex m_lock;
 
   int64_t m_block_size;//块大小
-  int64_t m_num_reserved;
 
   BitAllocator *m_bit_alloc; // Bit allocator instance
 
@@ -29,24 +28,24 @@ public:
   BitMapAllocator(CephContext* cct, int64_t device_size, int64_t block_size);
   ~BitMapAllocator();
 
-  int reserve(uint64_t need);
-  void unreserve(uint64_t unused);
+  int reserve(uint64_t need) override;
+  void unreserve(uint64_t unused) override;
 
   int64_t allocate(
     uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
-    int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents);
+    int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents) override;
 
   int release(
-    uint64_t offset, uint64_t length);
+    uint64_t offset, uint64_t length) override;
 
-  uint64_t get_free();
+  uint64_t get_free() override;
 
   void dump() override;
 
-  void init_add_free(uint64_t offset, uint64_t length);
-  void init_rm_free(uint64_t offset, uint64_t length);
+  void init_add_free(uint64_t offset, uint64_t length) override;
+  void init_rm_free(uint64_t offset, uint64_t length) override;
 
-  void shutdown();
+  void shutdown() override;
 };
 
 #endif

@@ -1144,6 +1144,7 @@ private:
   atomic_t global_op_flags; // flags which are applied to each IO op
   bool keep_balanced_budget;
   bool honor_osdmap_full;
+  bool osdmap_full_try;
 
 public:
   void maybe_request_map();
@@ -1182,6 +1183,9 @@ public:
 
   struct op_target_t {
     int flags = 0;
+
+    epoch_t epoch = 0;  ///< latest epoch we calculated the mapping
+
     object_t base_oid;
     object_locator_t base_oloc;
     object_t target_oid;
@@ -1193,7 +1197,8 @@ public:
     ///< explcit pg target, if any
     pg_t base_pgid;
 
-    pg_t pgid; ///< last pg we mapped to
+    pg_t pgid; ///< last (raw) pg we mapped to
+    spg_t actual_pgid; ///< last (actual) spg_t we mapped to
     unsigned pg_num = 0; ///< last pg_num we mapped to
     unsigned pg_num_mask = 0; ///< last pg_num_mask we mapped to
     vector<int> up; ///< set of up osds for last pg we mapped to
@@ -1225,6 +1230,21 @@ public:
 
     op_target_t() = default;
 
+    hobject_t get_hobj() {
+      return hobject_t(target_oid,
+		       target_oloc.key,
+		       CEPH_NOSNAP,
+		       target_oloc.hash >= 0 ? target_oloc.hash : pgid.ps(),
+		       target_oloc.pool,
+		       target_oloc.nspace);
+    }
+
+    bool contained_by(const hobject_t& begin, const hobject_t& end) {
+      hobject_t h = get_hobj();
+      int r = cmp(h, begin);
+      return r == 0 || (r > 0 && h < end);
+    }
+
     void dump(Formatter *f) const;
   };
 
@@ -1253,7 +1273,6 @@ public:
     uint64_t ontimeout;
 
     ceph_tid_t tid;
-    eversion_t replay_version; // for op replay
     int attempts;
 
     version_t *objver;
@@ -1316,6 +1335,12 @@ public:
 
     bool operator<(const Op& other) const {
       return tid < other.tid;
+    }
+
+    bool respects_full() const {
+      return
+	(target.flags & (CEPH_OSD_FLAG_WRITE | CEPH_OSD_FLAG_RWORDERED)) &&
+	!(target.flags & (CEPH_OSD_FLAG_FULL_TRY | CEPH_OSD_FLAG_FULL_FORCE));
     }
 
   private:
@@ -1386,17 +1411,18 @@ public:
 
   // Pools and statistics
   struct NListContext {
-    int current_pg;
-    collection_list_handle_t cookie;
-    epoch_t current_pg_epoch;
-    int starting_pg_num;
-    bool at_end_of_pool;
-    bool at_end_of_pg;
-    bool sort_bitwise;
+    collection_list_handle_t pos;
 
-    int64_t pool_id;
-    int pool_snap_seq;
-    int max_entries;
+    // these are for !sortbitwise compat only
+    int current_pg = 0;
+    int starting_pg_num = 0;
+    bool sort_bitwise = false;
+
+    bool at_end_of_pool = false; ///< publicly visible end flag
+
+    int64_t pool_id = -1;
+    int pool_snap_seq = 0;
+    uint64_t max_entries = 0;
     string nspace;
 
     bufferlist bl;   // raw data read to here
@@ -1410,30 +1436,14 @@ public:
     // the budget is not get/released on OP basis, instead the budget
     // is acquired before sending the first OP and released upon receiving
     // the last op reply.
-    int ctx_budget;
-
-    NListContext() : current_pg(0),
-		     current_pg_epoch(0),
-		     starting_pg_num(0),
-		     at_end_of_pool(false),
-		     at_end_of_pg(false),
-		     sort_bitwise(false),
-		     pool_id(0),
-		     pool_snap_seq(0),
-		     max_entries(0),
-		     nspace(),
-		     bl(),
-		     list(),
-		     filter(),
-		     extra_info(),
-		     ctx_budget(-1) {}
+    int ctx_budget = -1;
 
     bool at_end() const {
       return at_end_of_pool;
     }
 
     uint32_t get_pg_hash_position() const {
-      return current_pg;
+      return pos.get_hash();
     }
   };
 
@@ -1447,73 +1457,6 @@ public:
     void finish(int r) {
       if (r >= 0) {
 	objecter->_nlist_reply(list_context, r, final_finish, epoch);
-      } else {
-	final_finish->complete(r);
-      }
-    }
-  };
-
-  // Old pgls context we still use for talking to older OSDs
-  struct ListContext {
-    int current_pg;
-    collection_list_handle_t cookie;
-    epoch_t current_pg_epoch;
-    int starting_pg_num;
-    bool at_end_of_pool;
-    bool at_end_of_pg;
-    bool sort_bitwise;
-
-    int64_t pool_id;
-    int pool_snap_seq;
-    int max_entries;
-    string nspace;
-
-    bufferlist bl;   // raw data read to here
-    std::list<pair<object_t, string> > list;
-
-    bufferlist filter;
-
-    bufferlist extra_info;
-
-    // The budget associated with this context, once it is set (>= 0),
-    // the budget is not get/released on OP basis, instead the budget
-    // is acquired before sending the first OP and released upon receiving
-    // the last op reply.
-    int ctx_budget;
-
-    ListContext() : current_pg(0), current_pg_epoch(0), starting_pg_num(0),
-		    at_end_of_pool(false),
-		    at_end_of_pg(false),
-		    sort_bitwise(false),
-		    pool_id(0),
-		    pool_snap_seq(0),
-		    max_entries(0),
-		    nspace(),
-		    bl(),
-		    list(),
-		    filter(),
-		    extra_info(),
-		    ctx_budget(-1) {}
-
-    bool at_end() const {
-      return at_end_of_pool;
-    }
-
-    uint32_t get_pg_hash_position() const {
-      return current_pg;
-    }
-  };
-
-  struct C_List : public Context {
-    ListContext *list_context;
-    Context *final_finish;
-    Objecter *objecter;
-    epoch_t epoch;
-    C_List(ListContext *lc, Context * finish, Objecter *ob) :
-      list_context(lc), final_finish(finish), objecter(ob), epoch(0) {}
-    void finish(int r) {
-      if (r >= 0) {
-	objecter->_list_reply(list_context, r, final_finish, epoch);
       } else {
 	final_finish->complete(r);
       }
@@ -1774,17 +1717,27 @@ public:
   };
 
   // -- osd sessions --
+  struct OSDBackoff {
+    spg_t pgid;
+    uint64_t id;
+    hobject_t begin, end;
+  };
+
   struct OSDSession : public RefCountedObject {
     boost::shared_mutex lock;
     using lock_guard = std::lock_guard<decltype(lock)>;
     using unique_lock = std::unique_lock<decltype(lock)>;
     using shared_lock = boost::shared_lock<decltype(lock)>;
-    using shunique_lcok = ceph::shunique_lock<decltype(lock)>;
+    using shunique_lock = ceph::shunique_lock<decltype(lock)>;
 
     // pending ops
     map<ceph_tid_t,Op*> ops;
     map<uint64_t, LingerOp*> linger_ops;
     map<ceph_tid_t,CommandOp*> command_ops;
+
+    // backoffs
+    map<spg_t,map<hobject_t,OSDBackoff>> backoffs;
+    map<uint64_t,OSDBackoff*> backoffs_by_id;
 
     int osd;
     int incarnation;
@@ -1868,7 +1821,7 @@ public:
   bool _osdmap_has_pool_full() const;
 
   bool target_should_be_paused(op_target_t *op);
-  int _calc_target(op_target_t *t,
+  int _calc_target(op_target_t *t, Connection *con,
 		   bool any_change = false);
   int _map_session(op_target_t *op, OSDSession **s,
 		   shunique_lock& lc);
@@ -1901,7 +1854,7 @@ public:
   }
 
 private:
-  void _check_op_pool_dne(Op *op, unique_lock& sl);
+  void _check_op_pool_dne(Op *op, unique_lock *sl);
   void _send_op_map_check(Op *op);
   void _op_cancel_map_check(Op *op);
   void _check_linger_pool_dne(LingerOp *op, bool *need_unregister);
@@ -1922,8 +1875,6 @@ private:
   void close_session(OSDSession *session);
 
   void _nlist_reply(NListContext *list_context, int r, Context *final_finish,
-		   epoch_t reply_epoch);
-  void _list_reply(ListContext *list_context, int r, Context *final_finish,
 		   epoch_t reply_epoch);
 
   void resend_mon_ops();
@@ -1958,7 +1909,6 @@ private:
     int op_budget = calc_op_budget(op);
     put_op_budget_bytes(op_budget);
   }
-  void put_list_context_budget(ListContext *list_context);
   void put_nlist_context_budget(NListContext *list_context);
   Throttle op_throttle_bytes, op_throttle_ops;
 
@@ -1970,7 +1920,7 @@ private:
     Dispatcher(cct_), messenger(m), monc(mc), finisher(fin),
     osdmap(new OSDMap), initialized(0), last_tid(0), client_inc(-1),
     max_linger_id(0), num_in_flight(0), global_op_flags(0),
-    keep_balanced_budget(false), honor_osdmap_full(true),
+    keep_balanced_budget(false), honor_osdmap_full(true), osdmap_full_try(false),
     last_seen_osdmap_version(0), last_seen_pgmap_version(0),
     logger(NULL), tick_event(0), m_request_state_hook(NULL),
     num_homeless_ops(0),
@@ -2040,6 +1990,9 @@ private:
   void set_honor_osdmap_full() { honor_osdmap_full = true; }
   void unset_honor_osdmap_full() { honor_osdmap_full = false; }
 
+  void set_osdmap_full_try() { osdmap_full_try = true; }
+  void unset_osdmap_full_try() { osdmap_full_try = false; }
+
   void _scan_requests(OSDSession *s,
 		      bool force_resend,
 		      bool cluster_full,
@@ -2060,7 +2013,7 @@ private:
   bool ms_can_fast_dispatch_any() const {
     return true;
   }
-  bool ms_can_fast_dispatch(Message *m) const {
+  bool ms_can_fast_dispatch(const Message *m) const override {
     switch (m->get_type()) {
     case CEPH_MSG_OSD_OPREPLY:
     case CEPH_MSG_WATCH_NOTIFY:
@@ -2074,6 +2027,7 @@ private:
   }
 
   void handle_osd_op_reply(class MOSDOpReply *m);
+  void handle_osd_backoff(class MOSDBackoff *m);
   void handle_watch_notify(class MWatchNotify *m);
   void handle_osd_map(class MOSDMap *m);
   void wait_for_osd_map();
@@ -2252,7 +2206,9 @@ public:
     Context *onack, epoch_t *reply_epoch,
     int *ctx_budget) {
     Op *o = new Op(object_t(), oloc,
-		   op.ops, flags | global_op_flags.read() | CEPH_OSD_FLAG_READ,
+		   op.ops,
+		   flags | global_op_flags.read() | CEPH_OSD_FLAG_READ |
+		   CEPH_OSD_FLAG_IGNORE_OVERLAY,
 		   onack, NULL);
     o->target.precalc_pgid = true;
     o->target.base_pgid = pg_t(hash, oloc.pool);
@@ -2788,8 +2744,8 @@ public:
 
   void list_nobjects(NListContext *p, Context *onfinish);
   uint32_t list_nobjects_seek(NListContext *p, uint32_t pos);
-  void list_objects(ListContext *p, Context *onfinish);
-  uint32_t list_objects_seek(ListContext *p, uint32_t pos);
+  uint32_t list_nobjects_seek(NListContext *list_context, const hobject_t& c);
+  void list_nobjects_get_cursor(NListContext *list_context, hobject_t *c);
 
   hobject_t enumerate_objects_begin();
   hobject_t enumerate_objects_end();
