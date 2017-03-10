@@ -76,7 +76,7 @@ void string_to_vec(std::vector<std::string>& args, std::string argstr)
   }
 }
 
-//拆分args,将--之前的放入到arguments中,将--之后的放入到options中
+//拆分args,将‘--’之前的放入到arguments中,将‘--’之后的放入到options中
 bool split_dashdash(const std::vector<const char*>& args,
 		    std::vector<const char*>& options,
 		    std::vector<const char*>& arguments) {
@@ -88,6 +88,7 @@ bool split_dashdash(const std::vector<const char*>& args,
       arguments.push_back(*i);
     } else {
       if (strcmp(*i, "--") == 0)
+    	  //找到了'--'
 	dashdash = true;
       else
 	options.push_back(*i);
@@ -104,11 +105,13 @@ void env_to_vec(std::vector<const char*>& args, const char *name)
     name = "CEPH_ARGS";
   char *p = getenv(name);
   if (!p)
+	//不存在'CEPH_ARGS‘环境变量，跳出
     return;
 
   bool dashdash = false;
   std::vector<const char*> options;
   std::vector<const char*> arguments;
+  //在args中查找'--'，将args划分成两部分，options,arguments
   if (split_dashdash(args, options, arguments))
     dashdash = true;
 
@@ -117,14 +120,18 @@ void env_to_vec(std::vector<const char*>& args, const char *name)
   static vector<string> str_vec;
   std::vector<const char*> env;
   str_vec.clear();
+  //按空格划分p对应的字符串，将划分结果存入vector中
   get_str_vec(p, " ", str_vec);
   for (vector<string>::iterator i = str_vec.begin();
        i != str_vec.end();
        ++i)
-    env.push_back(i->c_str());//向env中加入str_vec集中的字符串指针.
-  if (split_dashdash(env, env_options, env_arguments))//将env进行分类
+	//向env中加入str_vec集中的字符串指针.
+    env.push_back(i->c_str());
+  //在env中查找'--'，将env分解为options及arguments
+  if (split_dashdash(env, env_options, env_arguments))
     dashdash = true;
 
+  //将参数与环境变量合并，并用'--'划分成option及arguments两部分
   args.clear();
   args.insert(args.end(), options.begin(), options.end());
   args.insert(args.end(), env_options.begin(), env_options.end());//将args变更为options(含env的options)

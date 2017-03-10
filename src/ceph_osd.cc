@@ -100,7 +100,9 @@ int main(int argc, const char **argv)
 #endif
 {
   vector<const char*> args;
+  //将参数全部存入到args中
   argv_to_vec(argc, argv, args);
+  //在args中合入环境变量传入的内容
   env_to_vec(args);
 
   vector<const char*> def_args;
