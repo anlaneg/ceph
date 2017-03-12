@@ -126,6 +126,7 @@ typename std::enable_if<std::is_destructible<T>::value,
 
 } // anonymous namespace
 
+//配置的构造函数
 md_config_t::md_config_t()
   : cluster(""),
 
@@ -144,6 +145,7 @@ md_config_t::md_config_t()
 #define SAFE_OPTION(name, type, def_val) OPTION(name, type, def_val)
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
+//载入头文件中定义的所有option,safe_option配置项，并为其赋默认值，定义成员参数
 #include "common/config_opts.h"
 #undef OPTION_OPT_INT
 #undef OPTION_OPT_LONGLONG
@@ -163,6 +165,7 @@ md_config_t::md_config_t()
   lock("md_config_t", true, false)
 {
   static const std::vector<md_config_t::config_option> s_config_options = {
+/*config_option: 定义名称，类型，成员的偏移量，校验函数，safe设置为false*/
 #define OPTION4(name, type, def_val, safe) \
         config_option{ STRINGIFY(name), type, &md_config_t::name, safe, \
                        create_validator<option_##name##_t>() },
@@ -171,7 +174,7 @@ md_config_t::md_config_t()
 #define SAFE_OPTION(name, type, def_val) OPTION4(name, type, def_val, true)
 #define SUBSYS(name, log, gather)
 #define DEFAULT_SUBSYS(log, gather)
-#include "common/config_opts.h"
+#include "common/config_opts.h" //定义s_config_options数组
 #undef OPTION4
 #undef OPTION
 #undef OPTION_VALIDATOR
@@ -181,7 +184,7 @@ md_config_t::md_config_t()
   };
   static std::shared_ptr<decltype(s_config_options)>
     s_tbl(new std::vector<md_config_t::config_option>(std::move(s_config_options)));
-  config_options = s_tbl;
+  config_options = s_tbl;//初始化配置选项
 
   validate_default_settings();
   init_subsys();
@@ -197,7 +200,7 @@ void md_config_t::init_subsys()
 #define OPTION(a, b, c)
 #define OPTION_VALIDATOR(a)
 #define SAFE_OPTION(a, b, c)
-#include "common/config_opts.h"//向subsys中加入数据
+#include "common/config_opts.h"//向subsys中加入各模块的log_level及收集级别
 #undef OPTION
 #undef OPTION_VALIDATOR
 #undef SAFE_OPTION
@@ -282,7 +285,8 @@ int md_config_t::parse_config_files(const char *conf_files,
 	expand_meta(s, NULL, stack, warnings);//将s展开
 	p++;
       } else {
-	cfl.erase(p++);  // ignore this item(配置文件有误,用不上)
+    	//(指定了$data_dir，但没有为其给值，故此文件名称有误,用不上，删除掉)
+	cfl.erase(p++);  // ignore this item
       }
     } else {
       ++p;
@@ -307,10 +311,10 @@ int md_config_t::parse_config_files_impl(const std::list<std::string> &conf_file
     if (ret == 0)
       break;//成功,则退出.(相当于加载第一个找到的)
     else if (ret != -ENOENT)//如果此路径下没有找到,则继续找
-      return ret;
+      return ret;//如果遇到其它错误，将退出
   }
   if (c == conf_files.end())
-    return -EINVAL;
+    return -EINVAL;//空的配置文件列表
 
   //防止cluster未设置
   if (cluster.size() == 0) {
@@ -460,10 +464,12 @@ void md_config_t::_show_config(std::ostream *out, Formatter *f)
 
 //处理一些选项:show_conf,show_config,show_config_value
 //设置一些选项值:foreground,-d,-M,-m
+//处理一些其它类选项
 int md_config_t::parse_argv(std::vector<const char*>& args)
 {
   Mutex::Locker l(lock);
   if (internal_safe_to_start_threads) {
+	  //多线程环境下报错
     return -ENOSYS;
   }
 
@@ -484,7 +490,6 @@ int md_config_t::parse_argv(std::vector<const char*>& args)
       break;
     }
     else if (ceph_argparse_flag(args, i, "--show_conf", (char*)NULL)) {
-      // XXX along 走到这一步时,cf可能还没有初始化好?
       cerr << cf << std::endl;
       _exit(0);
     }
@@ -527,7 +532,8 @@ int md_config_t::parse_argv(std::vector<const char*>& args)
       set_val_or_die("client_mountpoint", val.c_str());
     }
     else {
-      //其它选项
+      //其它形式的参数--option=true 或者--no-option 或者 option=value
+    	  //或者--debug_xxx=0/0
       parse_option(args, i, NULL);
     }
   }
@@ -570,11 +576,11 @@ int md_config_t::parse_option(std::vector<const char*>& args,
   std::string val;
 
   //处理subsystem中的log_level,gather_level
-  // subsystems?
   for (o = 0; o < subsys.get_num(); o++) {
     std::string as_option("--");
     as_option += "debug_";
     as_option += subsys.get_name(o);
+    //尝试着检查是否有--debug_XXX的选项，如果有设置子模块对应的level
     if (ceph_argparse_witharg(args, i, &val,
 			      as_option.c_str(), (char*)NULL)) {
       int log, gather;
@@ -604,6 +610,7 @@ int md_config_t::parse_option(std::vector<const char*>& args,
     std::string as_option("--");
     as_option += opt->name;
     option_name = opt->name;
+    //尝试--$(opt->name)=true这种形式
     if (opt->type == OPT_BOOL) {
       int res;
       if (ceph_argparse_binary_flag(args, i, &res, oss, as_option.c_str(),
@@ -616,6 +623,7 @@ int md_config_t::parse_option(std::vector<const char*>& args,
 	  ret = res;
 	break;
       } else {
+    	  //尝试--no-$(opt->name)这种形式
 	std::string no("--no-");
 	no += opt->name;
 	if (ceph_argparse_flag(args, i, no.c_str(), (char*)NULL)) {
@@ -625,6 +633,7 @@ int md_config_t::parse_option(std::vector<const char*>& args,
       }
     } else if (ceph_argparse_witharg(args, i, &val, err,
                                      as_option.c_str(), (char*)NULL)) {
+    	//发现 option=value这样形式的参数
       if (!err.str().empty()) {
         error_message = err.str();
 	ret = -EINVAL;
@@ -696,6 +705,7 @@ bool md_config_t::_internal_field(const string& s)
   return false;
 }
 
+//触发配置监听通知
 void md_config_t::_apply_changes(std::ostream *oss)
 {
   /* Maps observers to the configuration options that they care about which
@@ -710,6 +720,7 @@ void md_config_t::_apply_changes(std::ostream *oss)
   std::set <std::string> empty_set;
   char buf[128];
   char *bufptr = (char*)buf;
+  //遍历每一个有过变更的key,收集哪些observers需要得到通知
   for (changed_set_t::const_iterator c = changed.begin();
        c != changed.end(); ++c) {
     const std::string &key(*c);
@@ -734,6 +745,7 @@ void md_config_t::_apply_changes(std::ostream *oss)
   changed.clear();
 
   // Make any pending observer callbacks
+  //对配置监听者进行通知
   for (rev_obs_map_t::const_iterator r = robs.begin(); r != robs.end(); ++r) {
     md_config_obs_t *obs = r->first;
     obs->handle_conf_change(this, r->second);
@@ -741,6 +753,7 @@ void md_config_t::_apply_changes(std::ostream *oss)
 
 }
 
+//通知配置发生变更
 void md_config_t::call_all_observers()
 {
   std::map<md_config_obs_t*,std::set<std::string> > obs;
@@ -832,6 +845,7 @@ bool md_config_t::config_option::is_safe() const {
     boost::apply_visitor(is_float_member(), md_member_ptr);
 }
 
+//给定名称，查找所有配置选项，是否有与normalized-key相同的选项，有则返回选项，无则返回null
 md_config_t::config_option const *md_config_t::find_config_option(const std::string &normalized_key) const
 {
   auto opt_it = std::find_if(config_options->begin(),
@@ -853,11 +867,12 @@ int md_config_t::set_val(const char *key, const char *val, bool meta, bool safe)
 
   std::string v(val);
   if (meta)
+	//展开原数据
     expand_meta(v, &std::cerr);
 
   string k(ConfFile::normalize_key_name(key));
 
-  // subsystems?
+  // 对待debug_开头的key,优先尝试是否在设置子模块的log级别
   if (strncmp(k.c_str(), "debug_", 6) == 0) {
     for (int o = 0; o < subsys.get_num(); o++) {
       std::string as_option = "debug_" + subsys.get_name(o);
@@ -866,13 +881,13 @@ int md_config_t::set_val(const char *key, const char *val, bool meta, bool safe)
 	int r = sscanf(v.c_str(), "%d/%d", &log, &gather);
 	if (r >= 1) {
 	  if (r < 2)
-	    gather = log;
+	    gather = log;//如果仅提供了一个，则log与gather相等
 	  //	  cout << "subsys " << subsys.get_name(o) << " log " << log << " gather " << gather << std::endl;
 	  subsys.set_log_level(o, log);
 	  subsys.set_gather_level(o, gather);
 	  return 0;
 	}
-	return -EINVAL;
+	return -EINVAL;//无效参数
       }
     }	
   }
@@ -920,12 +935,13 @@ public:
   }
 };
 
-//返回某一配置项的取值
+//返回某一配置项的取值（这个代码哪道不丑吗？）
 md_config_t::config_value_t md_config_t::_get_val(const char *key) const
 {
   assert(lock.is_locked());
 
   if (!key)
+	//key为NULL时
     return config_value_t(invalid_config_value_t());
 
   // In key names, leading and trailing whitespace are not significant.
@@ -933,18 +949,21 @@ md_config_t::config_value_t md_config_t::_get_val(const char *key) const
 
   config_option const *opt = find_config_option(k);
   if (!opt) {
+	  //如果没有这一选项，则为无效值
       return config_value_t(invalid_config_value_t());
   }
   get_value_generic_visitor gvv(this);
   return boost::apply_visitor(gvv, opt->md_member_ptr);
 }
 
+//取key变量，返回0表示key变量对应的value已被正确填充
 int md_config_t::_get_val(const char *key, std::string *value) const {
   assert(lock.is_locked());
 
   std::string normalized_key(ConfFile::normalize_key_name(key));
   config_value_t config_value = _get_val(normalized_key.c_str());
   if (!boost::get<invalid_config_value_t>(&config_value)) {
+	  //如果值有效
     ostringstream oss;
     if (bool *flag = boost::get<bool>(&config_value)) {
       oss << (*flag ? "true" : "false");
@@ -1087,6 +1106,7 @@ int md_config_t::set_val_impl(const std::string &val, config_option const *opt,
   if (opt->validator) {
     int r = opt->validator(&value, error_message);
     if (r < 0) {
+    	  //校验失败
       return r;
     }
   }
@@ -1183,7 +1203,7 @@ public:
   }
 };
 
-//按娄型进行取值.
+//按类型设置值
 int md_config_t::set_val_raw(const char *val, config_option const *opt)
 {
   assert(lock.is_locked());
@@ -1404,6 +1424,7 @@ void md_config_t::complain_about_parse_errors(CephContext *cct)
   ::complain_about_parse_errors(cct, &parse_errors);
 }
 
+//校验默认值
 void md_config_t::validate_default_settings() {
   Mutex::Locker l(lock);
   for (auto &opt : *config_options) {

@@ -149,6 +149,7 @@ void Log::reopen_log_file()
   pthread_mutex_unlock(&m_flush_mutex);
 }
 
+//设置log文件的uid,gid
 void Log::chown_log_file(uid_t uid, gid_t gid)
 {
   pthread_mutex_lock(&m_flush_mutex);

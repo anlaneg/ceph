@@ -47,6 +47,7 @@ static void global_init_set_globals(CephContext *cct)
   g_conf = cct->_conf;
 }
 
+//显示版本号
 static void output_ceph_version()
 {
   char buf[1024];
@@ -63,6 +64,7 @@ static const char* c_str_or_null(const std::string &str)
   return str.c_str();
 }
 
+//变更pathname的owner,group(uid_str,gid_str为它们的字符串形式）
 static int chown_path(const std::string &pathname, const uid_t owner, const gid_t group,
 		      const std::string &uid_str, const std::string &gid_str)
 {
@@ -92,16 +94,20 @@ void global_pre_init(std::vector < const char * > *alt_def_args,
 {
   std::string conf_file_list;//配置文件列表
   std::string cluster = "";//cluster名称
+  //分析模块名称，所属集群，以及要读取的配置文件（也会处理版本号并退出进程）
   CephInitParameters iparams = ceph_argparse_early_args(args, module_type, flags,
 							&cluster, &conf_file_list);//模块类型及id
   CephContext *cct = common_preinit(iparams, code_env, flags, data_dir_option);//构造cephcontext并设置部分conf
   cct->_conf->cluster = cluster;//设置cluster
+  //设置全局变量（配置及context)
   global_init_set_globals(cct);
   md_config_t *conf = cct->_conf;
 
   if (alt_def_args)
+	//设置可选参数
     conf->parse_argv(*alt_def_args);  // alternative default args
 
+  //解析配置文件
   int ret = conf->parse_config_files(c_str_or_null(conf_file_list),
 				     &cerr, flags);
   if (ret == -EDOM) {
@@ -129,9 +135,11 @@ void global_pre_init(std::vector < const char * > *alt_def_args,
   //保证参数优先.
   conf->parse_env(); // environment variables override
 
+  //处理参数里的配置（参数配置优先生效）
   conf->parse_argv(args); // argv override
 
   // Now we're ready to complain about config file parse errors
+  //显示解析过程中的错误
   g_conf->complain_about_parse_errors(g_ceph_context);
 }
 
@@ -145,8 +153,10 @@ global_init(std::vector < const char * > *alt_def_args,
   // Ensure we're not calling the global init functions multiple times.
   static bool first_run = true;
   if (run_pre_init) {
+	//初始化前是否运行pre_init
     // We will run pre_init from here (default).
     assert(!g_ceph_context && first_run);
+    //读取配置文件及解析参数
     global_pre_init(alt_def_args, args, module_type, code_env, flags);
   } else {
     // Caller should have invoked pre_init manually.
@@ -161,9 +171,12 @@ global_init(std::vector < const char * > *alt_def_args,
   }
 
   // signal stuff
+  //阻塞sigpipe信号
   int siglist[] = { SIGPIPE, 0 };
   block_signals(siglist, NULL);
 
+  //如果需要安装失败信号处理，则安装，这样后就会显示堆栈信息
+  //而不会打core
   if (g_conf->fatal_signal_handlers)
     install_standard_sighandlers();
 
@@ -171,6 +184,7 @@ global_init(std::vector < const char * > *alt_def_args,
     g_ceph_context->_log->set_flush_on_exit();
 
   // consider --setuser root a no-op, even if we're not root
+  //非root启动时，忽略setuser,setgroup参数
   if (getuid() != 0) {
     if (g_conf->setuser.length()) {
       cerr << "ignoring --setuser " << g_conf->setuser << " since I am not root"
@@ -195,6 +209,7 @@ global_init(std::vector < const char * > *alt_def_args,
     if (g_conf->setuser.length()) {
       uid = atoi(g_conf->setuser.c_str());
       if (!uid) {
+    	  //非数字形式时，需要转换
 	char buf[4096];
 	struct passwd pa;
 	struct passwd *p = 0;
@@ -212,6 +227,7 @@ global_init(std::vector < const char * > *alt_def_args,
     if (g_conf->setgroup.length() > 0) {
       gid = atoi(g_conf->setgroup.c_str());
       if (!gid) {
+    	  //setgroup非数字形式时，需要转换
 	char buf[4096];
 	struct group gr;
 	struct group *g = 0;
@@ -257,6 +273,7 @@ global_init(std::vector < const char * > *alt_def_args,
     g_ceph_context->set_uid_gid(uid, gid);
     g_ceph_context->set_uid_gid_strings(uid_string, gid_string);
     if ((flags & CINIT_FLAG_DEFER_DROP_PRIVILEGES) == 0) {
+    	  //如果需要切换权限，则重设置gid,uid
       if (setgid(gid) != 0) {
 	cerr << "unable to setgid " << gid << ": " << cpp_strerror(errno)
 	     << std::endl;
@@ -298,6 +315,7 @@ global_init(std::vector < const char * > *alt_def_args,
   // and opening the log file immediately.
   g_conf->call_all_observers();
 
+  //显示权限
   if (priv_ss.str().length()) {
     dout(0) << priv_ss.str() << dendl;
   }
@@ -307,6 +325,7 @@ global_init(std::vector < const char * > *alt_def_args,
     // Fix ownership on log files and run directories if needed.
     // Admin socket files are chown()'d during the common init path _after_
     // the service thread has been started. This is sadly a bit of a hack :(
+	//变更run_dir,log的owner(原因是，此分支下，之前没有set uid,gid)
     chown_path(g_conf->run_dir,
 	       g_ceph_context->get_set_uid(),
 	       g_ceph_context->get_set_gid(),
@@ -318,9 +337,11 @@ global_init(std::vector < const char * > *alt_def_args,
   }
 
   // Now we're ready to complain about config file parse errors
+  //现在显示解析时的错误
   g_conf->complain_about_parse_errors(g_ceph_context);
 
   // test leak checking
+  //测试代码，制造内存泄露
   if (g_conf->debug_deliberately_leak_memory) {
     derr << "deliberately leaking some memory" << dendl;
     char *s = new char[1234567];

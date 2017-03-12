@@ -226,14 +226,18 @@ int get_device_by_uuid(uuid_d dev_uuid, const char* label, char* partition,
 #elif defined(__APPLE__)
 #include <sys/disk.h>
 
+//返回fd指向的设备大小
 int get_block_device_size(int fd, int64_t *psize)
 {
   unsigned long blocksize = 0;
+  //块设备大小
   int ret = ::ioctl(fd, DKIOCGETBLOCKSIZE, &blocksize);
   if (!ret) {
     unsigned long nblocks;
+    //块数目
     ret = ::ioctl(fd, DKIOCGETBLOCKCOUNT, &nblocks);
     if (!ret)
+    	  //总设备大小
       *psize = (int64_t)nblocks * blocksize;
   }
   if (ret < 0)

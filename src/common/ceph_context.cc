@@ -515,7 +515,7 @@ void CephContext::do_command(std::string command, cmdmap_t& cmdmap,
 
 CephContext::CephContext(uint32_t module_type_, int init_flags_)
   : nref(1),
-    _conf(new md_config_t()),
+    _conf(new md_config_t()),//完成默认参数的设置
     _log(NULL),
     _module_type(module_type_),
     _init_flags(init_flags_),

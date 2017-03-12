@@ -110,6 +110,7 @@ int main(int argc, const char **argv)
   // option, therefore we will pass it as a default argument to global_init().
   def_args.push_back("--leveldb-log=");
 
+  //以daemon方式初始化osd模块，默认flags初始化为0,完成配置解析
   auto cct = global_init(&def_args, args, CEPH_ENTITY_TYPE_OSD,
 			 CODE_ENVIRONMENT_DAEMON,
 			 0, "osd_data");//定义flag为0
@@ -176,8 +177,8 @@ int main(int argc, const char **argv)
     }
   }
 
-  //这里认为所有参数都处理完成
   if (!args.empty()) {
+	//存在未识别的参数
     derr << "unrecognized arg " << args[0] << dendl;
     usage();
   }

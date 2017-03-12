@@ -25,6 +25,7 @@
 #include <sys/prctl.h>
 #endif
 
+//代码的执行环境，例如osd进程会将此变量初始化为daemon
 code_environment_t g_code_env = CODE_ENVIRONMENT_UTILITY;
 
 extern "C" const char *code_environment_to_str(enum code_environment_t e)

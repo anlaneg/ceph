@@ -26,6 +26,7 @@
 
 #define dlog_p(sub, v) ldlog_p1((dout_context), sub, v)
 
+//尝试输出默认模块级别为v的日志（输出的前半部分）
 #define generic_dout(v) lgeneric_dout((dout_context), v)
 
 #define derr lderr((dout_context))

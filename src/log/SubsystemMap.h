@@ -13,14 +13,15 @@ namespace ceph {
 namespace logging {
 
 struct Subsystem {
+  //log级别，收集级别（越小越容易被收集）
   int log_level, gather_level;
-  std::string name;//子系统名称
+  std::string name;//子系统名称(none时指默认模块）
   
   Subsystem() : log_level(0), gather_level(0) {}     
 };
 
 class SubsystemMap {
-  std::vector<Subsystem> m_subsys;
+  std::vector<Subsystem> m_subsys;//所有子系统的日志收集情况
   unsigned m_max_name_len;//子系统名称最大长度
 
   friend class Log;

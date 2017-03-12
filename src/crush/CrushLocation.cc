@@ -106,6 +106,7 @@ int CrushLocation::init_on_startup()
     strcpy(hostname, "unknown_host");
   // use short hostname
   for (unsigned i=0; hostname[i]; ++i) {
+	//主机名称有点的，直接赋'\0'
     if (hostname[i] == '.') {
       hostname[i] = '\0';
       break;

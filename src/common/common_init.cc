@@ -49,7 +49,7 @@ CephContext *common_preinit(const CephInitParameters &iparams,
   // add config observers here
 
   // Set up our entity name.
-  conf->name = iparams.name;//设置名称
+  conf->name = iparams.name;//设置模块名称
 
   //设置部分conf选项.
   if (data_dir_option)

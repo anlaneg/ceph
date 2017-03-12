@@ -242,8 +242,8 @@ private:
   string fn;
 
   char *zero_buf;
-  off64_t max_size;
-  size_t block_size;
+  off64_t max_size;//journal最大大小
+  size_t block_size;//journal配置的块大小
   bool directio, aio, force_aio;
   bool must_write_header;
   off64_t write_pos;      // byte where the next entry to be written will go

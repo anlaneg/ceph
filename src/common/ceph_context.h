@@ -158,6 +158,7 @@ public:
     return _plugin_registry;
   }
 
+  //设置gid,uid
   void set_uid_gid(uid_t u, gid_t g) {
     _set_uid = u;
     _set_gid = g;
@@ -169,6 +170,7 @@ public:
     return _set_gid;
   }
 
+  //设置gid,uid字符串
   void set_uid_gid_strings(std::string u, std::string g) {
     _set_uid_string = u;
     _set_gid_string = g;
@@ -229,9 +231,9 @@ private:
   /* Stop and join the Ceph Context's service thread */
   void join_service_thread();
 
-  uint32_t _module_type;
+  uint32_t _module_type;//模块类型，如osd,mon等
 
-  int _init_flags;
+  int _init_flags;//初始化时用的flags（ceph-osd启动时，默认传入为0）
 
   uid_t _set_uid; ///< uid to drop privs to
   gid_t _set_gid; ///< gid to drop privs to

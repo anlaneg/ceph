@@ -343,6 +343,8 @@ static bool va_ceph_argparse_binary_flag(std::vector<const char*> &args,
   }
 }
 
+//同ceph_argparse_flag类似，但要求i位置的参数后面必须有'='号指定的参数
+//这个参数需要是二义性（真或假）
 bool ceph_argparse_binary_flag(std::vector<const char*> &args,
 	std::vector<const char*>::iterator &i, int *ret,
 	std::ostream *oss, ...)
@@ -473,10 +475,10 @@ bool ceph_argparse_witharg(std::vector<const char*> &args,
   return r != 0;
 }
 
-//此函数用于识别args中早期的数据,识别后的结果通过返回值,cluster,conf_file_list
-//方式返回.
-//conf_file_list为配置文件列表
-//cluster设置参数中的cluster
+//此函数用于识别args中必要数据（属于哪个集群，读那个配置文件)
+//进程的名称是什么，通过参数识别后返回。
+//conf_file_list为配置文件列表 由-c,--conf参数指定
+//cluster设置参数中的cluster 由--cluster参数指定
 CephInitParameters ceph_argparse_early_args
 	  (std::vector<const char*>& args, uint32_t module_type, int flags,
 	   std::string *cluster, std::string *conf_file_list)
@@ -509,7 +511,7 @@ CephInitParameters ceph_argparse_early_args
     }
     else if ((module_type != CEPH_ENTITY_TYPE_CLIENT) &&
 	     (ceph_argparse_witharg(args, i, &val, "-i", (char*)NULL))) {
-      //设置名称
+      //如果当前非clinet模块，则设置id
       iparams.name.set_id(val);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--id", "--user", (char*)NULL)) {
@@ -517,7 +519,7 @@ CephInitParameters ceph_argparse_early_args
       iparams.name.set_id(val);
     }
     else if (ceph_argparse_witharg(args, i, &val, "--name", "-n", (char*)NULL)) {
-      //通过字符串设置iparams
+      //通过字符串设置iparams(type.id格式）
       if (!iparams.name.from_str(val)) {
 	cerr << "error parsing '" << val << "': expected string of the form TYPE.ID, "
 	     << "valid types are: " << EntityName::get_valid_types_as_str()
@@ -537,12 +539,14 @@ CephInitParameters ceph_argparse_early_args
     }
     else {
       // ignore
-      ++i;//暂时忽略掉不认识的.
+    	//忽略掉不认识的.
+      ++i;
     }
   }
   return iparams;
 }
 
+//显示命令行帮助信息
 static void generic_usage(bool is_server)
 {
   cout << "\

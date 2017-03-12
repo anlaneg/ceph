@@ -88,6 +88,7 @@ static void reraise_fatal(int signum)
   exit(1);
 }
 
+//信号处理函数，显示堆栈信息
 static void handle_fatal_signal(int signum)
 {
   // This code may itself trigger a SIGSEGV if the heap is corrupt. In that

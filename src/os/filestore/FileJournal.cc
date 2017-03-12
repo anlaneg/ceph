@@ -55,22 +55,26 @@ int FileJournal::_open(bool forwrite, bool create)
   int flags, ret;
 
   if (forwrite) {
-    flags = O_RDWR;
+    flags = O_RDWR;//要求写
     if (directio)
       flags |= O_DIRECT | O_DSYNC;
   } else {
-    flags = O_RDONLY;
+    flags = O_RDONLY;//只读模式
   }
   if (create)
-    flags |= O_CREAT;
+    flags |= O_CREAT;//容许创建
 
+  //如果fd已打开，则关闭
   if (fd >= 0) {
+	//关闭时出错
     if (TEMP_FAILURE_RETRY(::close(fd))) {
       int err = errno;
       derr << "FileJournal::_open: error closing old fd: "
 	   << cpp_strerror(err) << dendl;
     }
   }
+
+  //打开fn
   fd = TEMP_FAILURE_RETRY(::open(fn.c_str(), flags, 0644));
   if (fd < 0) {
     int err = errno;
@@ -89,8 +93,10 @@ int FileJournal::_open(bool forwrite, bool create)
   }
 
   if (S_ISBLK(st.st_mode)) {
+	//如果是块设备，打开块设备
     ret = _open_block_device();
   } else if (S_ISREG(st.st_mode)) {
+	//如果是规则文件，打开文件
     if (aio && !force_aio) {
       derr << "FileJournal::_open: disabling aio for non-block journal.  Use "
 	   << "journal_force_aio to force use of aio anyway" << dendl;
@@ -98,6 +104,7 @@ int FileJournal::_open(bool forwrite, bool create)
     }
     ret = _open_file(st.st_size, st.st_blksize, create);
   } else {
+	//其它类型，忽略
     derr << "FileJournal::_open: wrong journal file type: " << st.st_mode
 	 << dendl;
     ret = -EINVAL;
@@ -143,6 +150,7 @@ int FileJournal::_open(bool forwrite, bool create)
   return ret;
 }
 
+//日志为块设备时初始化
 int FileJournal::_open_block_device()
 {
   int64_t bdev_sz = 0;
@@ -174,6 +182,7 @@ int FileJournal::_open_block_device()
   return 0;
 }
 
+//打开规则的文件
 int FileJournal::_open_file(int64_t oldsize, blksize_t blksize,
 			    bool create)
 {
@@ -181,6 +190,7 @@ int FileJournal::_open_file(int64_t oldsize, blksize_t blksize,
   int64_t conf_journal_sz(cct->_conf->osd_journal_size);
   conf_journal_sz <<= 20;
 
+  //大小过小
   if ((cct->_conf->osd_journal_size == 0) && (oldsize < ONE_MEG)) {
     derr << "I'm sorry, I don't know how large of a journal to create."
 	 << "Please specify a block device to use as the journal OR "
@@ -189,6 +199,8 @@ int FileJournal::_open_file(int64_t oldsize, blksize_t blksize,
   }
 
   if (create && (oldsize < conf_journal_sz)) {
+	//如果配置的大小比journal的实际小
+    //则截短
     uint64_t newsize(conf_journal_sz);
     dout(10) <<  __func__ << " _open extending to " << newsize << " bytes" << dendl;
     ret = ::ftruncate(fd, newsize);
@@ -199,6 +211,7 @@ int FileJournal::_open_file(int64_t oldsize, blksize_t blksize,
       return -err;
     }
 #ifdef HAVE_POSIX_FALLOCATE
+    //预申请journal大小
     ret = ::posix_fallocate(fd, 0, newsize);
     if (ret) {
       derr << "FileJournal::_open_file : unable to preallocation journal to "
@@ -231,6 +244,8 @@ int FileJournal::_open_file(int64_t oldsize, blksize_t blksize,
   block_size = cct->_conf->journal_block_size;
 
   if (create && cct->_conf->journal_zero_on_create) {
+	//为什么我们需要这么大的内存？（为了写的快）
+	//写fd为全0
     derr << "FileJournal::_open_file : zeroing journal" << dendl;
     uint64_t write_size = 1 << 20;
     char *buf;

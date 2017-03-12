@@ -50,6 +50,7 @@ public:
 // generic macros
 #define dout_prefix *_dout
 
+//这种日志输出的方式真丑。
 #define dout_impl(cct, sub, v)						\
   do {									\
   if (cct->_conf->subsys.should_gather(sub, v)) {			\
@@ -75,6 +76,7 @@ public:
 #define ldlog_p1(cct, sub, lvl)                 \
   (cct->_conf->subsys.should_gather((sub), (lvl)))
 
+//日志输出结尾
 // NOTE: depend on magic value in _ASSERT_H so that we detect when
 // /usr/include/assert.h clobbers our fancier version.
 #define dendl std::flush;				\

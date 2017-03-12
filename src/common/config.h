@@ -120,7 +120,7 @@ public:
   public:
     const char *name;//名称
     opt_type_t type;//参数类型
-    md_config_t::member_ptr_t md_member_ptr;
+    md_config_t::member_ptr_t md_member_ptr;//成员的偏移量
     bool safe; // promise to access it only via md_config_t::get_val
     validator_t validator;
   private:
@@ -294,16 +294,16 @@ public:
 private:
 
   obs_map_t observers;//配置关注者
-  changed_set_t changed;
+  changed_set_t changed;//标记哪些key对应的配置发生了变化
 
 public:
   ceph::logging::SubsystemMap subsys;//定义子系统的日志level及日志收集level
 
-  EntityName name;
+  EntityName name;//进程名称
   string data_dir_option;  ///< data_dir config option, if any
 
   /// cluster name
-  string cluster;
+  string cluster;//集群名称
 
 #define OPTION_OPT_INT(name) const int name;
 #define OPTION_OPT_LONGLONG(name) const long long name;
