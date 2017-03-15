@@ -121,20 +121,24 @@ void Log::set_max_recent(int n)
   pthread_mutex_unlock(&m_flush_mutex);
 }
 
+//设置log文件名称
 void Log::set_log_file(string fn)
 {
   m_log_file = fn;
 }
 
+//重新打开log文件
 void Log::reopen_log_file()
 {
   pthread_mutex_lock(&m_flush_mutex);
   m_flush_mutex_holder = pthread_self();
   if (m_fd >= 0)
-    VOID_TEMP_FAILURE_RETRY(::close(m_fd));
+    VOID_TEMP_FAILURE_RETRY(::close(m_fd));//关闭log文件
   if (m_log_file.length()) {
+	  //打开相应的log文件
     m_fd = ::open(m_log_file.c_str(), O_CREAT|O_WRONLY|O_APPEND, 0644);
     if (m_fd >= 0 && (m_uid || m_gid)) {
+    	//更改owner
       int r = ::fchown(m_fd, m_uid, m_gid);
       if (r < 0) {
 	r = -errno;
@@ -143,6 +147,7 @@ void Log::reopen_log_file()
       }
     }
   } else {
+	//未配置log文件
     m_fd = -1;
   }
   m_flush_mutex_holder = 0;

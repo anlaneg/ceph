@@ -133,6 +133,7 @@ int main(int argc, const char **argv)
   string device_path;
   std::string dump_pg_log;
 
+  //处理选项，简单处理为打标记
   std::string val;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
 	//只处理option,不处理parameter
@@ -199,11 +200,13 @@ int main(int argc, const char **argv)
       exit(1);
     }
     cout << uuid << std::endl;
-    return 0;
+    return 0;//进程退出
   }
 
   //dump pg log
+  //显示pg log
   if (!dump_pg_log.empty()) {
+	//初始化服务线程，admin线程
     common_init_finish(g_ceph_context);
     bufferlist bl;
     std::string error;
@@ -238,6 +241,7 @@ int main(int argc, const char **argv)
     usage();
   }
 
+  //需要配置osd-data
   if (g_conf->osd_data.empty()) {
     derr << "must specify '--osd-data=foo' data path" << dendl;
     usage();
@@ -410,7 +414,6 @@ flushjournal_out:
 	 << " for object store " << g_conf->osd_data
 	 << dendl;
     exit(0);
-
   }
 
   //file store 转换

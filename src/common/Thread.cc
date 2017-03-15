@@ -65,6 +65,7 @@ Thread::~Thread()
 {
 }
 
+//线程入口函数（arg　== this)
 void *Thread::_entry_func(void *arg) {
   void *r = ((Thread*)arg)->entry_wrapper();
   return r;
@@ -85,7 +86,9 @@ void *Thread::entry_wrapper()
   if (pid && cpuid >= 0)
     _set_affinity(cpuid);
 
+  //设置线程名称
   ceph_pthread_setname(pthread_self(), thread_name);
+  //线程真实的入口
   return entry();
 }
 
@@ -121,6 +124,7 @@ int Thread::try_create(size_t stacksize)
   if (stacksize) {
     thread_attr = &thread_attr_loc;
     pthread_attr_init(thread_attr);
+    //设置栈大小
     pthread_attr_setstacksize(thread_attr, stacksize);
   }
 
@@ -139,7 +143,7 @@ int Thread::try_create(size_t stacksize)
     block_signals(to_block, &old_sigset);
   }
   r = pthread_create(&thread_id, thread_attr, _entry_func, (void*)this);
-  restore_sigset(&old_sigset);
+  restore_sigset(&old_sigset);//影响线程的信号处理
 
   if (thread_attr) {
     pthread_attr_destroy(thread_attr);	
@@ -148,6 +152,7 @@ int Thread::try_create(size_t stacksize)
   return r;
 }
 
+//创建线程
 void Thread::create(const char *name, size_t stacksize)
 {
   assert(strlen(name) < 16);

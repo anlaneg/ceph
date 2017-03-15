@@ -41,10 +41,15 @@ namespace ceph {
  */
 
 struct heartbeat_handle_d {
+  //线程名称
   const std::string name;
+  //线程id号
   pthread_t thread_id;
+  //超时极限时间，自杀极限时间
   atomic_t timeout, suicide_timeout;
+  //timeout检查间隙，自杀检查间隙
   time_t grace, suicide_grace;
+  //指向自已（这个成员存在的意义是？删除handle时，不需要在容器内遍历）
   std::list<heartbeat_handle_d*>::iterator list_item;
 
   explicit heartbeat_handle_d(const std::string& n)
@@ -82,8 +87,11 @@ class HeartbeatMap {
   CephContext *m_cct;
   RWLock m_rwlock;
   time_t m_inject_unhealthy_until;
+  //worker队列（存储各线程pthread_id,名称)
   std::list<heartbeat_handle_d*> m_workers;
+  //不健康的worker数
   atomic_t m_unhealthy_workers;
+  //总worker数
   atomic_t m_total_workers;
 
   bool _check(const heartbeat_handle_d *h, const char *who, time_t now);

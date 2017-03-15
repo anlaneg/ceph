@@ -277,10 +277,12 @@ void* AdminSocket::entry()
 
     if (fds[0].revents & POLLIN) {
       // Send out some data
+      //收到请求
       do_accept();
     }
     if (fds[1].revents & POLLIN) {
       // Parent wants us to shut down
+      //需要退出
       return PFL_SUCCESS;
     }
   }
@@ -306,6 +308,7 @@ bool AdminSocket::do_accept()
   ldout(m_cct, 30) << "AdminSocket: calling accept" << dendl;
   int connection_fd = accept(m_sock_fd, (struct sockaddr*) &address,
 			     &address_length);
+  //接入一个请求
   ldout(m_cct, 30) << "AdminSocket: finished accept" << dendl;
   if (connection_fd < 0) {
     int err = errno;
@@ -318,6 +321,7 @@ bool AdminSocket::do_accept()
   unsigned pos = 0;
   string c;
   while (1) {
+	//读取一个命令
     int ret = safe_read(connection_fd, &cmd[pos], 1);
     if (ret <= 0) {
       lderr(m_cct) << "AdminSocket: error reading request code: "
@@ -412,6 +416,7 @@ bool AdminSocket::do_accept()
     in_hook = true;
     auto match_hook = p->second;
     m_lock.Unlock();
+    //调用回调
     bool success = match_hook->call(match, cmdmap, format, out);
     m_lock.Lock();
     in_hook = false;
@@ -442,11 +447,13 @@ bool AdminSocket::do_accept()
   return rval;
 }
 
+//注册命令
 int AdminSocket::register_command(std::string command, std::string cmddesc, AdminSocketHook *hook, std::string help)
 {
   int ret;
   m_lock.Lock();
   if (m_hooks.count(command)) {
+	//命令已存在
     ldout(m_cct, 5) << "register_command " << command << " hook " << hook << " EEXIST" << dendl;
     ret = -EEXIST;
   } else {
@@ -569,6 +576,7 @@ bool AdminSocket::init(const std::string &path)
     lderr(m_cct) << "AdminSocketConfigObs::init: error: " << err << dendl;
     return false;
   }
+  //监听socket
   int sock_fd;
   err = bind_and_listen(path, &sock_fd);
   if (!err.empty()) {
@@ -594,6 +602,7 @@ bool AdminSocket::init(const std::string &path)
   register_command("get_command_descriptions", "get_command_descriptions",
 		   m_getdescs_hook, "list available commands");
 
+  //创建线程
   create("admin_socket");
   add_cleanup_file(m_path.c_str());
   return true;

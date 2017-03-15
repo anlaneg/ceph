@@ -93,8 +93,11 @@ private:
   bool do_accept();
 
   CephContext *m_cct;
+  //admin socket对应的路径
   std::string m_path;
+  //admin socket对应的监听描述符
   int m_sock_fd;
+  //线程退出控制fd,wr->rd
   int m_shutdown_rd_fd;
   int m_shutdown_wr_fd;
 
@@ -103,6 +106,7 @@ private:
   Mutex m_lock;    // protects m_hooks, m_descs, m_help
   AdminSocketHook *m_version_hook, *m_help_hook, *m_getdescs_hook;
 
+  //命令对应的hook函数，对应的描述信息，对应的帮助信息
   std::map<std::string,AdminSocketHook*> m_hooks;
   std::map<std::string,std::string> m_descs;
   std::map<std::string,std::string> m_help;

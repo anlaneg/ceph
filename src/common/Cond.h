@@ -59,6 +59,7 @@ class Cond {
     return r;
   }
 
+  //有超时功能的条件等待
   int WaitUntil(Mutex &mutex, utime_t when) {
     // make sure this cond is used with one mutex only
     assert(waiter_mutex == NULL || waiter_mutex == &mutex);
@@ -76,6 +77,7 @@ class Cond {
     return r;
   }
 
+  //等待信号量，并设置等待的最大间隔
   int WaitInterval(Mutex &mutex, utime_t interval) {
     utime_t when = ceph_clock_now();
     when += interval;

@@ -245,6 +245,7 @@ private:
   /* libcommon service thread.
    * SIGHUP wakes this thread, which then reopens logfiles */
   friend class CephContextServiceThread;
+  //周期性healthy检查，log处理的服务线程
   CephContextServiceThread *_service_thread;
 
   md_config_obs_t *_log_obs;

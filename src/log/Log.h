@@ -22,18 +22,23 @@ class Log : private Thread
   SubsystemMap *m_subs;
 
   pthread_mutex_t m_queue_mutex;
+  //flush mutex
   pthread_mutex_t m_flush_mutex;
   pthread_cond_t m_cond_loggers;
   pthread_cond_t m_cond_flusher;
 
   pthread_t m_queue_mutex_holder;
+  //哪个线程拥有flush mutex
   pthread_t m_flush_mutex_holder;
 
   EntryQueue m_new;    ///< new entries
   EntryQueue m_recent; ///< recent (less new) entries we've already written at low detail
 
+  //日志文件名称
   std::string m_log_file;
+  //日志文件fd
   int m_fd;
+  //日志文件的owner
   uid_t m_uid;
   gid_t m_gid;
 

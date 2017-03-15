@@ -48,6 +48,7 @@ HeartbeatMap::~HeartbeatMap()
 
 heartbeat_handle_d *HeartbeatMap::add_worker(const string& name, pthread_t thread_id)
 {
+  //拿到写锁
   m_rwlock.get_write();
   ldout(m_cct, 10) << "add_worker '" << name << "'" << dendl;
   heartbeat_handle_d *h = new heartbeat_handle_d(name);
@@ -58,10 +59,12 @@ heartbeat_handle_d *HeartbeatMap::add_worker(const string& name, pthread_t threa
   m_workers.push_front(h);
   h->list_item = m_workers.begin();
   h->thread_id = thread_id;
+  //解锁
   m_rwlock.put_write();
   return h;
 }
 
+//通过list_item删除
 void HeartbeatMap::remove_worker(const heartbeat_handle_d *h)
 {
   m_rwlock.get_write();
@@ -84,6 +87,7 @@ bool HeartbeatMap::_check(const heartbeat_handle_d *h, const char *who, time_t n
   }
   was = h->suicide_timeout.read();
   if (was && was < now) {
+	//时间超过自杀时间
     ldout(m_cct, 1) << who << " '" << h->name << "'"
 		    << " had suicide timed out after " << h->suicide_grace << dendl;
     pthread_kill(h->thread_id, SIGABRT);
@@ -93,6 +97,7 @@ bool HeartbeatMap::_check(const heartbeat_handle_d *h, const char *who, time_t n
   return healthy;
 }
 
+//设置对应线程的timeout时间，自杀超时
 void HeartbeatMap::reset_timeout(heartbeat_handle_d *h, time_t grace, time_t suicide_grace)
 {
   ldout(m_cct, 20) << "reset_timeout '" << h->name << "' grace " << grace
@@ -125,6 +130,7 @@ bool HeartbeatMap::is_healthy()
   int total = 0;
   m_rwlock.get_read();
   time_t now = time(NULL);
+  //测试代码
   if (m_cct->_conf->heartbeat_inject_failure) {
     ldout(m_cct, 0) << "is_healthy injecting failure for next " << m_cct->_conf->heartbeat_inject_failure << " seconds" << dendl;
     m_inject_unhealthy_until = now + m_cct->_conf->heartbeat_inject_failure;
@@ -141,9 +147,10 @@ bool HeartbeatMap::is_healthy()
        p != m_workers.end();
        ++p) {
     heartbeat_handle_d *h = *p;
+    //检查对应线程是否healthy（仅检查对应数据）
     if (!_check(h, "is_healthy", now)) {
       healthy = false;
-      unhealthy++;
+      unhealthy++;//统计不健康的线程数
     }
     total++;
   }
@@ -169,9 +176,11 @@ int HeartbeatMap::get_total_workers() const
 
 void HeartbeatMap::check_touch_file()
 {
+  //如果是healthy就touch 文件
   if (is_healthy()) {
     string path = m_cct->_conf->heartbeat_file;
     if (path.length()) {
+      //如果是healthy，则尝试创建文件（如果不存在的话），更新文件时间
       int fd = ::open(path.c_str(), O_WRONLY|O_CREAT, 0644);
       if (fd >= 0) {
 	::utimes(path.c_str(), NULL);

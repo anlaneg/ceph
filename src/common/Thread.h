@@ -24,7 +24,9 @@ class Thread {
   pthread_t thread_id;
   pid_t pid;
   int ioprio_class, ioprio_priority;
+  //绑定cpu
   int cpuid;
+  //线程名称
   const char *thread_name;
 
   void *entry_wrapper();

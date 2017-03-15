@@ -140,6 +140,7 @@ public:
 
   ~CephContextServiceThread() override {}
 
+  //周期性进行healthy检查
   void *entry() override
   {
     while (1) {
@@ -147,15 +148,17 @@ public:
 
       if (_cct->_conf->heartbeat_interval) {
         utime_t interval(_cct->_conf->heartbeat_interval, 0);
-        _cond.WaitInterval(_lock, interval);
+        _cond.WaitInterval(_lock, interval);//等待一个心跳间隔
       } else
-        _cond.Wait(_lock);
+        _cond.Wait(_lock);//无间隔的等待（如果cond被触发，则返回）
 
       if (_exit_thread) {
+    	  //线程已退出
         break;
       }
 
       if (_reopen_logs) {
+    	//如果需要重新打开log文件，则重新打开log文件
         _cct->_log->reopen_log_file();
         _reopen_logs = false;
       }
@@ -184,7 +187,9 @@ public:
 private:
   Mutex _lock;
   Cond _cond;
+  //是否需要重新打开log文件
   bool _reopen_logs;
+  //线程是否已退出
   bool _exit_thread;
   CephContext *_cct;
 };
@@ -238,6 +243,7 @@ public:
     }
 
     // file
+    //log_file的配置发生了变化，需要处理
     if (changed.count("log_file")) {
       log->set_log_file(conf->log_file);
       log->reopen_log_file();

@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+//创建pipe,设置为clone时关闭
 int pipe_cloexec(int pipefd[2])
 {
 	int ret;
