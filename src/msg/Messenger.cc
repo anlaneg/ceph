@@ -27,6 +27,7 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
 {
   int r = -1;
   if (type == "random") {
+	//这个分支非常的没有用。
     static std::random_device seed;
     static std::default_random_engine random_engine(seed());
     static Spinlock random_lock;
@@ -35,11 +36,14 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
     std::uniform_int_distribution<> dis(0, 1);
     r = dis(random_engine);
   }
+  //simple消息
   if (r == 0 || type == "simple")
     return new SimpleMessenger(cct, name, std::move(lname), nonce);
+  //async消息
   else if (r == 1 || type.find("async") != std::string::npos)
     return new AsyncMessenger(cct, name, type, std::move(lname), nonce);
 #ifdef HAVE_XIO
+  //xio消息
   else if ((type == "xio") &&
 	   cct->check_experimental_feature_enabled("ms-type-xio"))
     return new XioMessenger(cct, name, std::move(lname), nonce, cflags);

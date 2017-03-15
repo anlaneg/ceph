@@ -15,6 +15,7 @@ class Graylog;
 class SubsystemMap;
 class Entry;
 
+//没有看出这个log实现的有多好，感觉非常普通，且不高效
 class Log : private Thread
 {
   Log **m_indirect_this;
@@ -25,8 +26,9 @@ class Log : private Thread
   //flush mutex
   pthread_mutex_t m_flush_mutex;
   pthread_cond_t m_cond_loggers;
-  pthread_cond_t m_cond_flusher;
+  pthread_cond_t m_cond_flusher;//需要flush的信号量
 
+  //哪个线程拥有queue mutex
   pthread_t m_queue_mutex_holder;
   //哪个线程拥有flush mutex
   pthread_t m_flush_mutex_holder;
@@ -36,7 +38,7 @@ class Log : private Thread
 
   //日志文件名称
   std::string m_log_file;
-  //日志文件fd
+  //日志文件fd（>=0时有效）
   int m_fd;
   //日志文件的owner
   uid_t m_uid;
@@ -44,17 +46,17 @@ class Log : private Thread
 
   int m_fd_last_error;  ///< last error we say writing to fd (if any)
 
-  int m_syslog_log, m_syslog_crash;
+  int m_syslog_log, m_syslog_crash;//写syslog时的级别
   int m_stderr_log, m_stderr_crash;
   int m_graylog_log, m_graylog_crash;
 
   shared_ptr<Graylog> m_graylog;
 
-  bool m_stop;
+  bool m_stop;//标记线程是否需要停止
 
   int m_max_new, m_max_recent;
 
-  bool m_inject_segv;
+  bool m_inject_segv;//断错误注入用
 
   void *entry() override;
 

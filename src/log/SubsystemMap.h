@@ -22,7 +22,7 @@ struct Subsystem {
 
 class SubsystemMap {
   std::vector<Subsystem> m_subsys;//所有子系统的日志收集情况
-  unsigned m_max_name_len;//子系统名称最大长度
+  unsigned m_max_name_len;//子系统中名称最大长度
 
   friend class Log;
 

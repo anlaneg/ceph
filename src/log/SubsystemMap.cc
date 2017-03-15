@@ -4,7 +4,7 @@
 namespace ceph {
 namespace logging {
 
-//向m_subsys集合中加入数据
+//向m_subsys集合中加入子系统数据
 void SubsystemMap::add(unsigned subsys, std::string name, int log, int gather)
 {
   if (subsys >= m_subsys.size())

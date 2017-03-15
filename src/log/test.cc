@@ -215,7 +215,7 @@ TEST(Log, InternalSegv)
 TEST(Log, LargeLog)
 {
   SubsystemMap subs;
-  subs.add(1, "foo", 20, 10);
+  subs.add(1, "foo", 20, 10);//foo模块,level为20,收集条件为10
   Log log(&subs);
   log.start();
   log.set_log_file("/tmp/big");

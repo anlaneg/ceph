@@ -221,7 +221,7 @@ void Log::submit_entry(Entry *e)
   while (m_new.m_len > m_max_new)
     pthread_cond_wait(&m_cond_loggers, &m_queue_mutex);
 
-  m_new.enqueue(e);
+  m_new.enqueue(e);//将e入队至m_new
   pthread_cond_signal(&m_cond_flusher);
   m_queue_mutex_holder = 0;
   pthread_mutex_unlock(&m_queue_mutex);
@@ -235,6 +235,7 @@ Entry *Log::create_entry(int level, int subsys)
 		     pthread_self(),
 		     level, subsys);
   } else {
+	//为什么不把这无和的代码删除掉
     // kludge for perf testing
     Entry *e = m_recent.dequeue();
     e->m_stamp = ceph_clock_now();
@@ -273,15 +274,15 @@ void Log::flush()
   pthread_mutex_lock(&m_queue_mutex);
   m_queue_mutex_holder = pthread_self();
   EntryQueue t;
-  t.swap(m_new);
+  t.swap(m_new);//交m_new队列的数值提取出来
   pthread_cond_broadcast(&m_cond_loggers);
   m_queue_mutex_holder = 0;
   pthread_mutex_unlock(&m_queue_mutex);
-  _flush(&t, &m_recent, false);
+  _flush(&t, &m_recent, false);//输出t中的内容，将t中的每条日志重入队到m_recent
 
-  // trim
+  // trim（m_recent丢弃）
   while (m_recent.m_len > m_max_recent) {
-    delete m_recent.dequeue();
+    delete m_recent.dequeue();//释放掉队头的元素
   }
 
   m_flush_mutex_holder = 0;
@@ -291,13 +292,15 @@ void Log::flush()
 void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
 {
   Entry *e;
+  //将临时队列出队
   while ((e = t->dequeue()) != NULL) {
     unsigned sub = e->m_subsys;
 
+    //log级别是否大于e的优先级
     bool should_log = crash || m_subs->get_log_level(sub) >= e->m_prio;
-    bool do_fd = m_fd >= 0 && should_log;
-    bool do_syslog = m_syslog_crash >= e->m_prio && should_log;
-    bool do_stderr = m_stderr_crash >= e->m_prio && should_log;
+    bool do_fd = m_fd >= 0 && should_log;//是否写入fd
+    bool do_syslog = m_syslog_crash >= e->m_prio && should_log;//是否写syslog
+    bool do_stderr = m_stderr_crash >= e->m_prio && should_log;//是否写stderr
     bool do_graylog2 = m_graylog_crash >= e->m_prio && should_log;
 
     e->hint_size();
@@ -308,7 +311,7 @@ void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
       size_t buf_size = 80 + e->size();
       bool need_dynamic = buf_size >= 0x10000; //avoids >64K buffers
 					       //allocation at stack
-      char buf0[need_dynamic ? 1 : buf_size];
+      char buf0[need_dynamic ? 1 : buf_size];//是否直接在栈上开空间或者申请
       if (need_dynamic) {
         buf = new char[buf_size];
       } else {
@@ -317,28 +320,32 @@ void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
 
       if (crash)
 	buflen += snprintf(buf, buf_size, "%6d> ", -t->m_len);
-      buflen += e->m_stamp.sprintf(buf + buflen, buf_size-buflen);
+      buflen += e->m_stamp.sprintf(buf + buflen, buf_size-buflen);//时间输出
       buflen += snprintf(buf + buflen, buf_size-buflen, " %lx %2d ",
-			(unsigned long)e->m_thread, e->m_prio);
+			(unsigned long)e->m_thread, e->m_prio);//线程号，日志优先级
 
-      buflen += e->snprintf(buf + buflen, buf_size - buflen - 1);
+      buflen += e->snprintf(buf + buflen, buf_size - buflen - 1);//输出实体内容
       if (buflen > buf_size - 1) { //paranoid check, buf was declared
 				   //to hold everything
         buflen = buf_size - 1;
-        buf[buflen] = 0;
+        buf[buflen] = 0;//数据被截短处理
       }
 
+      //写syslog
       if (do_syslog) {
         syslog(LOG_USER|LOG_INFO, "%s", buf);
       }
 
+      //写stderr
       if (do_stderr) {
         cerr << buf << std::endl;
       }
+
+      //写fd
       if (do_fd) {
         buf[buflen] = '\n';
         int r = safe_write(m_fd, buf, buflen+1);
-	if (r != m_fd_last_error) {
+	if (r != m_fd_last_error) {//连续的重复错误不打出
 	  if (r < 0)
 	    cerr << "problem writing to " << m_log_file
 		 << ": " << cpp_strerror(r)
@@ -347,16 +354,17 @@ void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
 	}
       }
       if (need_dynamic)
-        delete[] buf;
+        delete[] buf;//动态内存删除
     }
-    if (do_graylog2 && m_graylog) {
+    if (do_graylog2 && m_graylog) {//作灰色log
       m_graylog->log_entry(e);
     }
 
-    requeue->enqueue(e);
+    requeue->enqueue(e);//将e入另一个队列
   }
 }
 
+//如果未关闭log，则直接输出（fd,syslog,stderr三种)
 void Log::_log_message(const char *s, bool crash)
 {
   if (m_fd >= 0) {
@@ -443,6 +451,7 @@ void Log::stop()
   join();
 }
 
+//检测m_new队列，执行flush
 void *Log::entry()
 {
   pthread_mutex_lock(&m_queue_mutex);
@@ -457,8 +466,10 @@ void *Log::entry()
       continue;
     }
 
+    //等待flush信号
     pthread_cond_wait(&m_cond_flusher, &m_queue_mutex);
   }
+  //线程退出时，再刷新一次
   m_queue_mutex_holder = 0;
   pthread_mutex_unlock(&m_queue_mutex);
   flush();

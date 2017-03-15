@@ -658,6 +658,7 @@ flushjournal_out:
   ms_objecter->start();
 
   // start osd
+  // osd初始化
   err = osd->init();
   if (err < 0) {
     derr << TEXT_RED << " ** ERROR: osd init failed: " << cpp_strerror(-err)
