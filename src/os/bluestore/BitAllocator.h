@@ -260,7 +260,7 @@ class BitMapAreaList {
 
 private:
   BitMapArea **m_items;
-  int64_t m_num_items;
+  int64_t m_num_items;//m_items指针数组大小
   std::mutex m_marker_mutex;
 
 public:
@@ -307,24 +307,29 @@ public:
   BitMapArea* next() {
     int64_t cur_idx = m_cur_idx;
 
+    //如果已回绕，且当前已等于起始idx
     if (m_wrapped &&
       cur_idx == m_start_idx) {
       /*
        * End of wrap cycle + 1
        */
       if (!m_end) {
+    	//如果是第一次到达，则标记为已结束
         m_end = true;
         return m_list->get_nth_item(cur_idx);
       }
-      return NULL;
+      return NULL;//不是第一次到达结尾了，直接返回NULL
     }
-    m_cur_idx++;
+    m_cur_idx++;//自m_cur_idx返回（这样才能在end时，使m_list->get_nth_item有效）
 
+    //到达数组结尾，如果需要回绕，则置为0
     if (m_cur_idx == m_list->size() &&
         m_wrap) {
       m_cur_idx = 0;
-      m_wrapped = true;
+      m_wrapped = true;//标记为已回绕
     }
+
+    //不容许回绕时，直接在结尾返回NULL
     if (cur_idx == m_list->size()) {
       /*
        * End of list
@@ -335,7 +340,7 @@ public:
     /* This method should be *really* fast as it's being executed over
      * and over during traversal of allocators indexes. */
     alloc_dbg_assert(cur_idx < m_list->size());
-    return m_list->get_nth_item(cur_idx);
+    return m_list->get_nth_item(cur_idx);//未达到结尾，返回指定位置元素
   }
 
   int64_t index();//返回当前位置
@@ -395,12 +400,12 @@ class BitMapAreaIN: public BitMapArea{
 
 protected:
   int64_t m_child_size_blocks;
-  int64_t m_total_blocks;
+  int64_t m_total_blocks;//总块数
   int16_t m_level;
   int16_t m_num_child;
 
-  int64_t m_used_blocks;
-  int64_t m_reserved_blocks;
+  int64_t m_used_blocks;//已用的块
+  int64_t m_reserved_blocks;//预留的块
   std::mutex m_blocks_lock;
   BitMapAreaList *m_child_list;
 

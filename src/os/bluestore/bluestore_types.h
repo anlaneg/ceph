@@ -88,9 +88,9 @@ inline static ostream& operator<<(ostream& out, const AllocExtent& e) {
 }
 
 class ExtentList {
-  AllocExtentVector *m_extents;//填充
+  AllocExtentVector *m_extents;//存储结果用
   int64_t m_block_size;//块大小
-  int64_t m_max_blocks;
+  int64_t m_max_blocks;//最多需要申请多少块
 
 public:
   void init(AllocExtentVector *extents, int64_t block_size,
@@ -98,7 +98,7 @@ public:
     m_extents = extents;
     m_block_size = block_size;
     m_max_blocks = max_alloc_size / block_size;
-    assert(m_extents->empty());
+    assert(m_extents->empty());//存储用的结果集一定为空
   }
 
   ExtentList(AllocExtentVector *extents, int64_t block_size) {

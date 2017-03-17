@@ -90,6 +90,7 @@ bmap_t BmapEntry::full_bmask() {
   return (bmap_t) -1;
 }
 
+//bmap_t结构的总位数
 int64_t BmapEntry::size() {
   return (sizeof(bmap_t) * 8);
 }
@@ -590,6 +591,7 @@ void BitMapZone::dump_state(int& count)
  */
 int64_t BitMapArea::get_zone_size(CephContext* cct)
 {
+  //每个zone里有多少个块
   return cct->_conf->bluestore_bitmapallocator_blocks_per_zone;
 }
 
@@ -619,7 +621,7 @@ int BitMapArea::get_level(CephContext* cct, int64_t total_blocks)
     spans *= span_size;
     level++;
   }
-  return level;
+  return level;//获得有多少层
 }
 
 int64_t BitMapArea::get_level_factor(CephContext* cct, int level)
@@ -673,7 +675,7 @@ void BitMapAreaIN::init_common(int64_t total_blocks, int64_t area_idx, bool def)
 void BitMapAreaIN::init(int64_t total_blocks, int64_t area_idx, bool def)
 {
   int64_t num_child = 0;
-  alloc_assert(!(total_blocks % BmapEntry::size()));
+  alloc_assert(!(total_blocks % BmapEntry::size()));//总块数是size()的整数倍
 
   init_common(total_blocks, area_idx, def);
   int64_t level_factor = BitMapArea::get_level_factor(cct, m_level);
@@ -731,6 +733,7 @@ void BitMapAreaIN::shutdown()
   unlock();
 }
 
+//检查child是否容许分配
 bool BitMapAreaIN::child_check_n_lock(BitMapArea *child, int64_t required)
 {
   child->lock_shared();
@@ -743,6 +746,7 @@ bool BitMapAreaIN::child_check_n_lock(BitMapArea *child, int64_t required)
 
   int64_t child_used_blocks = child->get_used_blocks();
   int64_t child_total_blocks = child->size();
+  //如果总大于减去已用大小比需要的大小要少，则返回false
   if ((child_total_blocks - child_used_blocks) < required) {
     child->unlock();
     return false;
@@ -790,6 +794,7 @@ int64_t BitMapAreaIN::get_used_blocks_adj()
   return m_used_blocks - m_reserved_blocks;
 }
 
+//预留num个块。
 bool BitMapAreaIN::reserve_blocks(int64_t num)
 {
   bool res = false;
@@ -853,11 +858,13 @@ int64_t BitMapAreaIN::alloc_blocks_dis_int_work(bool wrap, int64_t num_blocks, i
   int64_t allocated = 0;
   int64_t blk_off = 0;
 
+  //构造iter(从hint/m_child_size_blocks开始），容许回绕
   BmapEntityListIter iter = BmapEntityListIter(
         m_child_list, hint / m_child_size_blocks, wrap);
 
   while ((child = (BitMapArea *) iter.next())) {
     if (!child_check_n_lock(child, 1)) {
+      //如果child连一个块也无法分配，则取下一个。
       hint = 0;
       continue;
     }
@@ -868,10 +875,12 @@ int64_t BitMapAreaIN::alloc_blocks_dis_int_work(bool wrap, int64_t num_blocks, i
     hint = 0;
     child_unlock(child);
     if (allocated == num_blocks) {
+      //已分配够，跳出
       break;
     }
   }
 
+  //返回分配的块数目
   return allocated;
 }
 
@@ -1194,6 +1203,7 @@ void BitAllocator::init_check(int64_t total_blocks, int64_t zone_size_block,
         BmapEntry::size();//规范为BmapEntry::size()的倍数
 
   unaligned_blocks = total_blocks % zone_size_block;
+  //这个赋值是错误的吧，m_extra_blocks应等于unaligned_blocks才对？
   m_extra_blocks = unaligned_blocks? zone_size_block - unaligned_blocks: 0;
   total_blocks = ROUND_UP_TO(total_blocks, zone_size_block);//规范成zone_size_block的倍数
 
@@ -1325,6 +1335,7 @@ void BitAllocator::child_unlock(BitMapArea *child)
 bool BitAllocator::check_input_dis(int64_t num_blocks)
 {
   if (num_blocks == 0 || num_blocks > size()) {
+	//检查要求的块是否可满足，如果为0或者大于size，则失败
     return false;
   }
   return true;
@@ -1378,6 +1389,7 @@ void BitAllocator::set_blocks_used(int64_t start_block, int64_t num_blocks)
 /*
  * Allocate N dis-contiguous blocks.
  */
+//需要num_blocks块，最小块min_alloc
 int64_t BitAllocator::alloc_blocks_dis_int(int64_t num_blocks, int64_t min_alloc,
                        int64_t hint, int64_t area_blk_off, ExtentList *block_list)
 {
@@ -1388,6 +1400,7 @@ int64_t BitAllocator::alloc_blocks_dis_int(int64_t num_blocks, int64_t min_alloc
 int64_t BitAllocator::alloc_blocks_dis_res(int64_t num_blocks, int64_t min_alloc,
                                            int64_t hint, ExtentList *block_list)
 {
+  //需要num_blocks个块，最小块必须大于等于min_alloc
   return alloc_blocks_dis_work(num_blocks, min_alloc, hint, block_list, true);
 }
 
@@ -1413,6 +1426,7 @@ int64_t BitAllocator::alloc_blocks_dis_work(int64_t num_blocks, int64_t min_allo
   lock_shared();
   serial_lock();
   if (!reserved && !reserve_blocks(num_blocks)) {
+	//没有要求预留，且预留失败，则goto exit
     goto exit;
   }
 
@@ -1420,11 +1434,13 @@ int64_t BitAllocator::alloc_blocks_dis_work(int64_t num_blocks, int64_t min_allo
     m_stats->add_concurrent_scans(scans);
   }
 
+  //如果还有扫描次数，并且没有申请够空间，则进入（目前仅进去一次）
   while (scans && allocated < num_blocks) {
     allocated += alloc_blocks_dis_int(num_blocks - allocated, min_alloc, hint + allocated, blk_off, block_list);
     scans--;
   }
 
+  //申请的字节数仍不够
   if (allocated < num_blocks) {
     /*
      * Could not find anything in concurrent scan.
@@ -1442,6 +1458,7 @@ int64_t BitAllocator::alloc_blocks_dis_work(int64_t num_blocks, int64_t min_allo
     }
   }
 
+  //取消预留
   unreserve(num_blocks, allocated);
   alloc_dbg_assert(is_allocated_dis(block_list, allocated));
 
@@ -1449,6 +1466,7 @@ exit:
   serial_unlock();
   unlock();
 
+  //返回申请到的块数
   return allocated;
 }
 

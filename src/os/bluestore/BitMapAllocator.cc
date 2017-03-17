@@ -17,7 +17,7 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "bitmapalloc:"
 
-
+////device_size 总大小，block_size 每个块大小
 BitMapAllocator::BitMapAllocator(CephContext* cct, int64_t device_size,
 				 int64_t block_size)
   : cct(cct)
@@ -62,9 +62,10 @@ BitMapAllocator::BitMapAllocator(CephContext* cct, int64_t device_size,
 
 BitMapAllocator::~BitMapAllocator()
 {
-  delete m_bit_alloc;
+  delete m_bit_alloc;//释放
 }
 
+//释放从off起始，长度为len的区域
 void BitMapAllocator::insert_free(uint64_t off, uint64_t len)
 {
   dout(20) << __func__ << " instance " << (uint64_t) this
@@ -79,10 +80,12 @@ void BitMapAllocator::insert_free(uint64_t off, uint64_t len)
              len / m_block_size);//块数量
 }
 
+//预留need字节
 int BitMapAllocator::reserve(uint64_t need)
 {
+  //换算成块，并按块进行预留
   int nblks = need / m_block_size; // apply floor
-  assert(!(need % m_block_size));
+  assert(!(need % m_block_size));//need必须是整数倍
   dout(10) << __func__ << " instance " << (uint64_t) this
            << " num_used " << m_bit_alloc->get_used_blocks()
            << " total " << m_bit_alloc->total_blocks()
@@ -94,10 +97,11 @@ int BitMapAllocator::reserve(uint64_t need)
   return 0;
 }
 
+//释放预留长度
 void BitMapAllocator::unreserve(uint64_t unused)
 {
   int nblks = unused / m_block_size;
-  assert(!(unused % m_block_size));
+  assert(!(unused % m_block_size));//unused必须是整数倍
 
   dout(10) << __func__ << " instance " << (uint64_t) this
            << " unused " << nblks
@@ -113,10 +117,10 @@ int64_t BitMapAllocator::allocate(
   int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents)
 {
 
-  assert(!(alloc_unit % m_block_size));
-  assert(alloc_unit);
+  assert(!(alloc_unit % m_block_size));//最小块必须是block的整数倍
+  assert(alloc_unit);//不能是0
 
-  assert(!max_alloc_size || max_alloc_size >= alloc_unit);
+  assert(!max_alloc_size || max_alloc_size >= alloc_unit);//最大块不能为0，且必须比期待的最小块大
 
   dout(10) << __func__ <<" instance "<< (uint64_t) this
      << " want_size " << want_size
@@ -124,23 +128,28 @@ int64_t BitMapAllocator::allocate(
      << " hint " << hint
      << dendl;
 
+  //请求want_size字节，最小需要alloc_unit/m_block_size块，最大申请max_alloc_size，hint更新为块编号
   return allocate_dis(want_size, alloc_unit / m_block_size,
                       max_alloc_size, hint / m_block_size, extents);
 }
 
+//磁盘空间申请
 int64_t BitMapAllocator::allocate_dis(
   uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
   int64_t hint, mempool::bluestore_alloc::vector<AllocExtent> *extents)
 {
+  //构造list
   ExtentList block_list = ExtentList(extents, m_block_size, max_alloc_size);
-  int64_t nblks = (want_size + m_block_size - 1) / m_block_size;
+  int64_t nblks = (want_size + m_block_size - 1) / m_block_size;//将want_size规范为需要多少的块。
   int64_t num = 0;
 
+  //申请nblks个块，申请的单元大小为alloc_unit,&block_list用于存放结果集
   num = m_bit_alloc->alloc_blocks_dis_res(nblks, alloc_unit, hint, &block_list);
   if (num == 0) {
     return -ENOSPC;
   }
 
+  //返回申请了多少字节
   return num * m_block_size;
 }
 

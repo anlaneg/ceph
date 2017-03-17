@@ -16,6 +16,7 @@ class BitMapAllocator : public Allocator {
 
   int64_t m_block_size;//块大小
 
+  //由m_bit_alloc负责分配,回收
   BitAllocator *m_bit_alloc; // Bit allocator instance
 
   void insert_free(uint64_t offset, uint64_t len);

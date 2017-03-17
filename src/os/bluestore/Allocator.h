@@ -38,8 +38,10 @@ public:
 			   uint64_t max_alloc_size, int64_t hint,
 			   AllocExtentVector *extents) = 0;
 
+  //期待的大小，期待的最小块大小，申请空间
   int64_t allocate(uint64_t want_size, uint64_t alloc_unit,
 		   int64_t hint, AllocExtentVector *extents) {
+	//调内部的，申请want_size,期待的最小块alloc_unit,期待的最大块，以及申请到的结果
     return allocate(want_size, alloc_unit, want_size, hint, extents);
   }
 
@@ -54,6 +56,7 @@ public:
   virtual uint64_t get_free() = 0;
 
   virtual void shutdown() = 0;
+  //生成实例
   static Allocator *create(CephContext* cct, string type, int64_t size,
 			   int64_t block_size);
 };
