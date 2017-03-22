@@ -404,7 +404,7 @@ static void get_object_key(CephContext *cct, const ghobject_t& oid, S *key)
 // char lets us quickly test whether it is a shard key without decoding any
 // of the prefix bytes.
 template<typename S>
-//将ononde_key存放key,然后将offset按内存存入key,最后存入'x'
+//将ononde_key存放key,然后将offset按大端存入key中,最后存入'x'
 static void get_extent_shard_key(const S& onode_key, uint32_t offset,
 				 string *key)
 {
@@ -432,8 +432,10 @@ static void generate_extent_shard_key_and_apply(
 {
   if (key->empty()) { // make full key
     assert(!onode_key.empty());
+    //在key中合入onode_key,offset
     get_extent_shard_key(onode_key, offset, key);
   } else {
+	//替换原有key里的offset
     rewrite_extent_shard_key(offset, key);
   }
   apply(*key);
@@ -826,6 +828,7 @@ void BlueStore::LRUCache::_touch_onode(OnodeRef& o)
   onode_lru.push_front(*o);
 }
 
+//对onode,buffer进行维护
 void BlueStore::LRUCache::_trim(uint64_t onode_max, uint64_t buffer_max)
 {
   dout(20) << __func__ << " onodes " << onode_lru.size() << " / " << onode_max
@@ -835,6 +838,7 @@ void BlueStore::LRUCache::_trim(uint64_t onode_max, uint64_t buffer_max)
   _audit("trim start");
 
   // buffers
+  //buffer数量超限，将其按lru原则删除
   while (buffer_size > buffer_max) {
     auto i = buffer_lru.rbegin();
     if (i == buffer_lru.rend()) {
@@ -849,6 +853,8 @@ void BlueStore::LRUCache::_trim(uint64_t onode_max, uint64_t buffer_max)
   }
 
   // onodes
+  //对onode进行维护，如果它的数量超过onode_max,将会清理掉
+  //缓存的目前无用的onode
   int num = onode_lru.size() - onode_max;
   if (num <= 0)
     return; // don't even try
@@ -862,6 +868,7 @@ void BlueStore::LRUCache::_trim(uint64_t onode_max, uint64_t buffer_max)
     Onode *o = &*p;
     int refs = o->nref.load();
     if (refs > 1) {
+      //如果仍在用
       dout(20) << __func__ << "  " << o->oid << " has " << refs
 	       << " refs, skipping" << dendl;
       if (++skipped >= max_skipped) {
@@ -880,14 +887,14 @@ void BlueStore::LRUCache::_trim(uint64_t onode_max, uint64_t buffer_max)
     }
     dout(30) << __func__ << "  rm " << o->oid << dendl;
     if (p != onode_lru.begin()) {
-      onode_lru.erase(p--);
+      onode_lru.erase(p--);//移除掉
     } else {
       onode_lru.erase(p);
       assert(num == 1);
     }
     o->get();  // paranoia
-    o->c->onode_map.onode_map.erase(o->oid);
-    o->put();
+    o->c->onode_map.onode_map.erase(o->oid);//自缓存中移除
+    o->put();//释放掉o的内存
     --num;
   }
 }
@@ -1217,7 +1224,7 @@ void BlueStore::BufferSpace::_clear(Cache* cache)
   }
 }
 
-//丢弃掉offset位置开始，长度为length的数据
+//丢弃掉bufferspace中offset位置开始，长度为length的数据
 int BlueStore::BufferSpace::_discard(Cache* cache, uint32_t offset, uint32_t length)
 {
   // note: we already hold cache->lock
@@ -1228,32 +1235,49 @@ int BlueStore::BufferSpace::_discard(Cache* cache, uint32_t offset, uint32_t len
   auto i = _data_lower_bound(offset);
   uint32_t end = offset + length;
   while (i != buffer_map.end()) {
+
+	//取出i对应的buffer
     Buffer *b = i->second.get();
     if (b->offset >= end) {
+      //我们要的范围不在bufferspace里，故cache中也一定没有
       break;
     }
+
     if (b->cache_private > cache_private) {
       cache_private = b->cache_private;
     }
-    if (b->offset < offset) {//这一块包含了offset
+
+    if (b->offset < offset) {
+      //1.这一块包含了我要关注的offset，front是我们要在这个
+      //buffer中跳多少字节才能到达我们关心的offset
       int64_t front = offset - b->offset;
-      if (b->end() > end) {//如果这一块包含了front和end
-	// drop middle (split)
-	uint32_t tail = b->end() - end;
+      if (b->end() > end) {
+        //如果这一块恰好包含了我们关心的(offset,offset+len)
+    	//则计算tail,tail是我们关注段后剩余部分
+	    // drop middle (split)
+	    uint32_t tail = b->end() - end;
 	if (b->data.length()) {
+		//如果b的data内有值，则当我们需要删除（offset,offset+len）这一段数据时
+		//我们需要将剩余的tail字节的数据另起一个buffer来保存
 	  bufferlist bl;
 	  bl.substr_of(b->data, b->length - tail, tail);//提取end后面部分
 	  _add_buffer(cache, new Buffer(this, b->state, b->seq, end, bl), 0, b);//把end后的数据加入
 	} else {
-	  _add_buffer(cache, new Buffer(this, b->state, b->seq, end, tail), 0, b);//无数据情况，仅指明长度，无数据
+		//无数据情况，仅指明长度，无数据
+	  _add_buffer(cache, new Buffer(this, b->state, b->seq, end, tail), 0, b);
 	}
 	if (!b->is_writing()) {
 	  cache->_adjust_buffer_size(b, front - (int64_t)b->length);
 	}
+
+	//刚才我们只是处理了结尾，头部部分还没有处理，这里通过截断函数，实现头部部分保持，这样就可以
+	//完成指定段的丢弃
 	b->truncate(front);//截断
 	cache->_audit("discard end 1");
 	break;//收工
-      } else {//这一块仅包含front,没有包含end
+      } else {
+    //2.这一块仅包含front,没有包含end
+    //此时我们仅需要头部截断，然后处理下一个buffer即可
 	// drop tail
 	if (!b->is_writing()) {
 	  cache->_adjust_buffer_size(b, front - (int64_t)b->length);
@@ -1263,13 +1287,15 @@ int BlueStore::BufferSpace::_discard(Cache* cache, uint32_t offset, uint32_t len
 	continue;//尝试下一块
       }
     }
-    //这一块没有包含offset,但包含在offset与end之间
+
+    //3.这一块没有包含offset,但包含在offset与end之间
     if (b->end() <= end) {
       // drop entire buffer
       _rm_buffer(cache, i++);//这种不包含end,直接删除掉
       continue;
     }
-    //这种b的前部分需要丢弃掉
+
+    //4.这种b的前部分需要丢弃掉
     // drop front
     uint32_t keep = b->end() - end;
     if (b->data.length()) {
@@ -1296,31 +1322,45 @@ void BlueStore::BufferSpace::read(
   interval_set<uint32_t>& res_intervals)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
+  //清空结果集
   res.clear();
   res_intervals.clear();
   uint32_t want_bytes = length;
   uint32_t end = offset + length;
+  //找出包含offset的第一个buffer
   for (auto i = _data_lower_bound(offset);
        i != buffer_map.end() && offset < end && i->first < end;
        ++i) {
+	//能进入此流程，说明buffer是存在的
     Buffer *b = i->second.get();
     assert(b->end() > offset);
+
     if (b->is_writing() || b->is_clean()) {
       if (b->offset < offset) {
+    	  //我们可以从buffer中读取，且这个buffer的offset比我们要
+    	  //的位置要小，故我们需要跳skip字节后，再开始读取，在这个buffer
+    	  //中，容许我们读取的字节数是l.
 	uint32_t skip = offset - b->offset;
 	uint32_t l = MIN(length, b->length - skip);
+	//构造结果集
 	res[offset].substr_of(b->data, skip, l);
 	res_intervals.insert(offset, l);
+
 	offset += l;
 	length -= l;
+
 	if (!b->is_writing()) {
-	  cache->_touch_buffer(b);//
+		//读到了，touch cache
+	  cache->_touch_buffer(b);
 	}
 	continue;
       }
       if (b->offset > offset) {
+    	  //我们可以从这个buffer中读取，但我们要求的offset比这个buffer的位置
+    	  //要更靠前，原因是有空隙，空隙为gap字节
 	uint32_t gap = b->offset - offset;
-	if (length <= gap) {//offset与b->offset之间有空隙，这段空隙比length要大，说明读完了
+	if (length <= gap) {
+	  //offset与b->offset之间有空隙，这段空隙比length要大，说明读完了
 	  break;
 	}
 	offset += gap;//跳过空隙
@@ -1329,15 +1369,18 @@ void BlueStore::BufferSpace::read(
       if (!b->is_writing()) {
 	cache->_touch_buffer(b);
       }
-      if (b->length > length) {//说明b内部包含有我们需要数据，0-length范围是我们要的
+      if (b->length > length) {
+    	  //b内部包含有我们需要数据，0-length范围是我们要的
 	res[offset].substr_of(b->data, 0, length);
 	res_intervals.insert(offset, length);
         break;//读完了
-      } else {//这个b，我们全要
+      } else {
+    	  //这个b，我们全要
 	res[offset].append(b->data);
 	res_intervals.insert(offset, b->length);
         if (b->length == length)
           break;//读完
+
     //还没有满足，需要再向后索取
 	offset += b->length;
 	length -= b->length;
@@ -1345,6 +1388,7 @@ void BlueStore::BufferSpace::read(
     }
   }
 
+  //没有我们想要的数据
   uint64_t hit_bytes = res_intervals.size();
   assert(hit_bytes <= want_bytes);
   uint64_t miss_bytes = want_bytes - hit_bytes;
@@ -1352,29 +1396,35 @@ void BlueStore::BufferSpace::read(
   cache->logger->inc(l_bluestore_buffer_miss_bytes, miss_bytes);
 }
 
-//放入writing中的数据已写完成，检查如果需要缓存就缓存，不需要缓存的移除掉
+//seq事务对应的写已完成，检查writing如果需要缓存就缓存，不需要缓存的移除掉
 void BlueStore::BufferSpace::finish_write(Cache* cache, uint64_t seq)
 {
   std::lock_guard<std::recursive_mutex> l(cache->lock);
 
   auto i = writing.begin();
   while (i != writing.end()) {
-    if (i->seq > seq) {//后面的seq将比这个seq还要大，不用再尝试了
+    if (i->seq > seq) {
+      //后面的seq将比这个seq还要大，没必要再检查下去了
       break;
     }
-    if (i->seq < seq) {//i不是我们需要的seq（这里有个问题需要确认？按理不应存在小于seq的数据项，可能与cache的工作原理有关）
+    if (i->seq < seq) {
+    	//i不是我们需要的seq（这里有个问题需要确认？按理不应存在小于seq的数据项，可能与cache的工作原理有关）
+    	//忽略掉
       ++i;
       continue;
     }
 
+    //找到了这个seq对应的buffer
     Buffer *b = &*i;
     ldout(cache->cct, 20) << __func__ << " " << *b << dendl;
-    assert(b->is_writing());
+    assert(b->is_writing());//一定处于writing状态
 
-    if (b->flags & Buffer::FLAG_NOCACHE) {//要求不缓存，我们自buffer_map中移除
+    if (b->flags & Buffer::FLAG_NOCACHE) {
+      //当日写入时，要求不缓存，我们将其buffer_map中移除
       writing.erase(i++);
       buffer_map.erase(b->offset);
     } else {
+      //自writing内删除掉，加入到cache中
       b->state = Buffer::STATE_CLEAN;//已写完成
       writing.erase(i++);
       cache->_add_buffer(b, 1, nullptr);//交给缓存
@@ -1442,6 +1492,7 @@ void BlueStore::BufferSpace::split(Cache* cache, size_t pos, BlueStore::BufferSp
 #undef dout_prefix
 #define dout_prefix *_dout << "bluestore.OnodeSpace(" << this << " in " << cache << ") "
 
+//添加onode到onode_map
 //如果onode_map中没有，则填加，如果有，则直接返回，忽略添加。
 BlueStore::OnodeRef BlueStore::OnodeSpace::add(const ghobject_t& oid, OnodeRef o)
 {
@@ -1455,7 +1506,7 @@ BlueStore::OnodeRef BlueStore::OnodeSpace::add(const ghobject_t& oid, OnodeRef o
   }
   ldout(cache->cct, 30) << __func__ << " " << oid << " " << o << dendl;
   onode_map[oid] = o;
-  cache->_add_onode(o, 1);//加入cache
+  cache->_add_onode(o, 1);//加入cache（传入的为1，会被加入到头部）
   return o;
 }
 
@@ -1472,7 +1523,7 @@ BlueStore::OnodeRef BlueStore::OnodeSpace::lookup(const ghobject_t& oid)
   }
   ldout(cache->cct, 30) << __func__ << " " << oid << " hit " << p->second
 			<< dendl;
-  cache->_touch_onode(p->second);//表示最近查到过
+  cache->_touch_onode(p->second);//表示最近查到过（会被更新到头部lru)
   cache->logger->inc(l_bluestore_onode_hits);
   return p->second;
 }
@@ -1541,7 +1592,7 @@ void BlueStore::OnodeSpace::rename(
   if (pn != onode_map.end()) {//如果pn存在，将被overwrite,故先删除
     ldout(cache->cct, 30) << __func__ << "  removing target " << pn->second
 			  << dendl;
-    cache->_rm_onode(pn->second);
+    cache->_rm_onode(pn->second);//自缓存跟踪中移除
     onode_map.erase(pn);
   }
   OnodeRef o = po->second;
@@ -2598,7 +2649,7 @@ void BlueStore::ExtentMap::init_shards(bool loaded, bool dirty)
 }
 
 //按shards数组中的记录从db中加载offset-length段，并将其加入extentmap中
-//加载offset,length之间的元数据
+//加载offset,length之间的元数据（如果从kernel的页错误概念来理解这里的范围错误会好很多）
 void BlueStore::ExtentMap::fault_range(
   KeyValueDB *db,
   uint32_t offset,
@@ -2611,7 +2662,7 @@ void BlueStore::ExtentMap::fault_range(
   auto last = seek_shard(offset + length);
 
   if (start < 0)
-    return;
+    return;//没有内容
 
   assert(last >= start);
   string key;
@@ -2622,10 +2673,11 @@ void BlueStore::ExtentMap::fault_range(
       dout(30) << __func__ << " opening shard 0x" << std::hex
 	       << p->shard_info->offset << std::dec << dendl;
       bufferlist v;
+      //构造key，并提取key对应的值，将值存放在v里
       generate_extent_shard_key_and_apply(
 	onode->key, p->shard_info->offset, &key,
         [&](const string& final_key) {
-          int r = db->get(PREFIX_OBJ, final_key, &v);
+          int r = db->get(PREFIX_OBJ, final_key, &v);//这个函数可以使用'v‘变量
           if (r < 0) {
 	    derr << __func__ << " missing shard 0x" << std::hex
 		 << p->shard_info->offset << std::dec << " for " << onode->oid
@@ -2634,6 +2686,8 @@ void BlueStore::ExtentMap::fault_range(
           }
         }
       );
+      //解析v,将v中的数据（由于decode_some是本class的成员函数，所以它直接将成员
+      //解析了，这个写法在这里看起来非常的不明显。！！！
       p->extents = decode_some(v);
       p->loaded = true;
       dout(20) << __func__ << " open shard 0x" << std::hex
@@ -2645,7 +2699,7 @@ void BlueStore::ExtentMap::fault_range(
     } else {
       onode->c->store->logger->inc(l_bluestore_onode_shard_hits);
     }
-    ++start;
+    ++start;//跳到一个需要加载的shards
   }
 }
 
@@ -2703,6 +2757,8 @@ BlueStore::extent_map_t::iterator BlueStore::ExtentMap::find_lextent(
   return fp;
 }
 
+//这个函数在extent_map中查找包含offset对应的项。如果没有找到包含的，则返回第一个大于offset的项
+//如果仍未指到，返回end()
 BlueStore::extent_map_t::iterator BlueStore::ExtentMap::seek_lextent(
   uint64_t offset)
 {
@@ -2710,7 +2766,8 @@ BlueStore::extent_map_t::iterator BlueStore::ExtentMap::seek_lextent(
   auto fp = extent_map.lower_bound(dummy);//找出第一个大于等于offset的
   if (fp != extent_map.begin()) {//如果offset不是当前extent_map中最小的
     --fp;//向后退一格，防止end(),防止offset被前一个范围所包含
-    if (fp->logical_end() <= offset) {//如果这个范围无法满足，则增加fp
+    if (fp->logical_end() <= offset) {
+    	//检查这个范围是否包含了offset,如果没有包含则返回下一个。
       ++fp;
     }
   }
@@ -2731,6 +2788,7 @@ BlueStore::extent_map_t::const_iterator BlueStore::ExtentMap::seek_lextent(
   return fp;
 }
 
+//检查这一段是否在extent_map中
 bool BlueStore::ExtentMap::has_any_lextents(uint64_t offset, uint64_t length)
 {
   auto fp = seek_lextent(offset);
@@ -3040,7 +3098,7 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
     }
   }
 
-  OnodeRef o = onode_map.lookup(oid);//如果已存在，直接返回
+  OnodeRef o = onode_map.lookup(oid);//如果o在onde_map缓存中已存在，直接返回
   if (o)
     return o;
 
@@ -3050,11 +3108,13 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   ldout(store->cct, 20) << __func__ << " oid " << oid << " key "
 			<< pretty_binary_string(key) << dendl;
 
+  //在数据库里查询onode
   bufferlist v;
   int r = store->db->get(PREFIX_OBJ, key.c_str(), key.size(), &v);
   ldout(store->cct, 20) << " r " << r << " v.len " << v.length() << dendl;
   Onode *on;
-  if (v.length() == 0) {//数据库里没有
+  if (v.length() == 0) {
+	//数据库里没有
     assert(r == -ENOENT);
     if (!store->cct->_conf->bluestore_debug_misc &&
 	!create)
@@ -3062,7 +3122,8 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
 
     // new object, new onode
     on = new Onode(this, oid, key);//创建
-  } else {//数据库里有
+  } else {
+	//数据库里有,将读取到的数据解码后返回
     // loaded
     assert(r >= 0);
     on = new Onode(this, oid, key);
@@ -3109,6 +3170,7 @@ void BlueStore::Collection::trim_cache()//cache维护
 			<< ", total onodes " << total_onodes
 			<< ", bytes_per_onode " << bytes_per_onode
 	   << dendl;
+  //对缓存的onode等进行维护（去除掉临时用不到的）
   cache->trim(shard_target, store->cct->_conf->bluestore_cache_meta_ratio,
 	      bytes_per_onode);
 
@@ -5792,9 +5854,10 @@ struct region_t {
 typedef list<region_t> regions2read_t;
 typedef map<BlueStore::BlobRef, regions2read_t> blobs2read_t;
 
-//读取数据时，需要先知道o对应的各物理段，这此通过fault_range载入，
-//然后通过blob读数据，读取的数据如果是连续的，则直接加入，如果不连续，检查是否压
-//缩
+//读取数据
+//读取数据时，需要先知道o对应的各物理段，这里通过fault_range载入，
+//然后首先尝试通过bufferspace进行读取（buffer加速）
+//如果bufferspace没有读全，则自磁盘上进行读取（同时考虑压缩情况）
 int BlueStore::_do_read(
   Collection *c,
   OnodeRef o,
@@ -5830,7 +5893,8 @@ int BlueStore::_do_read(
     buffered = true;
   }
 
-  if (offset + length > o->onode.size) {//截短length
+  if (offset + length > o->onode.size) {
+	//截短length
     length = o->onode.size - offset;
   }
 
@@ -5852,7 +5916,10 @@ int BlueStore::_do_read(
   unsigned num_regions = 0;
   auto lp = o->extent_map.seek_lextent(offset);
   while (left > 0 && lp != o->extent_map.extent_map.end()) {
-    if (pos < lp->logical_offset) {//说明有个洞
+
+	//找到了起始位置，检查是否有空洞
+    if (pos < lp->logical_offset) {
+      //说明有个空洞
       unsigned hole = lp->logical_offset - pos;
       if (hole >= left) {//读完
 	break;
@@ -5863,6 +5930,7 @@ int BlueStore::_do_read(
       pos += hole;
       left -= hole;
     }
+
     BlobRef bptr = lp->blob;
     unsigned l_off = pos - lp->logical_offset;//在lp中的偏移量
     unsigned b_off = l_off + lp->blob_offset;//在blob中的偏移量
@@ -5884,18 +5952,21 @@ int BlueStore::_do_read(
       if (pc != cache_res.end() &&
 	  pc->first == b_off) {//连续块处理
 	l = pc->second.length();
-	ready_regions[pos].claim(pc->second);//从pos位置开始的数据pc->second
+	//从pos位置开始的数据pc->second（这个数据是已ready的数据）
+	ready_regions[pos].claim(pc->second);
 	dout(30) << __func__ << "    use cache 0x" << std::hex << pos << ": 0x"
 		 << b_off << "~" << l << std::dec << dendl;
 	++pc;//下一块
-      } else {//中间有空隙
+      } else {
+    	  //中间有空隙
 	l = b_len;
 	if (pc != cache_res.end()) {
 	  assert(pc->first > b_off);
-	  l = pc->first - b_off;
+	  l = pc->first - b_off;//中间的空隙有l字节
 	}
 	dout(30) << __func__ << "    will read 0x" << std::hex << pos << ": 0x"
 		 << b_off << "~" << l << std::dec << dendl;
+	//b_off,l长度没有读到
 	blobs2read[bptr].emplace_back(region_t(pos, b_off, l));
 	++num_regions;
       }
@@ -5913,10 +5984,12 @@ int BlueStore::_do_read(
                                     // The error isn't that much...
   vector<bufferlist> compressed_blob_bls;
   IOContext ioc(cct, NULL);
+  //存放在blobs2read中的段是没有读到的，需要去磁盘上读一次
   for (auto& p : blobs2read) {
     BlobRef bptr = p.first;
     dout(20) << __func__ << "  blob " << *bptr << std::hex
 	     << " need 0x" << p.second << std::dec << dendl;
+    //压缩的内容读取
     if (bptr->get_blob().is_compressed()) {
       // read the whole thing
       if (compressed_blob_bls.empty()) {
@@ -5930,6 +6003,7 @@ int BlueStore::_do_read(
 	[&](uint64_t offset, uint64_t length) {
 	  int r;
 	  // use aio if there are more regions to read than those in this blob
+	  //多region时，采用aio读取，否则用read读取
 	  if (num_regions > p.second.size()) {
 	    r = bdev->aio_read(offset, length, &bl, &ioc);
 	  } else {
@@ -5940,6 +6014,7 @@ int BlueStore::_do_read(
           return 0;
 	});
     } else {
+      //非压缩的内容读取
       // read the pieces
       for (auto& reg : p.second) {
 	// determine how much of the blob to read
@@ -5967,6 +6042,7 @@ int BlueStore::_do_read(
 	  [&](uint64_t offset, uint64_t length) {
 	    int r;
 	    // use aio if there is more than one region to read
+	    //同样读取，多region时aio读取，否则read读取
 	    if (num_regions > 1) {
 	      r = bdev->aio_read(offset, length, &reg.bl, &ioc);
 	    } else {
@@ -5996,6 +6072,7 @@ int BlueStore::_do_read(
     BlobRef bptr = b2r_it->first;
     dout(20) << __func__ << "  blob " << *bptr << std::hex
 	     << " need 0x" << b2r_it->second << std::dec << dendl;
+    //解压缩处理
     if (bptr->get_blob().is_compressed()) {
       assert(p != compressed_blob_bls.end());
       bufferlist& compressed_bl = *p++;
@@ -6016,6 +6093,7 @@ int BlueStore::_do_read(
 	  raw_bl, i.blob_xoffset, i.length);
       }
     } else {
+    	//check sum校验
       for (auto& reg : b2r_it->second) {
 	if (_verify_csum(o, &bptr->get_blob(), reg.r_off, reg.bl,
 			 reg.logical_offset) < 0) {
@@ -6035,6 +6113,7 @@ int BlueStore::_do_read(
   }
 
   // generate a resulting buffer
+  //生成结果
   auto pr = ready_regions.begin();
   auto pr_end = ready_regions.end();
   pos = 0;
@@ -7909,7 +7988,8 @@ int BlueStore::queue_transactions(
   // journal wal items
   if (txc->wal_txn) {
     // move releases to after wal
-    txc->wal_txn->released.swap(txc->released);//将txc->released中的数据交给wal_txn提交
+	//将txc->released中的数据交给wal_txn提交
+    txc->wal_txn->released.swap(txc->released);
     assert(txc->released.empty());
 
     txc->wal_txn->seq = ++wal_seq;
@@ -8099,8 +8179,9 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     OnodeRef &o = ovec[op->oid];//取出object
     if (!o) {
       ghobject_t oid = i.get_oid(op->oid);
-      o = c->get_onode(oid, create);//在这里找到o
+      o = c->get_onode(oid, create);//c是目录，在c中查找具体的onode.没有就创建
     }
+    //非创建操作，且o不存在，则失败
     if (!create && (!o || !o->exists)) {//如果要求object需要，但实际上元数据显示不存在，则报错
       dout(10) << __func__ << " op " << op->op << " got ENOENT on "
 	       << i.get_oid(op->oid) << dendl;
@@ -8115,11 +8196,11 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
     case Transaction::OP_WRITE://写操作执行
       {
-        uint64_t off = op->off;
-        uint64_t len = op->len;
-	uint32_t fadvise_flags = i.get_fadvise_flags();
+        uint64_t off = op->off;//操作的偏移量
+        uint64_t len = op->len;//操作的长度
+	    uint32_t fadvise_flags = i.get_fadvise_flags();
         bufferlist bl;
-        i.decode_bl(bl);
+        i.decode_bl(bl);//要写入的数据
 	r = _write(txc, c, o, off, len, bl, fadvise_flags);//执行write(write_big,write_small入口）
       }
       break;
@@ -8479,6 +8560,14 @@ void BlueStore::_pad_zeros(
   assert(bl->length() == length);
 }
 
+//处理小写情况(这段代码写的非常屎）
+//这个函数太长了，主要处理的事比较多，可以划分函数来做这件事，但作者。。呵呵
+//1.写时可能需要padd
+//2.写时需要先读后写
+//3.写的字节可能非常小，不值得专门让磁头偏移过去
+//4.已经有物理空间了且没有用，aio写直接搞定
+//5.已经有物理空间了，且之前有写过，overwite问题，写wal op搞定
+//6.没有物理空间，需要分配然后再写，交给writes处理
 void BlueStore::_do_write_small(
     TransContext *txc,
     CollectionRef &c,
@@ -8490,65 +8579,88 @@ void BlueStore::_do_write_small(
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
   assert(length < min_alloc_size);
+
+  //要写的数据的结尾位置
   uint64_t end = offset + length;
 
   logger->inc(l_bluestore_write_small);
   logger->inc(l_bluestore_write_small_bytes, length);
 
+  //将blp内length长度copy到bl内。
   bufferlist bl;
-  blp.copy(length, bl);//将blp内length长度copy到bl内
+  blp.copy(length, bl);
 
   // look for an existing mutable blob we can use
-  //查找offset所在的lextent
+  //查找offset所在的lextent，准备从找到的lextent的位置开始遍历
   auto ep = o->extent_map.seek_lextent(offset);
   if (ep != o->extent_map.extent_map.begin()) {
+	//担心重叠，故将ep向后退一格
     --ep;
     if (ep->blob_end() <= offset) {
+      //这个位置在offset的前面，从下一个位置准备遍历
       ++ep;
     }
   }
+
+  //从当前ep的位置开始，遍历
   BlobRef b;
-  while (ep != o->extent_map.extent_map.end()) {//均可以找到相应的范围
+  while (ep != o->extent_map.extent_map.end()) {
+	//当前ep的起始位置比我们要写的位置要大，也就是说，我们要写在ep的前面。
     if (ep->blob_start() >= end) {
-      break;//可能找到了（要么在这中间，要么与这重叠）
+      break;
     }
+
     b = ep->blob;
-    if (!b->get_blob().is_mutable()) {//不可变换
+    if (!b->get_blob().is_mutable()) {
+      //不可变换
       dout(20) << __func__ << " ignoring immutable " << *b << dendl;
       ++ep;
       continue;
     }
+
     if (ep->logical_offset % min_alloc_size !=
 	ep->blob_offset % min_alloc_size) {
       dout(20) << __func__ << " ignoring offset-skewed " << *b << dendl;
       ++ep;
       continue;
     }
+
     uint64_t bstart = ep->blob_start();
     dout(20) << __func__ << " considering " << *b
 	     << " bstart 0x" << std::hex << bstart << std::dec << dendl;
 
-    //当写不对齐时，需要将放大后的位置进行填充（填充有两种办法，之前没有写，填充０，之前有写过，读出来再填充）
-    //这里我们先检查头部需要填充多少字节，尾部需要填充多少字节，至于是填充０还是读后写，后面再考虑
     // can we pad our head/tail out with zeros?
+    //当写不对齐时，需要执行放大写，放大后的位置需要进行填充
+    //而填充有两种办法，之前没有写过，则填充‘０’；之前有写过，则读出来再填充。
+    //这里我们先检查头部需要填充多少字节(head_pad)，尾部需要填充多少字节(head_pad)，
+    //至于是填充０还是读后写，后面再考虑
+
+    //chunk_size是设备本身的块大小，对硬盘设备来说，块设备是一个基本单位，读写的长度均需要是
+    //其的整数倍。这里offset如果与chunk_size不对齐，则offset &(chunk_size -1)实际上为
+    //头部需要填充多少字节，而chunk_size - (end & (chunk_size -1)) 为尾部需要填充多少
     uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
-    uint64_t head_pad = P2PHASE(offset, chunk_size);//offset前移数量（即head填充）
+    uint64_t head_pad = P2PHASE(offset, chunk_size);
     uint64_t tail_pad = P2NPHASE(end, chunk_size);
     if (head_pad || tail_pad) {
+      //很明显，范围扩大了，需要加载更大的范围
       o->extent_map.fault_range(db, offset - head_pad,
                                 length + head_pad + tail_pad);
     }
+
+    //如果head_pad到chunk_size所属的段在o中已包含，则不必填充0
     if (head_pad &&
 	o->extent_map.has_any_lextents(offset - head_pad, chunk_size)) {
-      head_pad = 0;//已申请不必再填充(说明已写，这种需要先读出来再写）
+      head_pad = 0;
     }
 
+    //tail_pad是否必要填充（处理同上）
     if (tail_pad && o->extent_map.has_any_lextents(end, tail_pad)) {
-      tail_pad = 0;//尾部已存在，不必再填充（需要先读出来再写）
+      tail_pad = 0;
     }
 
+    //填充‘0’
     bufferlist padded = bl;
-    if (head_pad) {//这种是需要填充０的
+    if (head_pad) {
       bufferlist z;
       z.append_zero(head_pad);//填充0
       z.claim_append(padded);//并将其填充在bl前面
@@ -8557,40 +8669,51 @@ void BlueStore::_do_write_small(
     if (tail_pad) {
       padded.append_zero(tail_pad);//在padded中填充tail_pad
     }
-    if (head_pad || tail_pad) {//对填充数据进行计数（由于不对齐，且用户还没有写不对齐部分，故而填充０）
+    if (head_pad || tail_pad) {
+      //对填充数据进行计数（由于不对齐，且用户还没有写不对齐部分，故而填充０）
       dout(20) << __func__ << "  can pad head 0x" << std::hex << head_pad
 	       << " tail 0x" << tail_pad << std::dec << dendl;
       logger->inc(l_bluestore_write_pad_bytes, head_pad + tail_pad);
     }
 
     // direct write into unused blocks of an existing mutable blob?
+    //我们可能经过了填充，故要写入的实际数据的位置，要写入的数据长度均需要变更
     uint64_t b_off = offset - head_pad - bstart;//左侧左移
-    uint64_t b_len = length + head_pad + tail_pad;//右侧右移
+    uint64_t b_len = length + head_pad + tail_pad;//总长度增大
+
+
     if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&//对齐
 	b->get_blob().get_ondisk_length() >= b_off + b_len &&//包启了这段范围
 	b->get_blob().is_unused(b_off, b_len) && //这段没有使用
-	b->get_blob().is_allocated(b_off, b_len)) {//不需要放大写，且不需要分配新的段。这一段，恰没有人写过。写到没有使用的段
+	b->get_blob().is_allocated(b_off, b_len)) {
+      //如果进入此流程，说明offset及b_len是对齐的，我们现在要写的这段已被映射了物理磁盘
+      //且这一段被标记为未使用
       dout(20) << __func__ << "  write to unused 0x" << std::hex
 	       << b_off << "~" << b_len
 	       << " pad 0x" << head_pad << " + 0x" << tail_pad
 	       << std::dec << " of mutable " << *b << dendl;
+      //加入bufferspace
       _buffer_cache_write(txc, b, b_off, padded,
-			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);//加入buffer
+			  wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
 
       if (!g_conf->bluestore_debug_omit_block_device_write) {
         if (b_len <= prefer_wal_size) {
+        	//要写的数据比wal要小,将这么小的数据直接构造成op写到wal中
+        	//这里是将其先构造成op
 	  dout(20) << __func__ << " defering small 0x" << std::hex
 		   << b_len << std::dec << " unused write via wal" << dendl;
 	  bluestore_wal_op_t *op = _get_wal_op(txc, o);
 	  op->op = bluestore_wal_op_t::OP_WRITE;
+	  //对blob中(b_off,b_off+b_len之间的数据段调用回调，用op计录哪些物理范围将被写)
 	  b->get_blob().map(
 	    b_off, b_len,
 	    [&](uint64_t offset, uint64_t length) {
 	      op->extents.emplace_back(bluestore_pextent_t(offset, length));
 	      return 0;
 	    });
-	  op->data = padded;
+	  op->data = padded;//提供的数据
 	} else {
+		//要写的数据比wal要大，直接通过aio写入
 	  b->get_blob().map_bl(
 	    b_off, padded,
 	    [&](uint64_t offset, bufferlist& t) {
@@ -8599,12 +8722,15 @@ void BlueStore::_do_write_small(
 	    });
 	}
       }
+
+      //计算checksum
       b->dirty_blob().calc_csum(b_off, padded);
       dout(20) << __func__ << "  lex old " << *ep << dendl;
+      //记录b_off+head_pad,length段被写入
       Extent *le = o->extent_map.set_lextent(offset, b_off + head_pad, length,
 					     b,
-					     &wctx->old_extents);//增大范围
-      b->dirty_blob().mark_used(le->blob_offset, le->length);
+					     &wctx->old_extents);
+      b->dirty_blob().mark_used(le->blob_offset, le->length);//标记被用
       txc->statfs_delta.stored() += le->length;
       dout(20) << __func__ << "  lex " << *le << dendl;
       logger->inc(l_bluestore_write_small_unused);
@@ -8613,20 +8739,26 @@ void BlueStore::_do_write_small(
 
     // read some data to fill out the chunk?
     //写的时候需要读一部分内容，读出来，加上要写的就行
+    //先计算出头部需要读多长，尾部需要读多长
     uint64_t head_read = P2PHASE(b_off, chunk_size);
     uint64_t tail_read = P2NPHASE(b_off + b_len, chunk_size);
     if ((head_read || tail_read) &&
 	(b->get_blob().get_ondisk_length() >= b_off + b_len + tail_read) &&//包含了这段范围
-	head_read + tail_read < min_alloc_size) {//head_read或tail_read不为0,说明需要先读出来
+	head_read + tail_read < min_alloc_size) {
+    	//进入此流程说明：head_read或tail_read不为0,说明需要先读出来，而磁盘也包含了这段数据，且
+    	//读写总字节数小于min_alloc_size
       dout(20) << __func__ << "  reading head 0x" << std::hex << head_read
 	       << " and tail 0x" << tail_read << std::dec << dendl;
-      if (head_read) {//需要在head写前进行读操作
+
+      if (head_read) {
+        //需要在head写前进行读操作
 	bufferlist head_bl;
 	int r = _do_read(c.get(), o, offset - head_pad - head_read, head_read,
 			 head_bl, 0);//写时读取问题（先把要多写的读出来，前向写前读），自硬盘读
 	assert(r >= 0 && r <= (int)head_read);
 	size_t zlen = head_read - r;
-	if (zlen) {//不足的部分补０
+	if (zlen) {
+	  //不足的部分补０
 	  head_bl.append_zero(zlen);
 	  logger->inc(l_bluestore_write_pad_bytes, zlen);
 	}
@@ -8636,7 +8768,9 @@ void BlueStore::_do_write_small(
 	padded.swap(head_bl);
 	logger->inc(l_bluestore_write_penalty_read_ops);
       }
-      if (tail_read) {//需要在tail写前进行读操作
+
+      if (tail_read) {
+          //需要在tail写前进行读操作
 	bufferlist tail_bl;
 	int r = _do_read(c.get(), o, offset + length + tail_pad, tail_read,
 			 tail_bl, 0);//后面写前读
@@ -8657,7 +8791,10 @@ void BlueStore::_do_write_small(
     if (b->get_blob().get_ondisk_length() >= b_off + b_len &&//当前写范围在文件已有数据范围内
 	b_off % chunk_size == 0 &&//对齐
 	b_len % chunk_size == 0 &&//对齐
-	b->get_blob().is_allocated(b_off, b_len)) {//需要放大读写时处理（不需要申请空间，是overwrite）
+	b->get_blob().is_allocated(b_off, b_len)) {
+    	//当前写操作对应的物理空间已申请，故直接进行overwrite就行。
+    	//overwrite有它特殊的问题，在overwrite时，如果断电，则会出现数据不一致，故
+    	//overwrite需要在这里处理为写wal 操作的方式完成。
       bluestore_wal_op_t *op = _get_wal_op(txc, o);//仅overwrite将其操作加入给wal处理
       op->op = bluestore_wal_op_t::OP_WRITE;
       _buffer_cache_write(txc, b, b_off, padded,
@@ -8668,7 +8805,7 @@ void BlueStore::_do_write_small(
 	[&](uint64_t offset, uint64_t length) {
 	  op->extents.emplace_back(bluestore_pextent_t(offset, length));//记录wal操作操作的范围段
           return 0;
-	});//将此类型的写直接分配一个bluestore_wal_op_t操作，由其来触发写
+	});
       assert(r == 0);
       if (b->get_blob().csum_type) {
 	b->dirty_blob().calc_csum(b_off, padded);
@@ -8689,19 +8826,23 @@ void BlueStore::_do_write_small(
     ++ep;
   }
 
-  //需要放大写，且写时需要申请空间（范围需要扩大）
+  //需要扩大新的blob的处理（我们在原有的blob中没有找到对应的offset)
+  //新的blob 不需要写到日志里？
   // new blob.
   b = c->new_blob();
   unsigned alloc_len = min_alloc_size;
   uint64_t b_off = P2PHASE(offset, alloc_len);
   uint64_t b_off0 = b_off;
+  //加入缓存
   _buffer_cache_write(txc, b, b_off, bl,
 		      wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
   _pad_zeros(&bl, &b_off0, block_size);
+  //记录逻辑段
   Extent *le = o->extent_map.set_lextent(offset, b_off,
 			 length, b, &wctx->old_extents);
   txc->statfs_delta.stored() += le->length;
   dout(20) << __func__ << "  lex " << *le << dendl;
+  //这种直接放入writes，后由由writes来写。
   wctx->write(b, alloc_len, b_off0, bl, b_off, length, true);
   logger->inc(l_bluestore_write_small_new);
   return;
@@ -8722,7 +8863,7 @@ void BlueStore::_do_write_big(//数据为对齐的读
   logger->inc(l_bluestore_write_big);
   logger->inc(l_bluestore_write_big_bytes, length);
   while (length > 0) {
-    BlobRef b = c->new_blob();
+    BlobRef b = c->new_blob();//创建空的blob
     auto l = MIN(wctx->target_blob_size, length);
     bufferlist t;
     blp.copy(l, t);
@@ -8752,7 +8893,7 @@ int BlueStore::_do_alloc_write(
   for (auto &wi : wctx->writes) {
     need += wi.blob_length;
   }
-  int r = alloc->reserve(need);
+  int r = alloc->reserve(need);//检查空间是否足够
   if (r < 0) {
     derr << __func__ << " failed to reserve 0x" << std::hex << need << std::dec
 	 << dendl;
@@ -8806,12 +8947,13 @@ int BlueStore::_do_alloc_write(
     }
   );
 
+  //遍历每一个待写入项
   for (auto& wi : wctx->writes) {
     BlobRef b = wi.b;
     bluestore_blob_t& dblob = b->dirty_blob();
     uint64_t b_off = wi.b_off;
     bufferlist *l = &wi.bl;
-    uint64_t final_length = wi.blob_length;
+    uint64_t final_length = wi.blob_length;//要写的项的长度
     uint64_t csum_length = wi.blob_length;
     unsigned csum_order = block_size_order;
     bufferlist compressed_bl;
@@ -8885,14 +9027,15 @@ int BlueStore::_do_alloc_write(
 
     AllocExtentVector extents;
     extents.reserve(4);  // 4 should be (more than) enough for most allocations
+    //申请物理磁盘空间final_length,最小申请的单元块大小min_alloc_size,最大申请的单元块max_alloc_size
     int64_t got = alloc->allocate(final_length, min_alloc_size, max_alloc_size,
-                            hint, &extents);
+                            hint, &extents);//申请磁盘空间
     assert(got == (int64_t)final_length);
     need -= got;
-    txc->statfs_delta.allocated() += got;
+    txc->statfs_delta.allocated() += got;//指明占用
     for (auto& p : extents) {
       bluestore_pextent_t e = bluestore_pextent_t(p);
-      txc->allocated.insert(e.offset, e.length);
+      txc->allocated.insert(e.offset, e.length);//记录这个事务申请到的物理磁盘范围
       dblob.extents.push_back(e);
       hint = p.end();
     }
@@ -8903,10 +9046,12 @@ int BlueStore::_do_alloc_write(
 	     << " csum_length 0x" << std::hex << csum_length << std::dec
 	     << dendl;
 
+    //为blob计算csum
     if (csum != Checksummer::CSUM_NONE) {
       dblob.init_csum(csum, csum_order, csum_length);
       dblob.calc_csum(b_off, *l);
     }
+    //标记出来未用区域
     if (wi.mark_unused) {
       auto b_off = wi.b_off;
       auto b_end = b_off + wi.bl.length();
@@ -8944,7 +9089,7 @@ int BlueStore::_do_alloc_write(
 	b->get_blob().map_bl(
 	  b_off, *l,
 	  [&](uint64_t offset, bufferlist& t) {
-	    bdev->aio_write(offset, t, &txc->ioc, false);
+	    bdev->aio_write(offset, t, &txc->ioc, false);//aio写入
 	  });
       }
     }
@@ -9055,23 +9200,26 @@ void BlueStore::_do_write_data(
   bufferlist& bl,
   WriteContext *wctx)
 {
-  uint64_t end = offset + length;
+  uint64_t end = offset + length;//写结束的位置
   bufferlist::iterator p = bl.begin();
 
   if (offset / min_alloc_size == (end - 1) / min_alloc_size &&
-      (length != min_alloc_size)) {//offset-end之间的距离不超过min_alloc_size
+      (length != min_alloc_size)) {
+	  //offset-end之间的距离不超过min_alloc_size
     // we fall within the same block
     _do_write_small(txc, c, o, offset, length, p, wctx);
   } else {
+	//offset到end之间的距离超过了min_alloc_size字节，故这里要么存在两个小写
+	//要么存在若干大写与若干小写
     uint64_t head_offset, head_length;
     uint64_t middle_offset, middle_length;
     uint64_t tail_offset, tail_length;
 
     head_offset = offset;
-    head_length = P2NPHASE(offset, min_alloc_size);//取对齐后，头部多出来的长度
+    head_length = P2NPHASE(offset, min_alloc_size);//取对齐后，头部多出来的长度(从offset到head_length是左沿，需要“小写"）
 
     tail_offset = P2ALIGN(end, min_alloc_size);//取规范的尾部长度
-    tail_length = P2PHASE(end, min_alloc_size);//取对齐后，尾部多出来的长度
+    tail_length = P2PHASE(end, min_alloc_size);//取对齐后，尾部多出来的长度(从tail_offset到tail_length是右沿，需要“小写”）
 
     middle_offset = head_offset + head_length;//规范对齐后的offset
     middle_length = length - head_length - tail_length;//规范后的长度
@@ -9092,11 +9240,11 @@ void BlueStore::_do_write_data(
 
 int BlueStore::_do_write(
   TransContext *txc,
-  CollectionRef& c,
-  OnodeRef o,
-  uint64_t offset,
-  uint64_t length,
-  bufferlist& bl,
+  CollectionRef& c,//哪个目录
+  OnodeRef o,//哪个对象
+  uint64_t offset,//写偏移
+  uint64_t length,//写的长度
+  bufferlist& bl,//要写的内容
   uint32_t fadvise_flags)
 {
   int r = 0;
@@ -9213,11 +9361,15 @@ int BlueStore::_do_write(
 	   << std::dec << dendl;
 
   o->extent_map.fault_range(db, offset, length);//从db中加载这段元数据
+
+  //完成数据写（区分大写，小写，小写再细分为处理为wal写或者aio写）
   _do_write_data(txc, c, o, offset, length, bl, &wctx);//完成数据写
 
   _do_garbage_collection(txc, c, o, offset, length, &wctx);
 
-  r = _do_alloc_write(txc, c, o, &wctx);//完成物理范围申请，触发aio
+  //刚才我们的部分小写，以及我们的所有大写均只是写入到writes里，没有申请物理空间
+  //这里完成物理范围的申请，并触发aio
+  r = _do_alloc_write(txc, c, o, &wctx);
   if (r < 0) {
     derr << __func__ << " _do_alloc_write failed with " << cpp_strerror(r)
 	 << dendl;
@@ -9242,17 +9394,17 @@ int BlueStore::_do_write(
 }
 
 int BlueStore::_write(TransContext *txc,
-		      CollectionRef& c,
-		      OnodeRef& o,
-		     uint64_t offset, size_t length,
-		     bufferlist& bl,
+		      CollectionRef& c,//哪个目录
+		      OnodeRef& o,//要操作的object
+		     uint64_t offset, size_t length,//要写入的offset及长度
+		     bufferlist& bl,//要写入的数据
 		     uint32_t fadvise_flags)
 {
   dout(15) << __func__ << " " << c->cid << " " << o->oid
 	   << " 0x" << std::hex << offset << "~" << length << std::dec
 	   << dendl;
   o->exists = true;
-  _assign_nid(txc, o);
+  _assign_nid(txc, o);//如果o没有分配id,则分配id
   int r = _do_write(txc, c, o, offset, length, bl, fadvise_flags);
   txc->write_onode(o);
 

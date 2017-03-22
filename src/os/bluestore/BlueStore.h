@@ -140,9 +140,12 @@ public:
   struct Buffer {
     MEMPOOL_CLASS_HELPERS();
 
-    enum {//buffer状态
+    enum {
+      //buffer为空
       STATE_EMPTY,     ///< empty buffer -- used for cache history
+	  //数据是于净的
       STATE_CLEAN,     ///< clean data that is up to date
+	  //数据被写入到buffe里了，但io还没有完成
       STATE_WRITING,   ///< data that is being written (io not yet complete)
     };
     static const char *get_state_name(int s) {//状态转状态名称
@@ -164,13 +167,14 @@ public:
       }
     }
 
-    BufferSpace *space;
+    BufferSpace *space;//从属于哪个space
     uint16_t state;             ///< STATE_* //状态
+    //这么不透明的数据，还好意思写注释说，真丑（没有人用这个成员！！！！）
     uint16_t cache_private = 0; ///< opaque (to us) value used by Cache impl
-    uint32_t flags;             ///< FLAG_*
-    uint64_t seq;
-    uint32_t offset, length;
-    bufferlist data;
+    uint32_t flags;             ///< FLAG_* //见上面定义的类型FLAG_NOCACHE,如果不缓存时，此标记打上
+    uint64_t seq;//事务id(这个数据由哪个写事务提交）
+    uint32_t offset, length;//数据的offset及其长度
+    bufferlist data;//数据
 
     boost::intrusive::list_member_hook<> lru_item;
     boost::intrusive::list_member_hook<> state_item;
@@ -195,6 +199,7 @@ public:
       return state == STATE_WRITING;
     }
 
+    //数据结尾的位置
     uint32_t end() const {
       return offset + length;
     }
@@ -221,6 +226,7 @@ public:
   struct Cache;
 
   /// map logical extent range (object) onto buffers
+  //通过buffer_map索引缓存的文件内容，这些内容在内存里，受cache管理
   struct BufferSpace {
     typedef boost::intrusive::list<
       Buffer,
@@ -235,6 +241,8 @@ public:
     // we use a bare intrusive list here instead of std::map because
     // it uses less memory and we expect this to be very small (very
     // few IOs in flight to the same Blob at the same time).
+    // 我们构造了buffer，在事务处理过程中，等事务处理结束时，我们需要依据是否需要缓存来
+    // 清理这些buffer。buffer上的seq就是哪些seq可以被清理的标记（我们临时此信息存在writing里）
     state_list_t writing;   ///< writing buffers, sorted by seq, ascending
 
     ~BufferSpace() {
@@ -242,6 +250,8 @@ public:
       assert(writing.empty());
     }
 
+    //将buffer加入buffer_map,如果当前处理writing状态，则加入到writing队列
+    //否则交由cache管理.
     void _add_buffer(Cache* cache, Buffer *b, int level, Buffer *near) {
       cache->_audit("_add_buffer start");
       buffer_map[b->offset].reset(b);//加入索引
@@ -252,9 +262,12 @@ public:
       }
       cache->_audit("_add_buffer end");
     }
+
     void _rm_buffer(Cache* cache, Buffer *b) {//移除
       _rm_buffer(cache, buffer_map.find(b->offset));//通过索引定位
     }
+
+    //移除buffer
     void _rm_buffer(Cache* cache, map<uint32_t, std::unique_ptr<Buffer>>::iterator p) {
       assert(p != buffer_map.end());
       cache->_audit("_rm_buffer start");
@@ -292,11 +305,14 @@ public:
     //将数据交给writing处理或者交给cache进行管理
     void write(Cache* cache, uint64_t seq, uint32_t offset, bufferlist& bl, unsigned flags) {
       std::lock_guard<std::recursive_mutex> l(cache->lock);
+      //构造buffer,使其的data指向bl　（这是要新写入的数据）
       Buffer *b = new Buffer(this, Buffer::STATE_WRITING, seq, offset, bl,
-			     flags);//构造buffer,使其的data指向bl　（这是要新写入的数据）
-      //丢弃已有的offset到bl.length的数据，并返回最大cache_private（这里之前缓存的旧数据，需要扔掉）
+			     flags);
+      //我们重新构造了一个新的buffer来存放最新的数据
+      //所以之前存在bufferspace里的数据就没有必要了，这里将它丢弃
+      //丢弃已有的offset到bl.length的数据，并返回最大cache_private（这个值，对上层不透明）
       b->cache_private = _discard(cache, offset, bl.length());
-      //将新数据加入（标明，无缓存）
+      //将新数据加入（如果禁用cache,传0，启用cache 传1）
       _add_buffer(cache, b, (flags & Buffer::FLAG_NOCACHE) ? 0 : 1, nullptr);
     }
     void finish_write(Cache* cache, uint64_t seq);
@@ -647,14 +663,17 @@ public:
       return a.logical_offset == b.logical_offset;
     }
 
+    //可容纳的理论offset
     uint32_t blob_start() const {
       return logical_offset - blob_offset;
     }
 
+    //可容纳的结尾数据对应的offset
     uint32_t blob_end() const {
       return blob_start() + blob->get_blob().get_logical_length();
     }
 
+    //结尾数据对应的offset
     uint32_t logical_end() const {
       return logical_offset + length;
     }
@@ -681,7 +700,7 @@ public:
       bluestore_onode_t::shard_info *shard_info = nullptr;
       unsigned extents = 0;  ///< count extents in this shard
       bool loaded = false;   ///< true if shard is loaded //指出是否已加载进extent_map
-      bool dirty = false;    ///< true if shard is dirty and needs reencoding //指出是否已属于dirty
+      bool dirty = false;    ///< true if shard is dirty and needs reencoding //指出是否已属于dirty，标记为已修改
     };
     mempool::bluestore_meta_other::vector<Shard> shards;    ///< shards
 
@@ -956,7 +975,7 @@ public:
     boost::intrusive::list_member_hook<> lru_item;
 
     bluestore_onode_t onode;  ///< metadata stored as value in kv store　//元数据
-    bool exists;              ///< true if object logically exists
+    bool exists;              ///< true if object logically exists //是否存在
 
     ExtentMap extent_map;
 
@@ -1068,9 +1087,12 @@ public:
 	boost::intrusive::list_member_hook<>,
 	&Buffer::lru_item> > buffer_lru_list_t;
 
+    //onode的lru链
     onode_lru_list_t onode_lru;
 
+    //buffer的lru链
     buffer_lru_list_t buffer_lru;
+    //存在cache里的buffer大小
     uint64_t buffer_size = 0;
 
   public:
@@ -1078,21 +1100,28 @@ public:
     uint64_t _get_num_onodes() override {
       return onode_lru.size();
     }
+    //node被加入时被调用（依据level,会被加入front(>0),或者back(<0))
     void _add_onode(OnodeRef& o, int level) override {
       if (level > 0)
 	onode_lru.push_front(*o);
       else
 	onode_lru.push_back(*o);
     }
+
+    //自链表中移除（先找到，再移除）
     void _rm_onode(OnodeRef& o) override {
       auto q = onode_lru.iterator_to(*o);
       onode_lru.erase(q);
     }
+    //从链表中先移除掉，然后再加入头部
     void _touch_onode(OnodeRef& o) override;
 
     uint64_t _get_buffer_bytes() override {
       return buffer_size;
     }
+
+    //添加buffer，在near为空的情况下，level>0，则插入在前面，否则插入后面
+    //如果near不为空，则插入在near的前面
     void _add_buffer(Buffer *b, int level, Buffer *near) override {
       if (near) {
 	auto q = buffer_lru.iterator_to(*near);
@@ -1104,16 +1133,22 @@ public:
       }
       buffer_size += b->length;
     }
+
+    //buffer移除
     void _rm_buffer(Buffer *b) override {
       assert(buffer_size >= b->length);
       buffer_size -= b->length;
       auto q = buffer_lru.iterator_to(*b);
       buffer_lru.erase(q);
     }
+
+    //仅修改缓存的buffer_size
     void _adjust_buffer_size(Buffer *b, int64_t delta) override {
       assert((int64_t)buffer_size + delta >= 0);
       buffer_size += delta;
     }
+
+    //将指定buffer置在lru链头
     void _touch_buffer(Buffer *b) override {
       auto p = buffer_lru.iterator_to(*b);
       buffer_lru.erase(p);
@@ -1234,8 +1269,10 @@ public:
 #endif
   };
 
+  //缓存onode信息
+  //onode_map用于保存映射信息（利用cache对缓存的onode进行维护）
   struct OnodeSpace {
-    Cache *cache;
+    Cache *cache;//利用cache机制，对缓存在onode_map中的onode进行维护
 
     /// forward lookups
     mempool::bluestore_meta_other::unordered_map<ghobject_t,OnodeRef> onode_map;//通过oid对应Onode
@@ -1245,14 +1282,14 @@ public:
       clear();
     }
 
-    OnodeRef add(const ghobject_t& oid, OnodeRef o);
-    OnodeRef lookup(const ghobject_t& o);
+    OnodeRef add(const ghobject_t& oid, OnodeRef o);//添加
+    OnodeRef lookup(const ghobject_t& o);//查询
     void rename(OnodeRef& o, const ghobject_t& old_oid,
 		const ghobject_t& new_oid,
 		const mempool::bluestore_meta_other::string& new_okey);
-    void clear();
-    void clear_pre_split(SharedBlobSet& sbset, uint32_t ps, int bits);
-    bool empty();
+    void clear();//全部移除
+    void clear_pre_split(SharedBlobSet& sbset, uint32_t ps, int bits);//含过滤的一种clear
+    bool empty();//检查是否为空
 
     /// return true if f true for any item
     bool map_any(std::function<bool(OnodeRef)> f);
@@ -1260,6 +1297,7 @@ public:
 
   struct Collection : public CollectionImpl {
     BlueStore *store;
+    //每个collection有一个cache引用（这个cache也是onode_map对应的cache)
     Cache *cache;       ///< our cache shard
     coll_t cid;
     bluestore_cnode_t cnode;
@@ -1271,6 +1309,8 @@ public:
 
     // cache onodes on a per-collection basis to avoid lock
     // contention.
+    //每个collection中增加onode_map用于缓存onode信息，由于onode信息可能
+    //存储在磁盘上，故onode_map中不一定有所有的onode信息
     OnodeSpace onode_map;//如上述，在每个collection里添加缓存的onode，避免加锁
 
     //pool options
@@ -1763,7 +1803,8 @@ private:
 
   std::atomic<int> csum_type;//checksum类型（为什么要是原子变量？）
 
-  uint64_t block_size = 0;     ///< block size of block device (power of 2)//设置块大小
+  //设备对应的块大小
+  uint64_t block_size = 0;     ///< block size of block device (power of 2)
   uint64_t block_mask = 0;     ///< mask to get just the block offset//块对应的mask
   size_t block_size_order = 0; ///< bits to shift to get block size
 
@@ -1920,11 +1961,12 @@ private:
 
   //将数据交给cache或者放在writing中
   void _buffer_cache_write(
-    TransContext *txc,
+    TransContext *txc,//事务
     BlobRef b,
-    uint64_t offset,
-    bufferlist& bl,
+    uint64_t offset,//写的偏移量
+    bufferlist& bl,//要写的内容
     unsigned flags) {
+	//将buffer缓存在内存里（感觉是为了加速读！）
     b->shared_blob->bc.write(b->shared_blob->get_cache(), txc->seq, offset, bl, flags);
     txc->shared_blobs_written.insert(b->shared_blob);
   }
@@ -2252,10 +2294,10 @@ private:
     extent_map_t old_extents;       ///< must deref these blobs
 
     struct write_item {
-      BlobRef b;
+      BlobRef b;//引用的blob
       uint64_t blob_length;
-      uint64_t b_off;
-      bufferlist bl;
+      uint64_t b_off;//偏移量
+      bufferlist bl;//内容
       uint64_t b_off0; ///< original offset in a blob prior to padding
       uint64_t length0; ///< original data length prior to padding
 
@@ -2282,10 +2324,11 @@ private:
     void write(
       BlobRef b,
       uint64_t blob_len,
-      uint64_t o,
-      bufferlist& bl,
+      uint64_t o,//偏移量
+      bufferlist& bl,//要写的数据
       uint64_t o0,
       uint64_t len0, bool _mark_unused) {
+      //将write_item加入到writes尾部
       writes.emplace_back(write_item(b, blob_len, o, bl, o0, len0, _mark_unused));
     }
   };

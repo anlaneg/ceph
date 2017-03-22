@@ -66,8 +66,8 @@ class AllocExtent;
 typedef mempool::bluestore_alloc::vector<AllocExtent> AllocExtentVector;
 class AllocExtent {
 public:
-  uint64_t offset;//偏移量
-  uint32_t length;//长度
+  uint64_t offset;//本块数据起始位置在物理磁盘上的偏移量
+  uint32_t length;//本块数据长度
 
   AllocExtent() { 
     offset = 0;
@@ -75,9 +75,13 @@ public:
   }
 
   AllocExtent(int64_t off, int32_t len) : offset(off), length(len) { }
+
+  //本块数据结束时，在物理磁盘上的偏移量
   uint64_t end() const {
     return offset + length;
   }
+
+  //是否为同一范围
   bool operator==(const AllocExtent& other) const {
     return offset == other.offset && length == other.length;
   }
@@ -140,6 +144,7 @@ struct bluestore_pextent_t : public AllocExtent {
   bluestore_pextent_t(uint64_t o, uint64_t l) : AllocExtent(o, l) {}
   bluestore_pextent_t(AllocExtent &ext) : AllocExtent(ext.offset, ext.length) { }
 
+  //如果已设置值，则为有效的
   bool is_valid() const {
     return offset != INVALID_OFFSET;
   }
@@ -434,25 +439,35 @@ ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
 /// blob: a piece of data on disk
 struct bluestore_blob_t {
   enum {
+	//标记为复写，可分割
     FLAG_MUTABLE = 1,         ///< blob can be overwritten or split
+	//标记为已压缩
     FLAG_COMPRESSED = 2,      ///< blob is compressed
+	//标记为有checksum
     FLAG_CSUM = 4,            ///< blob has checksums
     FLAG_HAS_UNUSED = 8,      ///< blob has unused map
+	//标记为已共享
     FLAG_SHARED = 16,         ///< blob is shared; see external SharedBlob
   };
+  //数字标记转字符串
   static string get_flags_string(unsigned flags);
 
 
+  //占用的物理磁盘范围{（offset,length),(offset,length),。。。}
+  //其中offset是用于物理磁盘定位的，非文件本身的offset
   PExtentVector extents;              ///< raw data position on device
   uint32_t compressed_length_orig = 0;///< original length of compressed blob if any
   uint32_t compressed_length = 0;     ///< compressed length if any
   uint32_t flags = 0;                 ///< FLAG_*
 
+  //标记哪些位置未用（只有16位，故每一次表示blob_len/16字节）
   uint16_t unused = 0;     ///< portion that has never been written to (bitmap)
 
+  //记录checksum 类型，及checksum块大小
   uint8_t csum_type = Checksummer::CSUM_NONE;      ///< CSUM_*
   uint8_t csum_chunk_order = 0;       ///< csum block size is 1<<block_order bytes
 
+  //保存计算的check sum
   bufferptr csum_data;                ///< opaque vector of csum data
 
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
@@ -511,6 +526,7 @@ struct bluestore_blob_t {
     }
   }
 
+  //是否可分裂
   bool can_split() const {
     return
       !has_flag(FLAG_SHARED) &&
@@ -533,6 +549,8 @@ struct bluestore_blob_t {
   void clear_flag(unsigned f) {
     flags &= ~f;
   }
+
+  //显示flags对应的文字描述
   string get_flags_string() const {
     return get_flags_string(flags);
   }
@@ -542,27 +560,40 @@ struct bluestore_blob_t {
     compressed_length_orig = clen_orig;
     compressed_length = clen;
   }
+
+  //检查是否有易变标记
   bool is_mutable() const {
     return has_flag(FLAG_MUTABLE);
   }
+
+  //标查是否有压缩标记
   bool is_compressed() const {
     return has_flag(FLAG_COMPRESSED);
   }
+
+  //检查是否有checksum标记
   bool has_csum() const {
     return has_flag(FLAG_CSUM);
   }
+
+  //标查是否有未用标记
   bool has_unused() const {
     return has_flag(FLAG_HAS_UNUSED);
   }
+
+  //是否已共享
   bool is_shared() const {
     return has_flag(FLAG_SHARED);
   }
 
   /// return chunk (i.e. min readable block) size for the blob
+  //默认为dev_block_size ,考虑了需要计算checksum的情况
   uint64_t get_chunk_size(uint64_t dev_block_size) const {
     return has_csum() ?
       MAX(dev_block_size, get_csum_chunk_size()) : dev_block_size;
   }
+
+  //check sum块大小
   uint32_t get_csum_chunk_size() const {
     return 1 << csum_chunk_order;
   }
@@ -572,21 +603,29 @@ struct bluestore_blob_t {
   uint32_t get_compressed_payload_original_length() const {
     return is_compressed() ? compressed_length_orig : 0;
   }
+
+  //计算x_off在物理上的偏移量，以及可以自此偏移量开始，最多读取多长数据
   uint64_t calc_offset(uint64_t x_off, uint64_t *plen) const {
     auto p = extents.begin();
     assert(p != extents.end());
+    //从第一块物理范围开始
     while (x_off >= p->length) {
       x_off -= p->length;
       ++p;
       assert(p != extents.end());
     }
+
+    //*plen表示，从x_off起始位置到物理块结束，还有多长
     if (plen)
       *plen = p->length - x_off;
+    //物理上的偏移量
     return p->offset + x_off;
   }
 
   /// return true if the entire range is allocated (mapped to extents on disk)
+  //如果给定段已完成在磁盘上的映射，则返回true,否则false
   bool is_allocated(uint64_t b_off, uint64_t b_len) const {
+	//定位b_off在哪个范围内
     auto p = extents.begin();
     assert(p != extents.end());
     while (b_off >= p->length) {
@@ -594,6 +633,7 @@ struct bluestore_blob_t {
       ++p;
       assert(p != extents.end());
     }
+    //完成起始位置定位
     b_len += b_off;
     while (b_len) {
       assert(p != extents.end());
@@ -610,6 +650,7 @@ struct bluestore_blob_t {
   }
 
   /// return true if the logical range has never been used
+  //检查offset起始到length之间是否unused
   bool is_unused(uint64_t offset, uint64_t length) const {
     if (!has_unused()) {
       return false;
@@ -621,16 +662,19 @@ struct bluestore_blob_t {
     uint64_t start = offset / chunk_size;
     uint64_t end = ROUND_UP_TO(offset + length, chunk_size) / chunk_size;
     auto i = start;
+    //将blob_len构造成 start,end两个chunk位置
     while (i < end && (unused & (1u << i))) {
       i++;
     }
-    return i >= end;
+    return i >= end;//如果unused相应的位为1，则返回True
   }
 
   /// mark a range that has never been used
+  //将offset起始长度为length的一段标记为未用
   void add_unused(uint64_t offset, uint64_t length) {
     uint64_t blob_len = get_logical_length();
     assert((blob_len % (sizeof(unused)*8)) == 0);
+    //offset指定的范围必须在blob_len以内
     assert(offset + length <= blob_len);
     uint64_t chunk_size = blob_len / (sizeof(unused)*8);
     uint64_t start = ROUND_UP_TO(offset, chunk_size) / chunk_size;
@@ -644,6 +688,7 @@ struct bluestore_blob_t {
   }
 
   /// indicate that a range has (now) been used.
+  //将offset起始长度为length的一段标记为已用
   void mark_used(uint64_t offset, uint64_t length) {
     if (has_unused()) {
       uint64_t blob_len = get_logical_length();
@@ -707,7 +752,8 @@ struct bluestore_blob_t {
     }
   }
 
-  uint32_t get_ondisk_length() const {//磁盘实际占用大小
+  //磁盘占用大小
+  uint32_t get_ondisk_length() const {
     uint32_t len = 0;
     for (auto &p : extents) {
       len += p.length;
@@ -715,6 +761,7 @@ struct bluestore_blob_t {
     return len;
   }
 
+  //逻辑大小（比如磁盘占用大小）
   uint32_t get_logical_length() const {
     if (is_compressed()) {
       return compressed_length_orig;
@@ -833,6 +880,7 @@ ostream& operator<<(ostream& out, const bluestore_shared_blob_t& o);
 
 /// onode: per-object metadata
 struct bluestore_onode_t {
+  //编号
   uint64_t nid = 0;                    ///< numeric id (locally unique)
   uint64_t size = 0;                   ///< object size
   //属性，对象的attribute
