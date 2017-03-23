@@ -597,6 +597,7 @@ string bluestore_blob_t::get_flags_string(unsigned flags)
   return s;
 }
 
+//按checksum类型计算checksum值占用的内存大小
 size_t bluestore_blob_t::get_csum_value_size() const 
 {
   return Checksummer::get_csum_value_size(csum_type);
@@ -662,6 +663,7 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o)
   return out;
 }
 
+//计算checksum
 void bluestore_blob_t::calc_csum(uint64_t b_off, const bufferlist& bl)
 {
   switch (csum_type) {
@@ -688,6 +690,7 @@ void bluestore_blob_t::calc_csum(uint64_t b_off, const bufferlist& bl)
   }
 }
 
+//校验checksum
 int bluestore_blob_t::verify_csum(uint64_t b_off, const bufferlist& bl,
 				  int* b_bad_off, uint64_t *bad_csum) const
 {

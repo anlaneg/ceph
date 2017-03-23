@@ -460,7 +460,6 @@ public:
     SharedBlobRef shared_blob;      ///< shared blob state (if any)
 
   private:
-    mutable bufferlist blob_bl;     ///< cached encoded blob　//未解码前的元数据
     mutable bluestore_blob_t blob;  ///< decoded blob metadata //解码后的元数据
 #ifdef CACHE_BLOB_BL
     //未解码前的元数据
@@ -582,6 +581,7 @@ public:
       }
     }
 #else
+    //计算编码后长度
     void bound_encode(
       size_t& p,
       uint64_t struct_v,
@@ -595,6 +595,8 @@ public:
 	used_in_blob.bound_encode(p);
       }
     }
+
+    //编码
     void encode(
       bufferlist::contiguous_appender& p,
       uint64_t struct_v,
@@ -608,6 +610,8 @@ public:
 	used_in_blob.encode(p);
       }
     }
+
+    //解码
     void decode(
       Collection *coll,
       bufferptr::iterator& p,
@@ -620,6 +624,7 @@ public:
   typedef mempool::bluestore_meta_other::map<int,BlobRef> blob_map_t;
 
   /// a logical extent, pointing to (some portion of) a blob
+  //逻辑范围，指向一个blob
   typedef boost::intrusive::set_base_hook<boost::intrusive::optimize_size<true> > ExtentBase; //making an alias to avoid build warnings
   struct Extent : public ExtentBase {
     MEMPOOL_CLASS_HELPERS();
@@ -704,18 +709,23 @@ public:
     };
     mempool::bluestore_meta_other::vector<Shard> shards;    ///< shards
 
+    //编码前的extent_map
     bufferlist inline_bl;    ///< cached encoded map, if unsharded; empty=>dirty
 
     uint32_t needs_reshard_begin = 0;
     uint32_t needs_reshard_end = 0;
 
+    //检查是否需要reshard
     bool needs_reshard() const {
       return needs_reshard_end > needs_reshard_begin;
     }
     void clear_needs_reshard() {
       needs_reshard_begin = needs_reshard_end = 0;
     }
+
+    //更新needs_reshard_begin和..end
     void request_reshard(uint32_t begin, uint32_t end) {
+      //如果begin比记录的小，则更新
       if (begin < needs_reshard_begin) {
 	needs_reshard_begin = begin;
       }
@@ -787,15 +797,20 @@ public:
     }
 
     /// check if a range spans a shard
+    //检查是否需要新起一个shard
     bool spans_shard(uint32_t offset, uint32_t length) {
       if (shards.empty()) {
 	return false;
       }
+
+      //找offset在shards中的索引
       int s = seek_shard(offset);
       assert(s >= 0);
       if (s == (int)shards.size() - 1) {
 	return false; // last shard
       }
+
+      //在当前控制范围以内
       if (offset + length <= shards[s+1].shard_info->offset) {
 	return false;
       }
@@ -2286,8 +2301,8 @@ private:
   // write ops
 
   struct WriteContext {
-    bool buffered = false;          ///< buffered write
-    bool compress = false;          ///< compressed write
+    bool buffered = false;          ///< buffered write //表明写的内容是否缓存
+    bool compress = false;          ///< compressed write //表明写的是否是否压缩
     uint64_t target_blob_size = 0;  ///< target (max) blob size
     unsigned csum_order = 0;        ///< target checksum chunk order
 
