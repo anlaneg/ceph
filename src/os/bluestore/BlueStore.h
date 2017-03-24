@@ -354,11 +354,12 @@ public:
     MEMPOOL_CLASS_HELPERS();
 
     std::atomic_int nref = {0}; ///< reference count
-    bool loaded = false;
+    bool loaded = false;//是否被加载
 
     Collection *coll = nullptr;
     union {
       uint64_t sbid_unloaded;              ///< sbid if persistent isn't loaded
+      //如果loaded为true,则此变量存在
       bluestore_shared_blob_t *persistent; ///< persistent part of the shared blob if any
     };
     BufferSpace bc;             ///< buffer cache
@@ -415,9 +416,11 @@ public:
 
     // we use a bare pointer because we don't want to affect the ref
     // count
-    mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;//按sbid进行索引
+    //按sbid进行索引
+    mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;
 
-    SharedBlobRef lookup(uint64_t sbid) {//在sb_map中查找sbid如果找到返回sharedblob，如果找不到，返回null
+    SharedBlobRef lookup(uint64_t sbid) {
+      //在sb_map中查找sbid如果找到返回sharedblob，如果找不到，返回null
       std::lock_guard<std::mutex> l(lock);
       auto p = sb_map.find(sbid);
       if (p == sb_map.end()) {
@@ -426,6 +429,7 @@ public:
       return p->second;
     }
 
+    //将sharedblob加入
     void add(Collection* coll, SharedBlob *sb) {
       std::lock_guard<std::mutex> l(lock);
       sb_map[sb->get_sbid()] = sb;
@@ -457,6 +461,7 @@ public:
     std::atomic_int nref = {0};     ///< reference count
     int16_t id = -1;                ///< id, for spanning blobs only, >= 0
     int16_t last_encoded_id = -1;   ///< (ephemeral) used during encoding only
+    //如果是共享状态，则此值有效
     SharedBlobRef shared_blob;      ///< shared blob state (if any)
 
   private:
@@ -1416,8 +1421,10 @@ public:
       STATE_DONE,
     } state_t;
 
+    //事务状态
     state_t state;
 
+    //状态转转态名称
     const char *get_state_name() {
       switch (state) {
       case STATE_PREPARE: return "prepare";
@@ -1470,18 +1477,22 @@ public:
       last_stamp = now;
     }
 
+    //事务对应的序列器
     OpSequencerRef osr;
     boost::intrusive::list_member_hook<> sequencer_item;
 
     uint64_t ops, bytes;//事务集中的操作总数，事务集中的字节总数
 
-    //记录哪些onode需要更新或者写
+    //记录哪些onode被更新或者写
     set<OnodeRef> onodes;     ///< these need to be updated/written
     set<OnodeRef> modified_objects;  ///< objects we modified (and need a ref)
+    //需要更新和写的shared－blob
     set<SharedBlobRef> shared_blobs;  ///< these need to be updated/written
     set<SharedBlobRef> shared_blobs_written; ///< update these on io completion //记录那些blobs被写了
 
+    //数据库事务
     KeyValueDB::Transaction t; ///< then we will commit this
+    //三个不同时期的回调
     Context *oncommit;         ///< signal on commit
     Context *onreadable;         ///< signal on readable
     Context *onreadable_sync;         ///< signal on readable
@@ -1492,7 +1503,7 @@ public:
     bluestore_wal_transaction_t *wal_txn; ///< wal transaction (if any)
 
     interval_set<uint64_t> allocated, released;//记录事务中申请释放的物理磁盘范围
-    //记录统计数据
+
     struct volatile_statfs{
       enum {
         STATFS_ALLOCATED = 0,
@@ -1502,6 +1513,7 @@ public:
         STATFS_COMPRESSED_ALLOCATED,
         STATFS_LAST
       };
+
       int64_t values[STATFS_LAST];
       volatile_statfs() {
         memset(this, 0, sizeof(volatile_statfs));
@@ -1542,12 +1554,13 @@ public:
           ::encode(values[i], bl);
         }
       }
-    } statfs_delta;
+    } statfs_delta;//记录统计数据
 
 
     IOContext ioc;
     bool had_ios = false;  ///< true if we submitted IOs before our kv txn
 
+    //首个collection
     CollectionRef first_collection;  ///< first referenced collection
 
     uint64_t seq = 0;
@@ -1555,6 +1568,7 @@ public:
     utime_t last_stamp;//记录状态起始时间（一直和start同时使用？）
 
     uint64_t last_nid = 0;     ///< if non-zero, highest new nid we allocated
+    //最后一次分配的blobid
     uint64_t last_blobid = 0;  ///< if non-zero, highest new blobid we allocated
 
     explicit TransContext(CephContext* cct, OpSequencer *o)
@@ -1594,7 +1608,9 @@ public:
   //操作序列（采用此队实现操作的序列化）
   class OpSequencer : public Sequencer_impl {
   public:
+	//队列锁
     std::mutex qlock;
+    //队列条件变量，当队列发生变化时，此条件变量将被唤醒
     std::condition_variable qcond;
     typedef boost::intrusive::list<
       TransContext,
@@ -1602,7 +1618,8 @@ public:
         TransContext,
 	boost::intrusive::list_member_hook<>,
 	&TransContext::sequencer_item> > q_list_t;
-    q_list_t q;  ///< transactions　//事务上下文队列（保证有序）
+    //事务上下文队列（保证有序）
+    q_list_t q;  ///< transactions
 
     typedef boost::intrusive::list<
       TransContext,
@@ -1610,11 +1627,12 @@ public:
 	TransContext,
 	boost::intrusive::list_member_hook<>,
 	&TransContext::wal_queue_item> > wal_queue_t;
+
     wal_queue_t wal_q; ///< transactions
 
     boost::intrusive::list_member_hook<> wal_osr_queue_item;
 
-    Sequencer *parent;
+    Sequencer *parent;//指向上层seq
 
     std::mutex wal_apply_mutex;
 
@@ -1639,9 +1657,11 @@ public:
       q.push_back(*txc);
     }
 
-    void flush() {//等待事务队列为空
+    //等待事务队列为空
+    void flush() {
       std::unique_lock<std::mutex> l(qlock);
       while (!q.empty())
+    	  //阻塞等待队列为空
 	qcond.wait(l);
     }
 
@@ -1651,9 +1671,11 @@ public:
 	return true;
       }
       TransContext *txc = &q.back();
+      //最后一个事务的状态大于等于kv_done,返回true
       if (txc->state >= TransContext::STATE_KV_DONE) {
 	return true;
       }
+      //在最后一个事务的oncommits中加入c
       txc->oncommits.push_back(c);
       return false;
     }
@@ -1775,13 +1797,14 @@ private:
   bool mounted;//是否已挂载
 
   RWLock coll_lock;    ///< rwlock to protect coll_map
-  mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;//记录collection的map,通过cid映射map
+  //记录collection的map,通过cid映射map(启动时截入?)
+  mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;
 
   vector<Cache*> cache_shards;//cache与collection之间是１对多关系，创建collection时，注入
 
   std::atomic<uint64_t> nid_last = {0};
   std::atomic<uint64_t> nid_max = {0};
-  std::atomic<uint64_t> blobid_last = {0};
+  std::atomic<uint64_t> blobid_last = {0};//用于分配blobid,记录最后一次分配
   std::atomic<uint64_t> blobid_max = {0};
 
   Throttle throttle_ops, throttle_bytes;          ///< submit to commit

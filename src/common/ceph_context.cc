@@ -47,6 +47,7 @@ using ceph::HeartbeatMap;
 
 namespace {
 
+//锁依赖监测机器关注的配置项
 class LockdepObs : public md_config_obs_t {
 public:
   explicit LockdepObs(CephContext *cct) : m_cct(cct), m_registered(false) {
@@ -64,16 +65,19 @@ public:
 
   void handle_conf_change(const md_config_t *conf,
                           const std::set <std::string> &changed) override {
+	//如果配置变更后，要求检测锁错误，且当前未注册，则进行注册
     if (conf->lockdep && !m_registered) {
       lockdep_register_ceph_context(m_cct);
       m_registered = true;
     } else if (!conf->lockdep && m_registered) {
+      //配置变更后，不要求检测错误，且当前已注册，则进行反注册
       lockdep_unregister_ceph_context(m_cct);
       m_registered = false;
     }
   }
 private:
   CephContext *m_cct;
+  //是否已进行了注册
   bool m_registered;
 };
 

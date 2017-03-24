@@ -668,6 +668,7 @@ ObjectMap::ObjectMapIterator MemStore::get_omap_iterator(const coll_t& cid,
 // ---------------
 // write operations
 
+//memstore事务操作入口
 int MemStore::queue_transactions(Sequencer *osr,
 				 vector<Transaction>& tls,
 				 TrackedOpRef op,

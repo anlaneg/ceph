@@ -123,6 +123,7 @@ void bluestore_extent_ref_map_t::_check() const
   }
 }
 
+//ref_map可以合并的前提是:1.引用计数相同;2.区间重合
 void bluestore_extent_ref_map_t::_maybe_merge_left(
   map<uint64_t,record_t>::iterator& p)
 {
@@ -140,6 +141,7 @@ void bluestore_extent_ref_map_t::_maybe_merge_left(
 
 void bluestore_extent_ref_map_t::get(uint64_t offset, uint32_t length)
 {
+	//找第一个包含大于等于offset的段
   auto p = ref_map.lower_bound(offset);
   if (p != ref_map.begin()) {
     --p;
@@ -147,54 +149,87 @@ void bluestore_extent_ref_map_t::get(uint64_t offset, uint32_t length)
       ++p;
     }
   }
+
   while (length > 0) {
     if (p == ref_map.end()) {
       // nothing after offset; add the whole thing.
+    	//没有找到比offset大的段，所以这里需要将offset起始的段加入引用表，
+    	//引用数为1
       p = ref_map.insert(
 	map<uint64_t,record_t>::value_type(offset, record_t(length, 1))).first;
       break;
     }
+
     if (p->first > offset) {
+      //这种情况下当前的位置p指向的offset大于offset,则说明offset起始的这一段没有被
+      //加入引用表，我们需要将这没重叠的这一段加入，且引用数为1
       // gap
       uint64_t newlen = MIN(p->first - offset, length);
       p = ref_map.insert(
 	map<uint64_t,record_t>::value_type(offset,
 					   record_t(newlen, 1))).first;
+
+      //更新offset,length
       offset += newlen;
       length -= newlen;
+
+      //检查我们是否可以和左侧进行合并，如果可以合并的话，就并成一个record
+      //合并的前提是1.引用计数相同，2左侧的offset+length == 我们的offset
       _maybe_merge_left(p);
-      ++p;
+      ++p;//我们可能有一部分和后面的是重叠的，这里采用continue继续处理
       continue;
     }
+
+    //p里记录的offset比现在offset要小，这种情况下，我们有一部分和p是重合的
+    //这种需要拆分，原因是我们加入后引用计数就不相等了(p->first,offset- p->length)
     if (p->first < offset) {
       // split off the portion before offset
+      //拆分，第一部分直接更新即可，将长度更新为offset-p->first
       assert(p->first + p->second.length > offset);
       uint64_t left = p->first + p->second.length - offset;
       p->second.length = offset - p->first;
+
+      //第二部分，从offset开始，到left,引用计数暂不变
       p = ref_map.insert(map<uint64_t,record_t>::value_type(
 			   offset, record_t(left, p->second.refs))).first;
       // continue below
+      //然后我们就可以和p->first == offset的变成同一类型了
     }
+
+    //处理offset且与某一段相同的情况
     assert(p->first == offset);
     if (length < p->second.length) {
+      //我们的长度小于p->length,需要拆分，一部分从offset+length起始，引用计数不变
       ref_map.insert(make_pair(offset + length,
 			       record_t(p->second.length - length,
 					p->second.refs)));
+
+      //第二部分，缩小长度为length，引用计数加1
+      //感觉这里有个bug，引用计数增加了，没有考虑和left的合并问题
+      //作者统一改在循环外进行检查了
       p->second.length = length;
       ++p->second.refs;
       break;
     }
+
+    //我们的长度大于p->length,需要先增加这部分的引用计数，然后更新
+    //offset,length
+    //注：由于引用计数更新,需要考虑和left的合并问题
     ++p->second.refs;
     offset += p->second.length;
     length -= p->second.length;
     _maybe_merge_left(p);
-    ++p;
+    ++p;//继续尝试后面的段
   }
+
+
+  //检查是否可以和左侧合并
   if (p != ref_map.end())
     _maybe_merge_left(p);
   //_check();
 }
 
+//get的反操作，不分析了，本意是要看哪些段没人用了，就释放物理段
 void bluestore_extent_ref_map_t::put(
   uint64_t offset, uint32_t length,
   PExtentVector *release)
@@ -251,6 +286,7 @@ void bluestore_extent_ref_map_t::put(
   //_check();
 }
 
+//检查offset到offset+length段是否在引用表中存在（有空隙也不行）
 bool bluestore_extent_ref_map_t::contains(uint64_t offset, uint32_t length) const
 {
   auto p = ref_map.lower_bound(offset);
@@ -278,10 +314,12 @@ bool bluestore_extent_ref_map_t::contains(uint64_t offset, uint32_t length) cons
   return true;
 }
 
+//检查ref_map是否部分或者全部包含(offset,offset+length),如果是返回True
 bool bluestore_extent_ref_map_t::intersects(
   uint64_t offset,
   uint32_t length) const
 {
+  //找一个包含offset的
   auto p = ref_map.lower_bound(offset);
   if (p != ref_map.begin()) {
     --p;
@@ -289,10 +327,16 @@ bool bluestore_extent_ref_map_t::intersects(
       ++p;
     }
   }
+
+  //如果没找到，返回false
   if (p == ref_map.end())
     return false;
+
+  //如果不包含，返回false
   if (p->first >= offset + length)
     return false;
+
+  //肯定全部包含或者部分包含
   return true;  // intersects p!
 }
 

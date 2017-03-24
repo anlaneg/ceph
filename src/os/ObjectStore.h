@@ -152,6 +152,7 @@ public:
       Context *c ///< [in] context to call upon flush/commit
       ) = 0; ///< @return true if idle, false otherwise
 
+    //初始引用计数为0
     Sequencer_impl(CephContext* cct) : RefCountedObject(NULL, 0), cct(cct)  {}
     virtual ~Sequencer_impl() {}
   };
@@ -159,11 +160,12 @@ public:
 
   /**
    * External (opaque) sequencer implementation
+   * 外部不透明的序列器实现
    */
   struct Sequencer {
     string name;
     spg_t shard_hint;
-    Sequencer_implRef p;
+    Sequencer_implRef p;//集成的内部实现
 
     explicit Sequencer(string n)
       : name(n), shard_hint(spg_t()), p(NULL) {}
@@ -397,7 +399,7 @@ public:
       OP_COLL_HINT = 40, // cid, type, bl
 
       OP_TRY_RENAME = 41,   // oldcid, oldoid, newoid
-    };
+    };//不同操作类型，注释中给出了操作类型后对应的参数
 
     // Transaction hint type
     enum {
@@ -405,14 +407,14 @@ public:
     };
 
     struct Op {
-      __le32 op;
-      __le32 cid;
-      __le32 oid;
-      __le64 off;
-      __le64 len;
-      __le32 dest_cid;
-      __le32 dest_oid;                  //OP_CLONE, OP_CLONERANGE
-      __le64 dest_off;                  //OP_CLONERANGE
+      __le32 op;//操作类型
+      __le32 cid;//collection id号
+      __le32 oid;//object id号
+      __le64 off;//偏移量
+      __le64 len;//数据长度
+      __le32 dest_cid;//目的collection id号
+      __le32 dest_oid;//OP_CLONE, OP_CLONERANGE //目的object id
+      __le64 dest_off;//OP_CLONERANGE //目的偏移量
       union {
 	struct {
 	  __le32 hint_type;             //OP_COLL_HINT
@@ -490,7 +492,7 @@ public:
     __le32 coll_id {0};//collect　id （临时用）
     __le32 object_id {0};//object id (临时用）
 
-    bufferlist data_bl;
+    bufferlist data_bl;//数据块
     bufferlist op_bl;//操作数据块（OP类型构成）
 
     bufferptr op_ptr;
@@ -582,17 +584,22 @@ public:
       Context **out_on_applied,
       Context **out_on_commit,
       Context **out_on_applied_sync) {
+
       assert(out_on_applied);
       assert(out_on_commit);
       assert(out_on_applied_sync);
       list<Context *> on_applied, on_commit, on_applied_sync;
+      //遍历每个事务
       for (vector<Transaction>::iterator i = t.begin();
 	   i != t.end();
 	   ++i) {
+    //将每个事务的on_applied,on_commit,on_applied_sync这三个回调分类加入列表
 	on_applied.splice(on_applied.end(), (*i).on_applied);
 	on_commit.splice(on_commit.end(), (*i).on_commit);
 	on_applied_sync.splice(on_applied_sync.end(), (*i).on_applied_sync);
       }
+
+      //收集好了所有事务的回调，由于回调是链表格式，这里将其直接封装成context类型返回
       *out_on_applied = C_Contexts::list_to_context(on_applied);//收集后，组装成list
       *out_on_commit = C_Contexts::list_to_context(on_commit);
       *out_on_applied_sync = C_Contexts::list_to_context(on_applied_sync);
@@ -883,16 +890,17 @@ public:
      * buffer decoding operation codes and parameters as we go.
      *
      */
+    //事务的迭代器
     class iterator {
-      Transaction *t;
+      Transaction *t;//从属于哪个事务
 
       uint64_t ops;//操作数
       char* op_buffer_p;//op的起始位置
 
-      bufferlist::iterator data_bl_p;
+      bufferlist::iterator data_bl_p;//指向数据buffer
 
     public:
-      vector<coll_t> colls;//t->coll_index的反序，给出索引，找对应的collects
+      vector<coll_t> colls;//映射，给出索引，找对应的collects
       vector<ghobject_t> objects;//找对应的object
 
     private:
@@ -903,6 +911,7 @@ public:
           objects(t->object_index.size()) {
 
         ops = t->data.ops;
+        //使0到t->data.ops*sizeof(op)之间的内存是平坦的
         op_buffer_p = t->op_bl.get_contiguous(0, t->data.ops * sizeof(Op));
 
         map<coll_t, __le32>::iterator coll_index_p;
@@ -927,7 +936,9 @@ public:
       bool have_op() {//是否还有操作
         return ops > 0;
       }
-      Op* decode_op() {//对操作解码，并返回
+
+      //对当前指向位置操作区解码，并返回对应的操作
+      Op* decode_op() {
         assert(ops > 0);
 
         Op* op = reinterpret_cast<Op*>(op_buffer_p);
@@ -936,6 +947,8 @@ public:
 
         return op;
       }
+
+      //从数据区解码字符串
       string decode_string() {
         string s;
         ::decode(s, data_bl_p);
@@ -1451,7 +1464,7 @@ public:
   }
   unsigned apply_transactions(Sequencer *osr, vector<Transaction>& tls, Context *ondisk=0);
 
-  //object中的这一组事务入队函数，实际上最终仅会调用一个接口（就是那个纯虚接口）
+  //此函数最终会调用queue_transactions，其目的在于将单事务接口封装成多事务接口来实现。
   int queue_transaction(Sequencer *osr, Transaction&& t, Context *onreadable, Context *ondisk=0,
 				Context *onreadable_sync=0,
 				TrackedOpRef op = TrackedOpRef(),
@@ -1462,18 +1475,22 @@ public:
 	                      op, handle);
   }
 
+  //此函数最终仍会调用queue_transactions,它的作用是减少参数中onreadable,ondisk,onreadable_sync
+  //参数的出现，但它引入了新的参数handle
   int queue_transactions(Sequencer *osr, vector<Transaction>& tls,
 			 Context *onreadable, Context *ondisk=0,
 			 Context *onreadable_sync=0,
 			 TrackedOpRef op = TrackedOpRef(),
 			 ThreadPool::TPHandle *handle = NULL) {
     assert(!tls.empty());
+    //将所有回调注册在最后一个事务上，减少参数onreadable,ondisk,onreadable_sync回调
     tls.back().register_on_applied(onreadable);
     tls.back().register_on_commit(ondisk);
     tls.back().register_on_applied_sync(onreadable_sync);//仅给最后一个注册回调
     return queue_transactions(osr, tls, op, handle);
   }
 
+  //此函数最终由上层实现（上层仅需要实现此接口即可）
   virtual int queue_transactions(
     Sequencer *osr, vector<Transaction>& tls,
     TrackedOpRef op = TrackedOpRef(),
@@ -1489,7 +1506,8 @@ public:
     Context *oncomplete,
     TrackedOpRef op);
 
-  //单事务入队
+  //单事务入队（通过将单个事务变更为事务数组的形式，调用queue_transactions(osr,tls,onreadable,oncommit....)函数
+  //见上
   int queue_transaction(
     Sequencer *osr,
     Transaction&& t,

@@ -177,6 +177,7 @@ unsigned ObjectStore::apply_transactions(Sequencer *osr,
   return r;
 }
 
+//最终调用其它queue_transactions,减少对oncomplete的依赖
 int ObjectStore::queue_transactions(
   Sequencer *osr,
   vector<Transaction>& tls,
@@ -186,11 +187,18 @@ int ObjectStore::queue_transactions(
   Context *oncomplete,
   TrackedOpRef op = TrackedOpRef())
 {
+  //_complete将在oncomplete所属对象销毁时自动调用
   RunOnDeleteRef _complete (std::make_shared<RunOnDelete>(oncomplete));
+  //_onreadable对象，同时技有onreadable,_complete,由于onreadable需要显示调用finish时才能调用。
+  //故默认认为onreadable将被先调用，调用后，在对象销毁时会再调用_complete对象
   Context *_onreadable = new Wrapper<RunOnDeleteRef>(
     onreadable, _complete);
+  //同上，oncommit对象通过finish显示调用,而对象销毁时，_complete对象被销毁
   Context *_oncommit = new Wrapper<RunOnDeleteRef>(
     oncommit, _complete);
+
+  //由于oncomplete对象已被封装，故不再显示出现oncomplete对象，这个函数相对于上层
+  //其作用为减少对oncomplete参数的显示依赖
   return queue_transactions(osr, tls, _onreadable, _oncommit,
 			    onreadable_sync, op);
 }

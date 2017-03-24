@@ -194,10 +194,13 @@ struct denc_traits<PExtentVector> {
 
 
 /// extent_map: a map of reference counted extents
+//按注释的意思，一组引用计数范围的映射
+//实际用处，blob在共享情况下需要知道哪些段没人用了，哪些段只有一个人用，
+//哪些段有多个人用，用这些信息来完成物理磁盘空的释放，改写，copy
 struct bluestore_extent_ref_map_t {
   struct record_t {
-    uint32_t length;
-    uint32_t refs;
+    uint32_t length;//长度
+    uint32_t refs;//引用计数
     record_t(uint32_t l=0, uint32_t r=0) : length(l), refs(r) {}
     DENC(bluestore_extent_ref_map_t::record_t, v, p) {
       denc_varint_lowz(v.length, p);
@@ -206,6 +209,10 @@ struct bluestore_extent_ref_map_t {
   };
 
   typedef mempool::bluestore_meta_other::map<uint64_t,record_t> map_t;
+  //key是offset,value是指从key指明的offset开始有length字节长的段，这个段
+  //这个段被引用的次数是refs次
+  //这个数据结构的目的是在clone情况下，在写时，哪些段需要copy，那些可以在原样上修改
+  //这个结构比较别脚
   map_t ref_map;
 
   void _check() const;
@@ -214,11 +221,14 @@ struct bluestore_extent_ref_map_t {
   void clear() {
     ref_map.clear();
   }
+
   bool empty() const {
     return ref_map.empty();
   }
 
+  //划分共享段
   void get(uint64_t offset, uint32_t len);
+  //释放共享段
   void put(uint64_t offset, uint32_t len, PExtentVector *release);
 
   bool contains(uint64_t offset, uint32_t len) const;
@@ -231,6 +241,8 @@ struct bluestore_extent_ref_map_t {
     ((const record_t*)nullptr)->bound_encode(elem_size);
     p += elem_size * ref_map.size();
   }
+
+  //编码
   void encode(bufferlist::contiguous_appender& p) const {
     uint32_t n = ref_map.size();
     denc_varint(n, p);
@@ -247,6 +259,8 @@ struct bluestore_extent_ref_map_t {
       }
     }
   }
+
+  //解码
   void decode(bufferptr::iterator& p) {
     uint32_t n;
     denc_varint(n, p);
@@ -900,6 +914,7 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o);
 
 /// shared blob state
 struct bluestore_shared_blob_t {
+  //blob 编号
   uint64_t sbid;                       ///> shared blob id
   bluestore_extent_ref_map_t ref_map;  ///< shared blob extents
 
