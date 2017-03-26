@@ -9106,9 +9106,11 @@ void BlueStore::_wctx_finish(
   OnodeRef o,
   WriteContext *wctx)
 {
+  //遍历old_extents数组
   auto oep = wctx->old_extents.begin();
   while (oep != wctx->old_extents.end()) {
     auto &lo = *oep;
+    //忆保存，直接移除
     oep = wctx->old_extents.erase(oep);
     dout(20) << __func__ << " lex_old " << lo << dendl;
     BlobRef b = lo.blob;
