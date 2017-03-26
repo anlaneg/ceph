@@ -47,6 +47,7 @@ WRITE_CLASS_ENCODER(bluestore_bdev_label_t)
 ostream& operator<<(ostream& out, const bluestore_bdev_label_t& l);
 
 /// collection metadata
+//集合元数据
 struct bluestore_cnode_t {
   uint32_t bits;   ///< how many bits of coll pgid are significant
 

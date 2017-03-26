@@ -2675,7 +2675,7 @@ void BlueStore::ExtentMap::decode_spanning_blobs(
   denc_varint(n, p);
   while (n--) {
     BlobRef b(new Blob());
-    denc_varint(b->id, p);
+    denc_varint(b->id, p);//自p中解出b->id
     spanning_blob_map[b->id] = b;
     uint64_t sbid = 0;
     b->decode(onode->c, p, struct_v, &sbid, true);
@@ -3062,6 +3062,7 @@ BlueStore::Collection::Collection(BlueStore *ns, Cache *c, coll_t cid)
 {
 }
 
+//长成shared_blob
 void BlueStore::Collection::open_shared_blob(uint64_t sbid, BlobRef b)
 {
   assert(!b->shared_blob);
@@ -8187,6 +8188,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     case Transaction::OP_MKCOLL:
       {
 	assert(!c);
+	//获取cid
 	const coll_t &cid = i.get_cid(op->cid);
 	r = _create_collection(txc, cid, op->split_bits, &c);//完成collection创建
 	if (!r)
@@ -10243,7 +10245,7 @@ int BlueStore::_rename(TransContext *txc,
 int BlueStore::_create_collection(//创建collection
   TransContext *txc,
   const coll_t &cid,
-  unsigned bits,
+  unsigned bits,//不同collection对应的bits
   CollectionRef *c)
 {
   dout(15) << __func__ << " " << cid << " bits " << bits << dendl;
@@ -10264,7 +10266,7 @@ int BlueStore::_create_collection(//创建collection
     (*c)->cnode.bits = bits;
     coll_map[cid] = *c;
   }
-  ::encode((*c)->cnode, bl);
+  ::encode((*c)->cnode, bl);//编码进bl，并保存在数据库中
   txc->t->set(PREFIX_COLL, stringify(cid), bl);//数据库保存
   r = 0;
 
@@ -10303,6 +10305,7 @@ int BlueStore::_remove_collection(TransContext *txc, const coll_t &cid,
       goto out;
     }
 
+    //列出所有object,
     vector<ghobject_t> ls;
     ghobject_t next;
     // Enumerate onodes in db, up to nonexistent_count + 1

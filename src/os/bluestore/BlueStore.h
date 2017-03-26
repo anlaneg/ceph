@@ -356,6 +356,7 @@ public:
     std::atomic_int nref = {0}; ///< reference count
     bool loaded = false;//是否被加载
 
+    //属于collection
     Collection *coll = nullptr;
     union {
       uint64_t sbid_unloaded;              ///< sbid if persistent isn't loaded
@@ -704,6 +705,7 @@ public:
   struct ExtentMap {
     Onode *onode;
     extent_map_t extent_map;        ///< map of Extents to Blobs
+    //通过id索引blob
     blob_map_t spanning_blob_map;   ///< blobs that span shards
 
     struct Shard {
@@ -1320,11 +1322,13 @@ public:
     //每个collection有一个cache引用（这个cache也是onode_map对应的cache)
     Cache *cache;       ///< our cache shard
     coll_t cid;
+    //collection的元数据
     bluestore_cnode_t cnode;
     RWLock lock;
 
     bool exists;
 
+    //以sbid,保存sharedblob
     SharedBlobSet shared_blob_set;      ///< open SharedBlobs //collection对应的sharedblobs
 
     // cache onodes on a per-collection basis to avoid lock
