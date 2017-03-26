@@ -194,10 +194,13 @@ struct denc_traits<PExtentVector> {
 
 
 /// extent_map: a map of reference counted extents
+//按注释的意思，一组引用计数范围的映射
+//实际用处，blob在共享情况下需要知道哪些段没人用了，哪些段只有一个人用，
+//哪些段有多个人用，用这些信息来完成物理磁盘空的释放，改写，copy
 struct bluestore_extent_ref_map_t {
   struct record_t {
-    uint32_t length;
-    uint32_t refs;
+    uint32_t length;//长度
+    uint32_t refs;//引用计数
     record_t(uint32_t l=0, uint32_t r=0) : length(l), refs(r) {}
     DENC(bluestore_extent_ref_map_t::record_t, v, p) {
       denc_varint_lowz(v.length, p);
@@ -206,6 +209,10 @@ struct bluestore_extent_ref_map_t {
   };
 
   typedef mempool::bluestore_meta_other::map<uint64_t,record_t> map_t;
+  //key是offset,value是指从key指明的offset开始有length字节长的段，这个段
+  //这个段被引用的次数是refs次
+  //这个数据结构的目的是在clone情况下，在写时，哪些段需要copy，那些可以在原样上修改
+  //这个结构比较别脚
   map_t ref_map;
 
   void _check() const;
@@ -214,11 +221,14 @@ struct bluestore_extent_ref_map_t {
   void clear() {
     ref_map.clear();
   }
+
   bool empty() const {
     return ref_map.empty();
   }
 
+  //划分共享段
   void get(uint64_t offset, uint32_t len);
+  //释放共享段
   void put(uint64_t offset, uint32_t len, PExtentVector *release);
 
   bool contains(uint64_t offset, uint32_t len) const;
@@ -231,6 +241,8 @@ struct bluestore_extent_ref_map_t {
     ((const record_t*)nullptr)->bound_encode(elem_size);
     p += elem_size * ref_map.size();
   }
+
+  //编码
   void encode(bufferlist::contiguous_appender& p) const {
     uint32_t n = ref_map.size();
     denc_varint(n, p);
@@ -247,6 +259,8 @@ struct bluestore_extent_ref_map_t {
       }
     }
   }
+
+  //解码
   void decode(bufferptr::iterator& p) {
     uint32_t n;
     denc_varint(n, p);
@@ -437,9 +451,12 @@ WRITE_CLASS_DENC(bluestore_blob_use_tracker_t)
 ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
 
 /// blob: a piece of data on disk
+//blob:磁盘上的一段数据
+//数据本身存在磁盘上，这个结构体仅保存了这个blob在磁盘中的不同段的（偏移量，长度）
+//
 struct bluestore_blob_t {
   enum {
-	//标记为复写，可分割
+	//标记为可overwrite，可分割
     FLAG_MUTABLE = 1,         ///< blob can be overwritten or split
 	//标记为已压缩
     FLAG_COMPRESSED = 2,      ///< blob is compressed
@@ -455,12 +472,17 @@ struct bluestore_blob_t {
 
   //占用的物理磁盘范围{（offset,length),(offset,length),。。。}
   //其中offset是用于物理磁盘定位的，非文件本身的offset
+  //物理的每个范围，从下标0开始，表示文件实际占用的磁盘，...
   PExtentVector extents;              ///< raw data position on device
+
+  //压缩前数据长度，压缩后长度
   uint32_t compressed_length_orig = 0;///< original length of compressed blob if any
   uint32_t compressed_length = 0;     ///< compressed length if any
+
+  //标记
   uint32_t flags = 0;                 ///< FLAG_*
 
-  //标记哪些位置未用（只有16位，故每一次表示blob_len/16字节）
+  //标记哪些位置未用（只有16位，故每一位表示blob_len/16字节）
   uint16_t unused = 0;     ///< portion that has never been written to (bitmap)
 
   //记录checksum 类型，及checksum块大小
@@ -473,6 +495,7 @@ struct bluestore_blob_t {
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
 
   DENC_HELPERS;
+  //计算编码长度
   void bound_encode(size_t& p, uint64_t struct_v) const {
     assert(struct_v == 1 || struct_v == 2);
     denc(extents, p);
@@ -486,6 +509,7 @@ struct bluestore_blob_t {
     p += sizeof(unsigned long long);
   }
 
+  //进行编码
   void encode(bufferlist::contiguous_appender& p, uint64_t struct_v) const {
     assert(struct_v == 1 || struct_v == 2);
     denc(extents, p);
@@ -506,6 +530,7 @@ struct bluestore_blob_t {
     }
   }
 
+  //可以解码
   void decode(bufferptr::iterator& p, uint64_t struct_v) {
     assert(struct_v == 1 || struct_v == 2);
     denc(extents, p);
@@ -533,6 +558,8 @@ struct bluestore_blob_t {
       !has_flag(FLAG_COMPRESSED) &&
       !has_flag(FLAG_HAS_UNUSED);     // splitting unused set is complex
   }
+
+  //非checksum启用下，任意位置可split,启用情况下，仅以chunk_size对齐位置可split
   bool can_split_at(uint32_t blob_offset) const {
     return !has_csum() || blob_offset % get_csum_chunk_size() == 0;
   }
@@ -716,7 +743,8 @@ struct bluestore_blob_t {
       ++p;
       assert(p != extents.end());
     }
-    while (x_len > 0) {//从x_off开始一直向前走x_len长度，将这段数据，按每个extents进行遍历，访问函数由f定义
+    while (x_len > 0) {
+      //从x_off开始一直向前走x_len长度，将这段数据，按每个extents进行遍历，访问函数由f定义
       assert(p != extents.end());
       uint64_t l = MIN(p->length - x_off, x_len);
       int r = f(p->offset + x_off, l);
@@ -728,12 +756,19 @@ struct bluestore_blob_t {
     }
     return 0;
   }
+
+
+  //bl传入了一段数据，我们在当前的extents中查找x_off开始，到(x_off + bl.length())
+  //将这么长的数据，沿extents指明的物理范围，使得每一个范围调用一次f,并直接所有的bl数据
+  //都被遍历完。
   void map_bl(uint64_t x_off,
 	      bufferlist& bl,
 	      std::function<void(uint64_t,bufferlist&)> f) const {
     auto p = extents.begin();
     assert(p != extents.end());
-    while (x_off >= p->length) {//找到合适的p
+    //找x_off在extents中位于那个pe上
+    while (x_off >= p->length) {
+      //找到合适的p
       x_off -= p->length;
       ++p;
       assert(p != extents.end());
@@ -752,7 +787,7 @@ struct bluestore_blob_t {
     }
   }
 
-  //磁盘占用大小
+  //磁盘占用大小（取每一个磁盘段的物理大小）
   uint32_t get_ondisk_length() const {
     uint32_t len = 0;
     for (auto &p : extents) {
@@ -764,19 +799,25 @@ struct bluestore_blob_t {
   //逻辑大小（比如磁盘占用大小）
   uint32_t get_logical_length() const {
     if (is_compressed()) {
+    	//压缩模式下，返回原长度
       return compressed_length_orig;
     } else {
       return get_ondisk_length();
     }
   }
+
+  //当前类型，checksum值占用多少字节
   size_t get_csum_value_size() const;
 
+  //计算有多少个checksum值
   size_t get_csum_count() const {
     size_t vs = get_csum_value_size();
     if (!vs)
       return 0;
     return csum_data.length() / vs;
   }
+
+  //按checksum不同结果集字节宽度，提取索引值对应的数据，并返回
   uint64_t get_csum_item(unsigned i) const {
     size_t cs = get_csum_value_size();
     const char *p = csum_data.c_str();
@@ -795,15 +836,20 @@ struct bluestore_blob_t {
       assert(0 == "unrecognized csum word size");
     }
   }
+
+  //得到checksum值中的第n块校验结果
   const char *get_csum_item_ptr(unsigned i) const {
     size_t cs = get_csum_value_size();
     return csum_data.c_str() + (cs * i);
   }
+
+  //得到checksum值中的第n块校验的存放位置
   char *get_csum_item_ptr(unsigned i) {
     size_t cs = get_csum_value_size();
     return csum_data.c_str() + (cs * i);
   }
 
+  //checksum初始化（设置类型，计算初始值，设置checksum单元块大小）
   void init_csum(unsigned type, unsigned order, unsigned len) {
     flags |= FLAG_CSUM;
     csum_type = type;
@@ -821,30 +867,43 @@ struct bluestore_blob_t {
   int verify_csum(uint64_t b_off, const bufferlist& bl, int* b_bad_off,
 		  uint64_t *bad_csum) const;
 
+  //extents长度大于1，且最后一块无效，且此块未用，则返回true
   bool can_prune_tail() const {
     return
       extents.size() > 1 &&  // if it's all invalid it's not pruning.
       !extents.back().is_valid() &&
       !has_unused();
   }
+
+  //丢弃掉最后一块物理块
   void prune_tail() {
+	//先扔掉最后一个范围
     extents.pop_back();
     if (has_csum()) {
       bufferptr t;
       t.swap(csum_data);
+      //由于是按csum chunk size计算checksum的，故对于指定数据，其checksum的内容大小是
+      //一定的，按下面式子可计算。（扔掉最后一个范围后，get_logical_length大小会变化。
+      //构造csum_data数据
       csum_data = bufferptr(t.c_str(),
 			    get_logical_length() / get_csum_chunk_size() *
 			    get_csum_value_size());
     }
   }
+
   uint32_t get_release_size(uint32_t min_alloc_size) const {
     if (is_compressed()) {
+    	//压缩情况下，返回压缩源大小
       return get_logical_length();
     }
+
+    //如果没有启用checksum,则返回min_alloc_size
     uint32_t res = get_csum_chunk_size();
     if (!has_csum() || res < min_alloc_size) {
       res = min_alloc_size;
     }
+
+    //如果启用checksum以check sum的大于min_alloc_size为准
     return res;
   }
 };
@@ -855,6 +914,7 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o);
 
 /// shared blob state
 struct bluestore_shared_blob_t {
+  //blob 编号
   uint64_t sbid;                       ///> shared blob id
   bluestore_extent_ref_map_t ref_map;  ///< shared blob extents
 

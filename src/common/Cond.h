@@ -31,35 +31,43 @@ class Cond {
   // my bits
   pthread_cond_t _c;
 
+  //条件变量关联的锁，wait时注入
   Mutex *waiter_mutex;
 
   // don't allow copying.
+  //禁用此两者
   void operator=(Cond &C);
   Cond(const Cond &C);
 
  public:
+  //初始化条件变量，注入条件变量对应的锁
   Cond() : waiter_mutex(NULL) {
     int r = pthread_cond_init(&_c,NULL);
     assert(r == 0);
   }
+
+  //销毁条件变量
   virtual ~Cond() { 
     pthread_cond_destroy(&_c); 
   }
 
+  //等待条件达成
   int Wait(Mutex &mutex)  { 
     // make sure this cond is used with one mutex only
+	//必须未给值或者必须为同一把锁
     assert(waiter_mutex == NULL || waiter_mutex == &mutex);
     waiter_mutex = &mutex;
 
+    //条件变更等待时，必须是加锁的
     assert(mutex.is_locked());
 
     mutex._pre_unlock();
-    int r = pthread_cond_wait(&_c, &mutex._m);
+    int r = pthread_cond_wait(&_c, &mutex._m);//等待条件
     mutex._post_lock();
     return r;
   }
 
-  //有超时功能的条件等待
+  //有超时功能的条件等待（采用pthread_cond_timedwait实现）
   int WaitUntil(Mutex &mutex, utime_t when) {
     // make sure this cond is used with one mutex only
     assert(waiter_mutex == NULL || waiter_mutex == &mutex);
@@ -84,6 +92,7 @@ class Cond {
     return WaitUntil(mutex, when);
   }
 
+  //等待信号量，并设置等待的最大间隔
   template<typename Duration>
   int WaitInterval(Mutex &mutex, Duration interval) {
     ceph::real_time when(ceph::real_clock::now());
@@ -98,10 +107,13 @@ class Cond {
     return r;
   }
 
+  //唤醒所有等待此信号量的线程
   int SloppySignal() { 
     int r = pthread_cond_broadcast(&_c);
     return r;
   }
+
+  //确认waiter有锁的情况下唤醒等待此信号量的所有线程
   int Signal() { 
     // make sure signaler is holding the waiter's lock.
     assert(waiter_mutex == NULL ||
@@ -110,6 +122,8 @@ class Cond {
     int r = pthread_cond_broadcast(&_c);
     return r;
   }
+
+  //确认waiter有锁的情况下唤醒等待此信号量的一个线程
   int SignalOne() { 
     // make sure signaler is holding the waiter's lock.
     assert(waiter_mutex == NULL ||
@@ -118,6 +132,8 @@ class Cond {
     int r = pthread_cond_signal(&_c);
     return r;
   }
+
+  //与signal实现相同，属于多余接口（确认waiter有锁的情况下唤醒等待此信号量的所有线程）
   int SignalAll() { 
     // make sure signaler is holding the waiter's lock.
     assert(waiter_mutex == NULL ||
@@ -135,6 +151,7 @@ class Cond {
  * assume the caller is holding the appropriate lock.
  */
 //注入式的无锁cond-context
+//当finish被调用时，对应的信号量，将唤醒所有线程
 class C_Cond : public Context {
   Cond *cond;   ///< Cond to signal
   bool *done;   ///< true if finish() has been called
@@ -202,6 +219,7 @@ public:
   }
 
   /// Returns rval once the Context is called
+  //等待信号量
   int wait() {
     Mutex::Locker l(lock);
     while (!done)

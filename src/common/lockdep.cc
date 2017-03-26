@@ -39,6 +39,7 @@ namespace std {
 #define BACKTRACE_SKIP 2
 
 /******* Globals **********/
+//锁错误检测变量，用于标记是否全局禁止锁错误检测
 int g_lockdep = 0;
 struct lockdep_stopper_t {
   // disable lockdep when this module destructs.
@@ -46,19 +47,30 @@ struct lockdep_stopper_t {
     g_lockdep = 0;
   }
 };
+
+//锁错误检测需要的保护机制（一把保护下面多个结构的锁）
 static pthread_mutex_t lockdep_mutex = PTHREAD_MUTEX_INITIALIZER;
 static CephContext *g_lockdep_ceph_ctx = NULL;
 static lockdep_stopper_t lockdep_stopper;
+//锁名称到锁id的映射表
 static ceph::unordered_map<std::string, int> lock_ids;
+//锁id到锁名称的映射表
 static map<int, std::string> lock_names;
+//记录锁id（first)被引用的数量(second)
 static map<int, int> lock_refs;
+//bitmap用一个位来表示指定id是否空闲
 static char free_ids[MAX_LOCKS/8]; // bit set = free
+//记录每个线程的锁占用情况
 static ceph::unordered_map<pthread_t, map<int,BackTrace*> > held;
+//follows[a][b]用于记录，a锁在拥有的情况下，请求拥有b*8锁（假设flows[a][b] == 0x1)
 static char follows[MAX_LOCKS][MAX_LOCKS/8]; // follows[a][b] means b taken after a
 static BackTrace *follows_bt[MAX_LOCKS][MAX_LOCKS];
+//记录当前已分配出去的最大id号
 unsigned current_maxid;
+//为锁分配空闲id用，记录上次发现的空闲id
 int last_freed_id;
 
+//检测系统配置是否要求强制收集堆栈
 static bool lockdep_force_backtrace()
 {
   return (g_lockdep_ceph_ctx != NULL &&
@@ -66,6 +78,7 @@ static bool lockdep_force_backtrace()
 }
 
 /******* Functions **********/
+//启用锁检测机制
 void lockdep_register_ceph_context(CephContext *cct)
 {
   static_assert((MAX_LOCKS > 0) && (MAX_LOCKS % 8 == 0),                   
@@ -87,6 +100,7 @@ void lockdep_register_ceph_context(CephContext *cct)
   pthread_mutex_unlock(&lockdep_mutex);
 }
 
+//禁用锁检测机制
 void lockdep_unregister_ceph_context(CephContext *cct)
 {
   pthread_mutex_lock(&lockdep_mutex);
@@ -103,6 +117,7 @@ void lockdep_unregister_ceph_context(CephContext *cct)
       }
     }
 
+    //清空，以备下次使用
     held.clear();
     lock_names.clear();
     lock_ids.clear();
@@ -116,6 +131,7 @@ void lockdep_unregister_ceph_context(CephContext *cct)
   pthread_mutex_unlock(&lockdep_mutex);
 }
 
+//显示各线程拥有的锁情况
 int lockdep_dump_locks()
 {
   pthread_mutex_lock(&lockdep_mutex);
@@ -138,20 +154,23 @@ int lockdep_dump_locks()
   return 0;
 }
 
+//分配锁对应的空闲id
 int lockdep_get_free_id(void)
 {
   // if there's id known to be freed lately, reuse it
+  //我们记录有上次空闲的id号，则从它的位置开始，检测是否仍有空闲
   if ((last_freed_id >= 0) && 
      (free_ids[last_freed_id/8] & (1 << (last_freed_id % 8)))) {
     int tmp = last_freed_id;
-    last_freed_id = -1;
-    free_ids[tmp/8] &= 255 - (1 << (tmp % 8));
+    last_freed_id = -1;//空闲的被用了
+    free_ids[tmp/8] &= 255 - (1 << (tmp % 8));//将指定位清0
     lockdep_dout(1) << "lockdep reusing last freed id " << tmp << dendl;
-    return tmp;
+    return tmp;//返回找到的空闲id
   }
   
   // walk through entire array and locate nonzero char, then find
   // actual bit.
+  //遍历查找空闲id
   for (int i = 0; i < MAX_LOCKS / 8; ++i) {
     if (free_ids[i] != 0) {
       for (int j = 0; j < 8; ++j) {
@@ -165,19 +184,25 @@ int lockdep_get_free_id(void)
   }
   
   // not found
+  //无空闲的
   lockdep_dout(0) << "failing miserably..." << dendl;
   return -1;
 }
 
+//按名称注册锁
 int lockdep_register(const char *name)
 {
   int id;
 
   pthread_mutex_lock(&lockdep_mutex);
+  //首先用名称查找这把锁对应的id
   ceph::unordered_map<std::string, int>::iterator p = lock_ids.find(name);
+
   if (p == lock_ids.end()) {
+	//没有找到这把锁对应的id,为其分配一个id号
     id = lockdep_get_free_id();
     if (id < 0) {
+      //分配id号失败，挂掉
       lockdep_dout(0) << "ERROR OUT OF IDS .. have 0"
 		      << " max " << MAX_LOCKS << dendl;
       for (auto& p : lock_names) {
@@ -185,9 +210,13 @@ int lockdep_register(const char *name)
       }
       assert(false);
     }
+
+    //更新当前已分配出去的最大id号
     if (current_maxid <= (unsigned)id) {
         current_maxid = (unsigned)id + 1;
     }
+
+    //更新映射表
     lock_ids[name] = id;
     lock_names[id] = name;
     lockdep_dout(10) << "registered '" << name << "' as " << id << dendl;
@@ -196,12 +225,14 @@ int lockdep_register(const char *name)
     lockdep_dout(20) << "had '" << name << "' as " << id << dendl;
   }
 
+  //增加其引用数
   ++lock_refs[id];
   pthread_mutex_unlock(&lockdep_mutex);
 
   return id;
 }
 
+//去消对指定锁的注册
 void lockdep_unregister(int id)
 {
   if (id < 0) {
@@ -211,10 +242,11 @@ void lockdep_unregister(int id)
   pthread_mutex_lock(&lockdep_mutex);
 
   map<int, std::string>::iterator p = lock_names.find(id);
-  assert(p != lock_names.end());
+  assert(p != lock_names.end());//锁id必须已注册
 
-  int &refs = lock_refs[id];
+  int &refs = lock_refs[id];//减少引用计数
   if (--refs == 0) {
+	//计数减为0时，需要销毁
     // reset dependency ordering
     memset((void*)&follows[id][0], 0, MAX_LOCKS/8);
     for (unsigned i=0; i<current_maxid; ++i) {
@@ -242,13 +274,16 @@ void lockdep_unregister(int id)
 
 
 // does b follow a?
+//是否a依赖于b
 static bool does_follow(int a, int b)
 {
   if (follows[a][b/8] & (1 << (b % 8))) {
+	//由于a锁依赖b锁，故返回依赖
     lockdep_dout(0) << "\n";
     *_dout << "------------------------------------" << "\n";
     *_dout << "existing dependency " << lock_names[a] << " (" << a << ") -> "
            << lock_names[b] << " (" << b << ") at:\n";
+    //显示依赖情况
     if (follows_bt[a][b]) {
       follows_bt[a][b]->print(*_dout);
     }
@@ -256,6 +291,7 @@ static bool does_follow(int a, int b)
     return true;
   }
 
+  //遍历a锁的所有依赖项，针对每个依赖项i，考虑是否i依赖于b,如果依赖则构成环。
   for (unsigned i=0; i<current_maxid; i++) {
     if ((follows[a][i/8] & (1 << (i % 8))) &&
 	does_follow(i, b)) {
@@ -272,6 +308,7 @@ static bool does_follow(int a, int b)
   return false;
 }
 
+//准备加锁时调用（主要检测1.重复上锁;2.循环依赖)
 int lockdep_will_lock(const char *name, int id, bool force_backtrace)
 {
   pthread_t p = pthread_self();
@@ -285,6 +322,8 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
   for (map<int, BackTrace *>::iterator p = m.begin();
        p != m.end();
        ++p) {
+	//如果在当前线程的索引用栈里，发现其已拥有这把锁，则显示递归加锁
+	//并打log,然后主动挂掉
     if (p->first == id) {
       lockdep_dout(0) << "\n";
       *_dout << "recursive lock of " << name << " (" << id << ")\n";
@@ -300,8 +339,10 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
     }
     else if (!(follows[p->first][id/8] & (1 << (id % 8)))) {
       // new dependency
+      //p->first还未占用id锁，等加锁后它就会占用，检查此时是否有环
 
       // did we just create a cycle?
+      //如果id锁现已依赖于p，则构成环，报错
       if (does_follow(id, p->first)) {
         BackTrace *bt = new BackTrace(BACKTRACE_SKIP);
 	lockdep_dout(0) << "new dependency " << lock_names[p->first]
@@ -310,6 +351,7 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
 	bt->print(*_dout);
 	*_dout << dendl;
 
+	//附加显示，自身拥有的锁
 	lockdep_dout(0) << "btw, i am holding these locks:" << dendl;
 	for (map<int, BackTrace *>::iterator q = m.begin();
 	     q != m.end();
@@ -333,7 +375,9 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
         if (force_backtrace || lockdep_force_backtrace()) {
           bt = new BackTrace(BACKTRACE_SKIP);
         }
+        //注明p->first锁依赖于id锁
         follows[p->first][id/8] |= 1 << (id % 8);
+        //注明p->first锁依赖于id锁时的位置
         follows_bt[p->first][id] = bt;
 	lockdep_dout(10) << lock_names[p->first] << " -> " << name << " at" << dendl;
 	//bt->print(*_dout);
@@ -345,6 +389,7 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
   return id;
 }
 
+//加锁完成后调用（记录哪个线程占用哪把锁）
 int lockdep_locked(const char *name, int id, bool force_backtrace)
 {
   pthread_t p = pthread_self();
@@ -353,6 +398,8 @@ int lockdep_locked(const char *name, int id, bool force_backtrace)
 
   pthread_mutex_lock(&lockdep_mutex);
   lockdep_dout(20) << "_locked " << name << dendl;
+
+  //记录线程p(我们自已）拥有了锁$id
   if (force_backtrace || lockdep_force_backtrace())
     held[p][id] = new BackTrace(BACKTRACE_SKIP);
   else
@@ -361,6 +408,7 @@ int lockdep_locked(const char *name, int id, bool force_backtrace)
   return id;
 }
 
+//删除移除项
 int lockdep_will_unlock(const char *name, int id)
 {
   pthread_t p = pthread_self();
@@ -378,7 +426,7 @@ int lockdep_will_unlock(const char *name, int id)
   //assert(held.count(p));
   //assert(held[p].count(id));
 
-  delete held[p][id];
+  delete held[p][id];//删除移除项
   held[p].erase(id);
   pthread_mutex_unlock(&lockdep_mutex);
   return id;

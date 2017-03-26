@@ -9,7 +9,9 @@
 
 class Checksummer {
 public:
-  enum CSumType {//内置的checksum类型
+
+  //内置的checksum类型
+  enum CSumType {
     CSUM_NONE = 1,	//intentionally set to 1 to be aligned with OSDMnitor's pool_opts_t handling - it treats 0 as unset while we need to distinguish none and unset cases
     CSUM_XXHASH32 = 2,
     CSUM_XXHASH64 = 3,
@@ -18,7 +20,9 @@ public:
     CSUM_CRC32C_8 = 6,  // low 8 bits of crc32c
     CSUM_MAX,
   };
-  static const char *get_csum_type_string(unsigned t) {//由checksum类型转名称
+
+  //由checksum类型转名称
+  static const char *get_csum_type_string(unsigned t) {
     switch (t) {
     case CSUM_NONE: return "none";
     case CSUM_XXHASH32: return "xxhash32";
@@ -29,7 +33,9 @@ public:
     default: return "???";
     }
   }
-  static int get_csum_string_type(const std::string &s) {//由名称转checksum类型
+
+  //由名称转checksum类型
+  static int get_csum_string_type(const std::string &s) {
     if (s == "none")
       return CSUM_NONE;
     if (s == "xxhash32")
@@ -44,6 +50,8 @@ public:
       return CSUM_CRC32C_8;
     return -EINVAL;
   }
+
+  //不同checksum 类型，返回不同的check sum value的内存大小
   static size_t get_csum_value_size(int csum_type) {
     switch (csum_type) {
     case CSUM_NONE: return 0;

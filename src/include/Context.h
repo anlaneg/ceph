@@ -87,6 +87,7 @@ ContainerContext<T> *make_container_context(T &&t) {
   return new ContainerContext<T>(std::forward<T>(t));
 }
 
+//通过finish显示调用complete
 template <class T>
 struct Wrapper : public Context {
   Context *to_run;
@@ -97,6 +98,8 @@ struct Wrapper : public Context {
       to_run->complete(r);
   }
 };
+
+//析构时，会自动调用context接口的complete
 struct RunOnDelete {
   Context *to_run;
   RunOnDelete(Context *to_run) : to_run(to_run) {}
@@ -136,7 +139,7 @@ GenContextURef<T> make_gen_lambda_context(F &&f) {
 /*
  * finish and destroy a list of Contexts
  */
-//如果是一组,则逐个进行complete.
+//如果是一组,则逐个进行complete.(list类型）
 template<class A>
 inline void finish_contexts(CephContext *cct, std::list<A*>& finished, 
                             int result = 0)
@@ -158,6 +161,7 @@ inline void finish_contexts(CephContext *cct, std::list<A*>& finished,
   }
 }
 
+//逐个调用finished的complete,其返回值设置为result(vector类型）
 inline void finish_contexts(CephContext *cct, std::vector<Context*>& finished, 
                             int result = 0)
 {
@@ -220,9 +224,12 @@ public:
   {
   }
 
+  //再加入一个context
   void add(ContextType* c) {
     contexts.push_back(c);
   }
+
+  //为一组context赋给
   void take(std::list<ContextType*>& ls) {
     contexts.splice(contexts.end(), ls);
   }
@@ -231,19 +238,25 @@ public:
     // I want to look like it, I don't actually want to run its code.
     Context::complete(r);
   }
+  //finish回调，通过finish_contexts完成
   void finish(int r) override {
+	  //调用helper函数完成对一组回调的触发
     finish_contexts(cct, contexts, r);
   }
   bool empty() { return contexts.empty(); }
 
+  //将cs链，转化为单个context返回
   static ContextType *list_to_context(list<ContextType *> &cs) {
     if (cs.size() == 0) {
+    	//如果cs链为空，返回NULL
       return 0;
     } else if (cs.size() == 1) {
+    	//如果cs链仅有一个，返回其对应的context
       ContextType *c = cs.front();
       cs.clear();
       return c;
     } else {
+    	//将cs注入到c中，将c返回
       C_ContextsBase<ContextType, ContextInstanceType> *c(new C_ContextsBase<ContextType, ContextInstanceType>(0));
       c->take(cs);
       return c;

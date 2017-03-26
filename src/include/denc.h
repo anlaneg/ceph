@@ -173,20 +173,24 @@ struct denc_traits {
     static constexpr bool supported = true;				\
     static constexpr bool featured = false;				\
     static constexpr bool bounded = true;				\
+    /*仅计算边界，为p增加类型type所规定的字节*/               \
     static void bound_encode(const type &o, size_t& p, uint64_t f=0) {	\
       p += sizeof(type);						\
     }									\
+	/*将o添加入p规则定的缓冲区内*/\
     static void encode(const type &o,					\
 		       buffer::list::contiguous_appender& p,		\
 		       uint64_t f=0) {					\
       p.append((const char*)&o, sizeof(o));				\
     }									\
+	/*将当前位置的内存按格式type进行解析，并在解释完成后将读写位置向前移动sizeof(o）个字节*/\
     static void decode(type& o, buffer::ptr::iterator &p,		\
 		       uint64_t f=0) {					\
       o = *(type *)p.get_pos_add(sizeof(o));				\
     }									\
   };
 
+//支持对le64,32,16,8类型编码，解码
 WRITE_RAW_DENC(ceph_le64)
 WRITE_RAW_DENC(ceph_le32)
 WRITE_RAW_DENC(ceph_le16)
@@ -209,6 +213,7 @@ WRITE_RAW_DENC(int8_t);
 // getting glued into the legacy encode/decode methods; the overhead of setting
 // up a contiguous_appender etc is likely to be slower.
 
+//这种结构，其内型在函数接口上均按itype处理，而实现时内部读取均按etype读取，解释
 #define WRITE_INT_DENC(itype, etype)					\
   template<>								\
   struct denc_traits<itype> {						\
@@ -237,17 +242,20 @@ WRITE_INT_DENC(int64_t, __le64);
 WRITE_INT_DENC(bool, uint8_t);
 
 
+//可变量整数
 // varint
 //
 // high bit of each byte indicates another byte follows.
 template<typename T>
-inline void denc_varint(T v, size_t& p) {//使p跳过sizeof(v)＋１大小，一般用于求编码长度
+//使p跳过sizeof(v)＋１大小，一般用于求编码长度
+inline void denc_varint(T v, size_t& p) {
   p += sizeof(T) + 1;
 }
 
 
 template<typename T>
-inline void denc_varint(T v, bufferlist::contiguous_appender& p) {//将v数据按字节拆分，每７bit存入一个字节，最高位置１
+//将v数据按字节拆分，每７bit存入一个字节，最高位置１，编码
+inline void denc_varint(T v, bufferlist::contiguous_appender& p) {
   uint8_t byte = v & 0x7f;//取后７位
   v >>= 7;
   while (v) {
@@ -260,7 +268,8 @@ inline void denc_varint(T v, bufferlist::contiguous_appender& p) {//将v数据�
 }
 
 template<typename T>
-inline void denc_varint(T& v, bufferptr::iterator& p) {//解码
+//解码
+inline void denc_varint(T& v, bufferptr::iterator& p) {
   uint8_t byte = *(__u8*)p.get_pos_add(1);
   v = byte & 0x7f;
   int shift = 7;
@@ -272,13 +281,17 @@ inline void denc_varint(T& v, bufferptr::iterator& p) {//解码
 }
 
 
+//可变量有符号整数编码
 // signed varint encoding
 //
 // low bit = 1 = negative, 0 = positive
 // high bit of every byte indicates whether another byte follows.
+//求编码长度
 inline void denc_signed_varint(int64_t v, size_t& p) {
   p += sizeof(v) + 2;
 }
+
+//编码
 inline void denc_signed_varint(int64_t v, bufferlist::contiguous_appender& p) {
   if (v < 0) {
     v = (-v << 1) | 1;
@@ -288,6 +301,7 @@ inline void denc_signed_varint(int64_t v, bufferlist::contiguous_appender& p) {
   denc_varint(v, p);
 }
 
+//编码
 template<typename T>
 inline void denc_signed_varint(T& v, bufferptr::iterator& p)
 {

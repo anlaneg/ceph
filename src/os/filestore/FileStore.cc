@@ -2069,6 +2069,7 @@ struct C_JournaledAhead : public Context {
   }
 };
 
+//filestore事务操作入口
 int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
 				  TrackedOpRef osd_op,
 				  ThreadPool::TPHandle *handle)

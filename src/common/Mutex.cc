@@ -44,6 +44,11 @@ Mutex::Mutex(const std::string &n, bool r, bool ld,
     // mutexes of type PTHREAD_MUTEX_ERRORCHECK.
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
+    //如果一个线程对这种类型的互斥锁重复上锁，不会引起死锁，
+    //一个线程对这类互斥锁的多次重复上锁必须由这个线程来重复相同数量的解锁，
+    //这样才能解开这个互斥锁，别的线程才能得到这个互斥锁。如果试图解锁一个由别的线程锁定的互斥锁将会返回一个错误代码。
+    //如果一个线程试图解锁已经被解锁的互斥锁也将会返回一个错误代码。
+    //这种类型的互斥锁只能是进程私有的（作用域属性为PTHREAD_PROCESS_PRIVATE）。
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&_m,&attr);
     pthread_mutexattr_destroy(&attr);
@@ -58,6 +63,9 @@ Mutex::Mutex(const std::string &n, bool r, bool ld,
     // is unlocked, an error shall be returned.
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
+    //这种类型的互斥锁会自动检测死锁。如果一个线程试图对一个互斥锁重复锁定，
+    //将会返回一个错误代码。如果试图解锁一个由别的线程锁定的互斥锁将会返回一个错误代码。
+    //如果一个线程试图解锁已经被解锁的互斥锁也将会返回一个错误代码。
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
     pthread_mutex_init(&_m, &attr);
     pthread_mutexattr_destroy(&attr);
@@ -92,6 +100,8 @@ Mutex::~Mutex() {
 void Mutex::Lock(bool no_lockdep) {
   int r;
 
+  //开启了锁错误检测，并且全局变量容许锁错误检测，并且本函数未明确规定不做
+  //错误检测，则进行锁错误检测
   if (lockdep && g_lockdep && !no_lockdep) _will_lock();
 
   if (logger && cct && cct->_conf->mutex_perf_counter) {

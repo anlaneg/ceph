@@ -2107,6 +2107,7 @@ void KStore::_kv_sync_thread()
 // ---------------------------
 // transactions
 
+//kstore事务操作入口
 int KStore::queue_transactions(
     Sequencer *posr,
     vector<Transaction>& tls,
