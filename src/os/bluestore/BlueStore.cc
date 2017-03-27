@@ -8048,7 +8048,7 @@ int BlueStore::queue_transactions(
   }
 
   // prepare
-  //创建事务上下文及其对应的回调
+  //创建事务上下文及设置其对应的回调
   TransContext *txc = _txc_create(osr);
   txc->onreadable = onreadable;
   txc->onreadable_sync = onreadable_sync;
