@@ -1468,6 +1468,7 @@ public:
     }
 #endif
 
+    //计算状态间隔
     void log_state_latency(PerfCounters *logger, int state) {
       utime_t lat, now = ceph_clock_now();
       lat = now - last_stamp;

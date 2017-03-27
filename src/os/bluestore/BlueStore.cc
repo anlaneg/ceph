@@ -7272,6 +7272,7 @@ void BlueStore::get_db_statistics(Formatter *f)
   db->get_statistics(f);
 }
 
+//创建事务上下文，将事务入队序列器
 BlueStore::TransContext *BlueStore::_txc_create(OpSequencer *osr)
 {
   TransContext *txc = new TransContext(cct, osr);
