@@ -633,9 +633,10 @@ public:
   struct Extent : public ExtentBase {
     MEMPOOL_CLASS_HELPERS();
 
-    uint32_t logical_offset = 0;      ///< logical offset //一个对象的逻辑的offset
+    uint32_t logical_offset = 0;      ///< logical offset //一个对象的逻辑的offset,文件里的偏移量（读写时用）
     uint32_t blob_offset = 0;         ///< blob offset    //这段数据在blob中起始的偏移量
     uint32_t length = 0;              ///< length　　　　　　　　　//这段数据存在哪个blob中
+    //blob数据，通过构造函数注入的数据
     BlobRef  blob;                    ///< the blob with our data
 
     /// ctor for lookup only
@@ -672,12 +673,14 @@ public:
       return a.logical_offset == b.logical_offset;
     }
 
-    //可容纳的理论offset
+    //这个blob理论可存放的起始逻辑offset（由于写时不对齐blob,
+    //写数据时，常常并不是沿blob的起始位置存放的，故这里是求blob起始位置逻辑的offset)
     uint32_t blob_start() const {
       return logical_offset - blob_offset;
     }
 
-    //可容纳的结尾数据对应的offset
+    //blob是个逻辑段，其起始位置为blob_start,
+    //其结尾位置则应是blob_start位置加上其内部用于存储的所有磁盘空间
     uint32_t blob_end() const {
       return blob_start() + blob->get_blob().get_logical_length();
     }

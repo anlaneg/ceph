@@ -8909,6 +8909,8 @@ void BlueStore::_do_write_small(
       continue;
     }
 
+    //按理不会出现这种情况，逻辑的offset与数据在blob中的起始offset
+    //对min_alloc_size应是同余，这里直接忽略掉这种blob
     if (ep->logical_offset % min_alloc_size !=
 	ep->blob_offset % min_alloc_size) {
       dout(20) << __func__ << " ignoring offset-skewed " << *b << dendl;
@@ -9125,6 +9127,12 @@ void BlueStore::_do_write_small(
   // new blob.
   b = c->new_blob();
   unsigned alloc_len = min_alloc_size;
+  //blob是一个连续的内存，申请的内存按min_alloc_size进行对齐，在存放数据时，
+  //按照写的位置不同，在页内按一定偏移量来写，这样的好处是，在不连续写时，
+  //前面的内容可以通过申请整页内容在扩展，而不会发生为存放数据而需要将数据进行移动
+  //注意，如果要写入的块，恰好是共享的（按处理，已被定义为不可变更，跳已跳过）
+  //此时我们就会走到当前流程new一个blob,我们将在set_lextent中发现这一种情况
+  //，然后在处理wctx->old_extents时进行处理(put_ref)
   uint64_t b_off = P2PHASE(offset, alloc_len);
   uint64_t b_off0 = b_off;
   _pad_zeros(&bl, &b_off0, block_size);
@@ -9132,7 +9140,7 @@ void BlueStore::_do_write_small(
   _buffer_cache_write(txc, b, b_off0, bl,
 		      wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
   //记录逻辑段
-  Extent *le = o->extent_map.set_lextent(offset, b_off,
+	Extent *le = o->extent_map.set_lextent(offset, b_off,
 			 length, b, &wctx->old_extents);
   txc->statfs_delta.stored() += le->length;
   dout(20) << __func__ << "  lex " << *le << dendl;
@@ -9355,9 +9363,11 @@ int BlueStore::_do_alloc_write(
       auto b_off = wi.b_off;
       auto b_end = b_off + wi.bl.length();
       if (b_off) {
+    	//由于offset非零，故0到offset之间没有被用到
         dblob.add_unused(0, b_off);
       }
       if (b_end < wi.blob_length) {
+    	//由于数据没有占满一个min_alloc_size,故结尾有一部分没有用到
         dblob.add_unused(b_end, wi.blob_length - b_end);
       }
     }
