@@ -474,8 +474,10 @@ static void get_omap_key(uint64_t id, const string& key, string *out)
   out->append(key);
 }
 
+//替换old中的id部分
 static void rewrite_omap_key(uint64_t id, string old, string *out)
 {
+　　//将id存入out中
   _key_encode_u64(id, out);
   out->append(old.c_str() + out->length(), old.size() - out->length());
 }
@@ -2175,7 +2177,7 @@ void BlueStore::ExtentMap::reshard(
       ++si_begin;
     }
 
-    //顺手依表的offset,设置needs_reshard_begin
+    //顺手依表的offset,设置needs_reshard_begin（防止needs_reshard_begin不是offset对齐的）
     needs_reshard_begin = shards[si_begin].shard_info->offset;
 
     //定位si_end,并顺手修改needs_reshard_end
@@ -3124,6 +3126,7 @@ void BlueStore::Collection::make_blob_shared(uint64_t sbid, BlobRef b)
   blob.clear_flag(bluestore_blob_t::FLAG_MUTABLE);
 
   // update shared blob
+  //创建并设置shared_blob
   b->shared_blob->loaded = true;
   b->shared_blob->persistent = new bluestore_shared_blob_t(sbid);
   shared_blob_set.add(this, b->shared_blob.get());
@@ -5792,6 +5795,7 @@ int BlueStore::stat(
     OnodeRef o = c->get_onode(oid, false);
     if (!o || !o->exists)
       return -ENOENT;
+    //设置对象大小
     st->st_size = o->onode.size;
     st->st_blksize = 4096;
     st->st_blocks = (st->st_size + st->st_blksize - 1) / st->st_blksize;
@@ -8407,11 +8411,13 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
 
     case Transaction::OP_OMAP_CLEAR:
       {
+    	  //清空对象关联的omap取值
 	r = _omap_clear(txc, c, o);
       }
       break;
     case Transaction::OP_OMAP_SETKEYS:
       {
+    	  //设置omap的key
 	bufferlist aset_bl;
         i.decode_attrset_bl(&aset_bl);
 	r = _omap_setkeys(txc, c, o, aset_bl);//set omap
@@ -8419,6 +8425,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       break;
     case Transaction::OP_OMAP_RMKEYS:
       {
+    	  //删除omap的给定key
 	bufferlist keys_bl;
         i.decode_keyset_bl(&keys_bl);
 	r = _omap_rmkeys(txc, c, o, keys_bl);
@@ -8426,6 +8433,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       break;
     case Transaction::OP_OMAP_RMKEYRANGE:
       {
+    	  //删除omap中给定范围的key
         string first, last;
         first = i.decode_string();
         last = i.decode_string();
@@ -8436,6 +8444,7 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
       {
         bufferlist bl;
         i.decode_bl(bl);
+        //处理omap的setheader
 	r = _omap_setheader(txc, c, o, bl);
       }
       break;
@@ -9487,6 +9496,7 @@ int BlueStore::_do_write(
   if (end > o->onode.size) {
     dout(20) << __func__ << " extending size to 0x" << std::hex << end
 	     << std::dec << dendl;
+    //更新文件尺寸大小
     o->onode.size = end;
   }
   r = 0;
@@ -9737,6 +9747,7 @@ int BlueStore::_rmattr(TransContext *txc,
   return r;
 }
 
+//清空对象的所有属性
 int BlueStore::_rmattrs(TransContext *txc,
 			CollectionRef& c,
 			OnodeRef& o)
@@ -9755,12 +9766,13 @@ int BlueStore::_rmattrs(TransContext *txc,
   return r;
 }
 
+//从$id- 清记录，请到$id~
 void BlueStore::_do_omap_clear(TransContext *txc, uint64_t id)
 {
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_OMAP);
   string prefix, tail;
-  get_omap_header(id, &prefix);
-  get_omap_tail(id, &tail);
+  get_omap_header(id, &prefix);//生成格式　$id-
+  get_omap_tail(id, &tail);//生成格式$id~
   it->lower_bound(prefix);
   while (it->valid()) {
     if (it->key() >= tail) {
@@ -9774,6 +9786,7 @@ void BlueStore::_do_omap_clear(TransContext *txc, uint64_t id)
   }
 }
 
+//清空omap "$nid-", .... "$nid.",.... "$nid~"
 int BlueStore::_omap_clear(TransContext *txc,
 			   CollectionRef& c,
 			   OnodeRef& o)
@@ -9800,24 +9813,32 @@ int BlueStore::_omap_setkeys(TransContext *txc,
   bufferlist::iterator p = bl.begin();
   __u32 num;
   if (!o->onode.has_omap()) {
+	//如果之前没有设置omap标记，则设置标记，并记录对象被执行写
     o->onode.set_omap_flag();
     txc->write_onode(o);
   } else {
+	//指明对象被修改
     txc->note_modified_object(o);
   }
+  //构造omap体  "$oid."
   string final_key;
   _key_encode_u64(o->onode.nid, &final_key);
   final_key.push_back('.');
-  ::decode(num, p);
+  ::decode(num, p);//获知有多少个
+
+  //逐个设置omap_key
   while (num--) {
     string key;
     bufferlist value;
     ::decode(key, p);
     ::decode(value, p);
+    //id为８个字节，后有有一个点，故resize(9)
+    //这里更换上一次生成的key,为本次的key
     final_key.resize(9); // keep prefix
     final_key += key;
     dout(30) << __func__ << "  " << pretty_binary_string(final_key)
 	     << " <- " << key << dendl;
+    //填入数据库
     txc->t->set(PREFIX_OMAP, final_key, value);
   }
   r = 0;
@@ -9825,6 +9846,7 @@ int BlueStore::_omap_setkeys(TransContext *txc,
   return r;
 }
 
+//在数据库中设置omap_header
 int BlueStore::_omap_setheader(TransContext *txc,
 			       CollectionRef& c,
 			       OnodeRef &o,
@@ -9834,11 +9856,14 @@ int BlueStore::_omap_setheader(TransContext *txc,
   int r;
   string key;
   if (!o->onode.has_omap()) {
+	//之前没有omap标记，给打上omap标记
     o->onode.set_omap_flag();
     txc->write_onode(o);
   } else {
+	//之前有omap标记，记录此对象被修改
     txc->note_modified_object(o);
   }
+  //设置omap_header
   get_omap_header(o->onode.nid, &key);
   txc->t->set(PREFIX_OMAP, key, bl);
   r = 0;
@@ -9846,6 +9871,7 @@ int BlueStore::_omap_setheader(TransContext *txc,
   return r;
 }
 
+//删除配置给定的omap key
 int BlueStore::_omap_rmkeys(TransContext *txc,
 			    CollectionRef& c,
 			    OnodeRef& o,
@@ -9968,31 +9994,39 @@ int BlueStore::_clone(TransContext *txc,
   } else {
 	//否则处理为，读了之后写。
     bufferlist bl;
+    //读范围[0,oldo->onode.size]
     r = _do_read(c.get(), oldo, 0, oldo->onode.size, bl, 0);
     if (r < 0)
       goto out;
+    //写范围[0,oldo->onode.size]
     r = _do_write(txc, c, newo, 0, oldo->onode.size, bl, 0);
     if (r < 0)
       goto out;
   }
 
   // clone attrs
+  // copy属性
   newo->onode.attrs = oldo->onode.attrs;
 
   // clone omap
+  //如果newo上原来有omap,则将其清空，为copy oldo上的omap做好准备
   if (newo->onode.has_omap()) {
     dout(20) << __func__ << " clearing old omap data" << dendl;
     newo->flush();
+    //这个函数仅清数据，不清标记，故如果要清标记，则由下面的else完成
     _do_omap_clear(txc, newo->onode.nid);
   }
   if (oldo->onode.has_omap()) {
     dout(20) << __func__ << " copying omap data" << dendl;
+    //set omap　标记
     if (!newo->onode.has_omap()) {
       newo->onode.set_omap_flag();
     }
     KeyValueDB::Iterator it = db->get_iterator(PREFIX_OMAP);
     string head, tail;
+    //生成头尾的id
     get_omap_header(oldo->onode.nid, &head);
+    //尾实际上并不写入，仅是一个标记
     get_omap_tail(oldo->onode.nid, &tail);
     it->lower_bound(head);
     while (it->valid()) {
@@ -10002,16 +10036,20 @@ int BlueStore::_clone(TransContext *txc,
       } else {
 	dout(30) << __func__ << "  got header/data "
 		 << pretty_binary_string(it->key()) << dendl;
+	//设置omap
         string key;
+    //替换it->key()中的id部分，将构造的新key存入数据库
 	rewrite_omap_key(newo->onode.nid, it->key(), &key);
 	txc->t->set(PREFIX_OMAP, key, it->value());
       }
       it->next();
     }
   } else {
+	//请标记
     newo->onode.clear_omap_flag();
   }
 
+  //记录此对象被修改
   txc->write_onode(newo);
   r = 0;
 
@@ -10021,12 +10059,13 @@ int BlueStore::_clone(TransContext *txc,
   return r;
 }
 
+//
 int BlueStore::_do_clone_range(
   TransContext *txc,
   CollectionRef& c,//collection
   OnodeRef& oldo,//源对象
   OnodeRef& newo,//目标对象
-  //源偏移量，长度，目的偏移量
+  //源偏移量，源读写长度，目的偏移量
   uint64_t srcoff, uint64_t length, uint64_t dstoff)
 {
   dout(15) << __func__ << " " << c->cid << " " << oldo->oid << " -> "
@@ -10048,14 +10087,14 @@ int BlueStore::_do_clone_range(
 
   int n = 0;
   bool dirtied_oldo = false;
-  uint64_t end = srcoff + length;//终止位置
+  uint64_t end = srcoff + length;//读写的终止位置
 
   for (auto ep = oldo->extent_map.seek_lextent(srcoff);
        ep != oldo->extent_map.extent_map.end();
        ++ep) {
     auto& e = *ep;
 
-    //如果e的起始offset大于end,说明ep段没有new0要的数据
+    //如果e的起始logical_offset大于end,说明处理完成
     if (e.logical_offset >= end) {
       break;
     }
@@ -10072,24 +10111,30 @@ int BlueStore::_do_clone_range(
       // dup the blob
       const bluestore_blob_t& blob = e.blob->get_blob();
       // make sure it is shared
-      //如果这个blob不是共享的，则将其设置为共享的
+      //如果这个blob不是共享的，则将其设置为共享的，记录此段内存共享
+      //的次数（快照情况下，需要保存某个对象的多个幅本,用引用计数来维护不变的范围)
+      //从这里可以看出，当前不支持对范围的共享，但低层是支持的）
       if (!blob.is_shared()) {
-	c->make_blob_shared(_assign_blobid(txc), e.blob);
-	dirtied_oldo = true;  // fixme: overkill
+	    c->make_blob_shared(_assign_blobid(txc), e.blob);
+	    dirtied_oldo = true;  // fixme: overkill
       } else {
-    //之前已经是共享的，从数据库中加载
-	c->load_shared_blob(e.blob->shared_blob);
+        //之前已经是共享的，从数据库中加载，共享情况
+	    c->load_shared_blob(e.blob->shared_blob);
       }
+
       cb = new Blob();
       e.blob->last_encoded_id = n;
       id_to_blob[n] = cb;
-      e.blob->dup(*cb);//交换给cb
+      e.blob->dup(*cb);//copy?
       // bump the extent refs on the copied blob's extents
       //copy blob中的范围，增加它的引用计数
+      //如果之前没有shared,则在c->make_blob_shared中我们已shared了一份，
+      //为什么在这里需要再多加一次引用？
+      //如果之前不是共享的，则我们需要增加引用
       for (auto p : blob.extents) {
-	if (p.is_valid()) {
-	  e.blob->shared_blob->get_ref(p.offset, p.length);
-	}
+	    if (p.is_valid()) {
+	      e.blob->shared_blob->get_ref(p.offset, p.length);
+	    }
       }
       txc->write_shared_blob(e.blob->shared_blob);
       dout(20) << __func__ << "    new " << *cb << dendl;
@@ -10112,6 +10157,7 @@ int BlueStore::_do_clone_range(
     }
 
 
+    //构造新对象的extent
     Extent *ne = new Extent(e.logical_offset + skip_front + dstoff - srcoff,
 			    e.blob_offset + skip_front,
 			    e.length - skip_front - skip_back, cb);

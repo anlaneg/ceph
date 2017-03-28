@@ -360,7 +360,7 @@ public:
     Collection *coll = nullptr;
     union {
       uint64_t sbid_unloaded;              ///< sbid if persistent isn't loaded
-      //如果loaded为true,则此变量存在
+      //如果loaded为true,则此变量存在,
       bluestore_shared_blob_t *persistent; ///< persistent part of the shared blob if any
     };
     BufferSpace bc;             ///< buffer cache

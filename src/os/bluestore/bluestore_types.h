@@ -917,6 +917,7 @@ ostream& operator<<(ostream& out, const bluestore_blob_t& o);
 struct bluestore_shared_blob_t {
   //blob 编号
   uint64_t sbid;                       ///> shared blob id
+  //记录共享的范围及共享计数
   bluestore_extent_ref_map_t ref_map;  ///< shared blob extents
 
   bluestore_shared_blob_t(uint64_t _sbid) : sbid(_sbid) {}
@@ -943,6 +944,7 @@ ostream& operator<<(ostream& out, const bluestore_shared_blob_t& o);
 struct bluestore_onode_t {
   //编号
   uint64_t nid = 0;                    ///< numeric id (locally unique)
+  //文件尺寸大小
   uint64_t size = 0;                   ///< object size
   //属性，对象的attribute
   map<mempool::bluestore_meta_other::string, bufferptr> attrs;        ///< attrs //属性，对象的attribute
