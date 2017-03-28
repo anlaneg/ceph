@@ -1008,7 +1008,7 @@ int FileJournal::prepare_single_write(write_item &next_write, bufferlist& bl, of
   return 0;
 }
 
-void FileJournal::align_bl(off64_t pos, bufferlist& bl)
+void FileJournal::check_align(off64_t pos, bufferlist& bl)
 {
   // make sure list segments are page aligned
   if (directio && !bl.is_aligned_size_and_memory(block_size, CEPH_DIRECTIO_ALIGNMENT)) {
@@ -1067,7 +1067,6 @@ void FileJournal::do_write(bufferlist& bl)
   off64_t pos = write_pos;
 
   // Adjust write_pos
-  align_bl(pos, bl);
   write_pos += bl.length();
   if (write_pos >= header.max_size)
     write_pos = write_pos - header.max_size + get_top();
@@ -1102,12 +1101,14 @@ void FileJournal::do_write(bufferlist& bl)
     if (write_bl(pos, second)) {
       derr << "FileJournal::do_write: write_bl(pos=" << orig_pos
 	   << ") failed" << dendl;
+      check_align(pos, second);
       ceph_abort();
     }
     orig_pos = first_pos;
     if (write_bl(first_pos, first)) {
       derr << "FileJournal::do_write: write_bl(pos=" << orig_pos
 	   << ") failed" << dendl;
+      check_align(first_pos, first);
       ceph_abort();
     }
     assert(first_pos == get_top());
@@ -1126,6 +1127,7 @@ void FileJournal::do_write(bufferlist& bl)
     if (write_bl(pos, bl)) {
       derr << "FileJournal::do_write: write_bl(pos=" << pos
 	   << ") failed" << dendl;
+      check_align(pos, bl);
       ceph_abort();
     }
   }
@@ -1389,8 +1391,6 @@ void FileJournal::do_aio_write(bufferlist& bl)
  */
 int FileJournal::write_aio_bl(off64_t& pos, bufferlist& bl, uint64_t seq)
 {
-  align_bl(pos, bl);
-
   dout(20) << "write_aio_bl " << pos << "~" << bl.length() << " seq " << seq << dendl;
 
   while (bl.length() > 0) {
@@ -1443,6 +1443,7 @@ int FileJournal::write_aio_bl(off64_t& pos, bufferlist& bl, uint64_t seq)
 	  usleep(500);
 	  continue;
 	}
+	check_align(pos, tbl);
 	assert(0 == "io_submit got unexpected error");
       } else {
 	break;
@@ -1602,7 +1603,8 @@ int FileJournal::prepare_entry(vector<ObjectStore::Transaction>& tls, bufferlist
   }
   // footer
   ebl.append((const char*)&h, sizeof(h));
-  ebl.rebuild_aligned(CEPH_DIRECTIO_ALIGNMENT);
+  if (directio)
+    ebl.rebuild_aligned(CEPH_DIRECTIO_ALIGNMENT);
   tbl->claim(ebl);
   return h.len;
 }

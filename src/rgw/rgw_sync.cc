@@ -421,7 +421,7 @@ public:
       shard_id(_shard_id), pmarker(_marker), max_entries(_max_entries),
       entries(_entries), truncated(_truncated) {}
 
-  ~RGWReadMDLogEntriesCR() {
+  ~RGWReadMDLogEntriesCR() override {
     if (req) {
       req->finish();
     }
@@ -599,7 +599,7 @@ public:
       status(status), shards_info(status.num_shards),
       lease_cr(nullptr), lease_stack(nullptr) {}
 
-  ~RGWInitSyncStatusCoroutine() {
+  ~RGWInitSyncStatusCoroutine() override {
     if (lease_cr) {
       lease_cr->abort();
       lease_cr->put();
@@ -755,7 +755,7 @@ public:
                                                       lost_lock(false), failed(false), markers(_markers) {
   }
 
-  ~RGWFetchAllMetaCR() {
+  ~RGWFetchAllMetaCR() override {
     if (lease_cr) {
       lease_cr->put();
     }
@@ -842,27 +842,25 @@ public:
         }
         iter = result.begin();
         for (; iter != result.end(); ++iter) {
-          RGWRados *store;
-          int ret;
-          yield {
-            if (!lease_cr->is_locked()) {
-              lost_lock = true;
-              break;
-            }
-	    ldout(cct, 20) << "list metadata: section=" << *sections_iter << " key=" << *iter << dendl;
-	    string s = *sections_iter + ":" + *iter;
-            int shard_id;
-            store = sync_env->store;
-            ret = store->meta_mgr->get_log_shard_id(*sections_iter, *iter, &shard_id);
-            if (ret < 0) {
-              ldout(cct, 0) << "ERROR: could not determine shard id for " << *sections_iter << ":" << *iter << dendl;
-              ret_status = ret;
-              break;
-            }
-	    if (!entries_index->append(s, shard_id)) {
-              break;
-            }
-	  }
+          if (!lease_cr->is_locked()) {
+            lost_lock = true;
+            break;
+          }
+          yield; // allow entries_index consumer to make progress
+
+          ldout(cct, 20) << "list metadata: section=" << *sections_iter << " key=" << *iter << dendl;
+          string s = *sections_iter + ":" + *iter;
+          int shard_id;
+          RGWRados *store = sync_env->store;
+          int ret = store->meta_mgr->get_log_shard_id(*sections_iter, *iter, &shard_id);
+          if (ret < 0) {
+            ldout(cct, 0) << "ERROR: could not determine shard id for " << *sections_iter << ":" << *iter << dendl;
+            ret_status = ret;
+            break;
+          }
+          if (!entries_index->append(s, shard_id)) {
+            break;
+          }
 	}
       }
       yield {
@@ -1007,7 +1005,7 @@ public:
                                           raw_key(_raw_key), bl(_bl), req(NULL) {
   }
 
-  ~RGWMetaStoreEntryCR() {
+  ~RGWMetaStoreEntryCR() override {
     if (req) {
       req->finish();
     }
@@ -1056,7 +1054,7 @@ public:
                                           raw_key(_raw_key), req(NULL) {
   }
 
-  ~RGWMetaRemoveEntryCR() {
+  ~RGWMetaRemoveEntryCR() override {
     if (req) {
       req->finish();
     }
@@ -1221,7 +1219,7 @@ public:
       *new_marker = marker;
     }
   }
-  ~RGWCloneMetaLogCoroutine() {
+  ~RGWCloneMetaLogCoroutine() override {
     if (http_op) {
       http_op->put();
     }
@@ -1303,7 +1301,7 @@ public:
     *reset_backoff = false;
   }
 
-  ~RGWMetaSyncShardCR() {
+  ~RGWMetaSyncShardCR() override {
     delete marker_tracker;
     if (lease_cr) {
       lease_cr->abort();
@@ -1485,7 +1483,7 @@ public:
 	  using WriteMarkerCR = RGWSimpleRadosWriteCR<rgw_meta_sync_marker>;
 	  yield call(new WriteMarkerCR(sync_env->async_rados, sync_env->store,
 				       rgw_raw_obj(pool, sync_env->shard_obj_name(shard_id)),
-				       sync_marker));
+				       *temp_marker));
         }
 
         if (retcode < 0) {

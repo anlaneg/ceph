@@ -53,7 +53,7 @@ BlueFS::~BlueFS()
 
 void BlueFS::_init_logger()
 {
-  PerfCountersBuilder b(cct, "BlueFS",
+  PerfCountersBuilder b(cct, "bluefs",
                         l_bluefs_first, l_bluefs_last);
   b.add_u64_counter(l_bluefs_gift_bytes, "gift_bytes",
 		    "Bytes gifted from BlueStore");
@@ -61,30 +61,30 @@ void BlueFS::_init_logger()
 		    "Bytes reclaimed by BlueStore");
   b.add_u64(l_bluefs_db_total_bytes, "db_total_bytes",
 	    "Total bytes (main db device)");
-  b.add_u64(l_bluefs_db_free_bytes, "db_free_bytes",
-	    "Free bytes (main db device)");
+  b.add_u64(l_bluefs_db_used_bytes, "db_used_bytes",
+	    "Used bytes (main db device)");
   b.add_u64(l_bluefs_wal_total_bytes, "wal_total_bytes",
 	    "Total bytes (wal device)");
-  b.add_u64(l_bluefs_wal_free_bytes, "wal_free_bytes",
-	    "Free bytes (wal device)");
+  b.add_u64(l_bluefs_wal_used_bytes, "wal_used_bytes",
+	    "Used bytes (wal device)");
   b.add_u64(l_bluefs_slow_total_bytes, "slow_total_bytes",
 	    "Total bytes (slow device)");
-  b.add_u64(l_bluefs_slow_free_bytes, "slow_free_bytes",
-	    "Free bytes (slow device)");
+  b.add_u64(l_bluefs_slow_used_bytes, "slow_used_bytes",
+	    "Used bytes (slow device)");
   b.add_u64(l_bluefs_num_files, "num_files", "File count");
   b.add_u64(l_bluefs_log_bytes, "log_bytes", "Size of the metadata log");
   b.add_u64_counter(l_bluefs_log_compactions, "log_compactions",
 		    "Compactions of the metadata log");
   b.add_u64_counter(l_bluefs_logged_bytes, "logged_bytes",
-		    "Bytes written to the metadata log");
+		    "Bytes written to the metadata log", "j");
   b.add_u64_counter(l_bluefs_files_written_wal, "files_written_wal",
 		    "Files written to WAL");
   b.add_u64_counter(l_bluefs_files_written_sst, "files_written_sst",
 		    "Files written to SSTs");
   b.add_u64_counter(l_bluefs_bytes_written_wal, "bytes_written_wal",
-		    "Bytes written to WAL");
+		    "Bytes written to WAL", "wal");
   b.add_u64_counter(l_bluefs_bytes_written_sst, "bytes_written_sst",
-		    "Bytes written to SSTs");
+		    "Bytes written to SSTs", "sst");
   logger = b.create_perf_counters();
   cct->get_perfcounters_collection()->add(logger);
 }
@@ -103,15 +103,18 @@ void BlueFS::_update_logger_stats()
 
   if (alloc[BDEV_WAL]) {
     logger->set(l_bluefs_wal_total_bytes, block_total[BDEV_WAL]);
-    logger->set(l_bluefs_wal_free_bytes, alloc[BDEV_WAL]->get_free());
+    logger->set(l_bluefs_wal_used_bytes,
+		block_total[BDEV_WAL] - alloc[BDEV_WAL]->get_free());
   }
   if (alloc[BDEV_DB]) {
     logger->set(l_bluefs_db_total_bytes, block_total[BDEV_DB]);
-    logger->set(l_bluefs_db_free_bytes, alloc[BDEV_DB]->get_free());
+    logger->set(l_bluefs_db_used_bytes,
+		block_total[BDEV_DB] - alloc[BDEV_DB]->get_free());
   }
   if (alloc[BDEV_SLOW]) {
     logger->set(l_bluefs_slow_total_bytes, block_total[BDEV_SLOW]);
-    logger->set(l_bluefs_slow_free_bytes, alloc[BDEV_SLOW]->get_free());
+    logger->set(l_bluefs_slow_used_bytes,
+		block_total[BDEV_SLOW] - alloc[BDEV_SLOW]->get_free());
   }
 }
 
@@ -199,6 +202,7 @@ int BlueFS::reclaim_blocks(unsigned id, uint64_t want,
     log_t.op_alloc_rm(id, p.offset, p.length);
   }
 
+  flush_bdev();
   r = _flush_and_sync_log(l);
   assert(r == 0);
 
@@ -1175,6 +1179,9 @@ void BlueFS::_compact_log_async(std::unique_lock<std::mutex>& l)
   // write the new entries
   log_t.op_file_update(log_file->fnode);
   log_t.op_jump(log_seq, old_log_jump_to);
+
+  flush_bdev();  // FIXME?
+
   _flush_and_sync_log(l, 0, old_log_jump_to);
 
   // 2. prepare compacted log
@@ -1297,6 +1304,7 @@ void BlueFS::_pad_bl(bufferlist& bl)
 void BlueFS::flush_log()//加锁同步日志
 {
   std::unique_lock<std::mutex> l(lock);
+  flush_bdev();
   _flush_and_sync_log(l);
 }
 
@@ -1368,7 +1376,6 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<std::mutex>& l,
   log_t.seq = 0;  // just so debug output is less confusing //作者给自已解释为什么要加入seq,不认同。
   log_flushing = true;
 
-  flush_bdev();//提前落一遍盘，防止aio完成后，未来得及调用flush_bdev
   int r = _flush(log_writer, true);//写入日志
   assert(r == 0);
 
@@ -1733,12 +1740,15 @@ int BlueFS::_fsync(FileWriter *h, std::unique_lock<std::mutex>& l)
   if (r < 0)
      return r;
   uint64_t old_dirty_seq = h->file->dirty_seq;
+
   list<FS::aio_t> completed_ios;
   _claim_completed_aios(h, &completed_ios);
   lock.unlock();
   wait_for_aio(h);
   completed_ios.clear();
+  flush_bdev();
   lock.lock();
+
   if (old_dirty_seq) {
     uint64_t s = log_seq;
     dout(20) << __func__ << " file metadata was dirty (" << old_dirty_seq
@@ -1859,6 +1869,7 @@ void BlueFS::sync_metadata()//元数据同步
   utime_t start = ceph_clock_now();
   vector<interval_set<uint64_t>> to_release(pending_release.size());
   to_release.swap(pending_release);
+  flush_bdev(); // FIXME?
   _flush_and_sync_log(l);
   for (unsigned i = 0; i < to_release.size(); ++i) {
     for (auto p = to_release[i].begin(); p != to_release[i].end(); ++p) {

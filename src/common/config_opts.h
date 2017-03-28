@@ -494,6 +494,7 @@ OPTION(mds_cache_size, OPT_INT, 100000)
 OPTION(mds_cache_mid, OPT_FLOAT, .7)
 OPTION(mds_max_file_recover, OPT_U32, 32)
 OPTION(mds_dir_max_commit_size, OPT_INT, 10) // MB
+OPTION(mds_dir_keys_per_op, OPT_INT, 16384)
 OPTION(mds_decay_halflife, OPT_FLOAT, 5)
 OPTION(mds_beacon_interval, OPT_FLOAT, 4)
 OPTION(mds_beacon_grace, OPT_FLOAT, 15)
@@ -615,9 +616,6 @@ OPTION(mds_damage_table_max_entries, OPT_INT, 10000)
 
 // verify backend can support configured max object name length
 OPTION(osd_check_max_object_name_len_on_startup, OPT_BOOL, true)
-
-// If true, compact leveldb store on mount
-OPTION(osd_compact_leveldb_on_mount, OPT_BOOL, false)
 
 // Maximum number of backfills to or from a single osd
 OPTION(osd_max_backfills, OPT_U64, 1)
@@ -913,7 +911,7 @@ OPTION(kinetic_use_ssl, OPT_BOOL, false) // whether to secure kinetic traffic wi
 OPTION(rocksdb_separate_wal_dir, OPT_BOOL, false) // use $path.wal for wal
 OPTION(rocksdb_db_paths, OPT_STR, "")   // path,size( path,size)*
 OPTION(rocksdb_log_to_ceph_log, OPT_BOOL, true)  // log to ceph log
-OPTION(rocksdb_cache_size, OPT_INT, 128*1024*1024)  // default rocksdb cache size
+OPTION(rocksdb_cache_size, OPT_U64, 128*1024*1024)  // default rocksdb cache size
 OPTION(rocksdb_cache_shard_bits, OPT_INT, 4)  // rocksdb block cache shard bits, 4 bit -> 16 shards
 OPTION(rocksdb_block_size, OPT_INT, 4*1024)  // default rocksdb block size
 OPTION(rocksdb_perf, OPT_BOOL, false) // Enabling this will have 5-10% impact on performance for the stats collection
@@ -1050,11 +1048,11 @@ OPTION(bluestore_csum_min_block, OPT_U32, 4096)
 OPTION(bluestore_csum_max_block, OPT_U32, 64*1024)
 OPTION(bluestore_min_alloc_size, OPT_U32, 0)
 OPTION(bluestore_min_alloc_size_hdd, OPT_U32, 64*1024)
-OPTION(bluestore_min_alloc_size_ssd, OPT_U32, 4*1024)
+OPTION(bluestore_min_alloc_size_ssd, OPT_U32, 16*1024)
 OPTION(bluestore_max_alloc_size, OPT_U32, 0)
-OPTION(bluestore_prefer_wal_size, OPT_U32, 0)
-OPTION(bluestore_prefer_wal_size_hdd, OPT_U32, 32768)
-OPTION(bluestore_prefer_wal_size_ssd, OPT_U32, 0)
+OPTION(bluestore_prefer_deferred_size, OPT_U32, 0)
+OPTION(bluestore_prefer_deferred_size_hdd, OPT_U32, 32768)
+OPTION(bluestore_prefer_deferred_size_ssd, OPT_U32, 0)
 OPTION(bluestore_compression_mode, OPT_STR, "none")  // force|aggressive|passive|none //压缩模式
 OPTION(bluestore_compression_algorithm, OPT_STR, "snappy")//压缩算法名称
 OPTION(bluestore_compression_min_blob_size, OPT_U32, 128*1024)//压缩最小块
@@ -1105,14 +1103,11 @@ OPTION(bluestore_fsck_on_umount_deep, OPT_BOOL, true)
 OPTION(bluestore_fsck_on_mkfs, OPT_BOOL, true)
 OPTION(bluestore_fsck_on_mkfs_deep, OPT_BOOL, false)
 OPTION(bluestore_sync_submit_transaction, OPT_BOOL, false) // submit kv txn in queueing thread (not kv_sync_thread)
-OPTION(bluestore_sync_wal_apply, OPT_BOOL, true)     // perform initial wal work synchronously (possibly in combination with aio so we only *queue* ios)
-OPTION(bluestore_wal_threads, OPT_INT, 4)
-OPTION(bluestore_wal_thread_timeout, OPT_INT, 30)
-OPTION(bluestore_wal_thread_suicide_timeout, OPT_INT, 120)
 OPTION(bluestore_max_ops, OPT_U64, 512)
 OPTION(bluestore_max_bytes, OPT_U64, 64*1024*1024)
-OPTION(bluestore_wal_max_ops, OPT_U64, 512)
-OPTION(bluestore_wal_max_bytes, OPT_U64, 128*1024*1024)
+OPTION(bluestore_deferred_max_ops, OPT_U64, 512)
+OPTION(bluestore_deferred_max_bytes, OPT_U64, 128*1024*1024)
+OPTION(bluestore_deferred_batch_ops, OPT_U64, 8)
 OPTION(bluestore_nid_prealloc, OPT_INT, 1024)
 OPTION(bluestore_blobid_prealloc, OPT_U64, 10240)
 OPTION(bluestore_clone_cow, OPT_BOOL, true)  // do copy-on-write for clones
@@ -1127,7 +1122,6 @@ OPTION(bluestore_debug_prefragment_max, OPT_INT, 1048576)
 OPTION(bluestore_debug_inject_read_err, OPT_BOOL, false)
 OPTION(bluestore_debug_randomize_serial_transaction, OPT_INT, 0)
 OPTION(bluestore_debug_omit_block_device_write, OPT_BOOL, false)
-OPTION(bluestore_inject_wal_apply_delay, OPT_FLOAT, 0)
 OPTION(bluestore_shard_finishers, OPT_BOOL, false)
 
 OPTION(kstore_max_ops, OPT_U64, 512)
@@ -1398,7 +1392,6 @@ OPTION(rbd_mirror_sync_point_update_age, OPT_DOUBLE, 30) // number of seconds be
 OPTION(rbd_mirror_concurrent_image_syncs, OPT_U32, 5) // maximum number of image syncs in parallel
 OPTION(rbd_mirror_pool_replayers_refresh_interval, OPT_INT, 30) // interval to refresh peers in rbd-mirror daemon
 OPTION(rbd_mirror_delete_retry_interval, OPT_DOUBLE, 30) // interval to check and retry the failed requests in deleter
-OPTION(rbd_mirror_image_directory_refresh_interval, OPT_INT, 30) // interval to refresh images in pool watcher
 OPTION(rbd_mirror_image_state_check_interval, OPT_INT, 30) // interval to get images from pool watcher and set sources in replayer
 OPTION(rbd_mirror_leader_heartbeat_interval, OPT_INT, 5) // interval (in seconds) between mirror leader heartbeats
 OPTION(rbd_mirror_leader_max_missed_heartbeats, OPT_INT, 2) // number of missed heartbeats for non-lock owner to attempt to acquire lock
@@ -1446,10 +1439,8 @@ OPTION(rgw_port, OPT_STR, "")  // port to listen, format as "8080" "5000", if no
 OPTION(rgw_dns_name, OPT_STR, "") // hostname suffix on buckets
 OPTION(rgw_dns_s3website_name, OPT_STR, "") // hostname suffix on buckets for s3-website endpoint
 OPTION(rgw_content_length_compat, OPT_BOOL, false) // Check both HTTP_CONTENT_LENGTH and CONTENT_LENGTH in fcgi env
-OPTION(rgw_lifecycle_enabled, OPT_BOOL, true) //rgw lifecycle enabled
-OPTION(rgw_lifecycle_thread, OPT_INT, 1) //start lifecycle thread number per radosgw
 OPTION(rgw_lifecycle_work_time, OPT_STR, "00:00-06:00") //job process lc  at 00:00-06:00s
-OPTION(rgw_lc_lock_max_time, OPT_INT, 60)  // total run time for a single gc processor work
+OPTION(rgw_lc_lock_max_time, OPT_INT, 60)  // total run time for a single lc processor work
 OPTION(rgw_lc_max_objs, OPT_INT, 32)
 OPTION(rgw_lc_debug_interval, OPT_INT, -1)  // Debug run interval, in seconds
 OPTION(rgw_script_uri, OPT_STR, "") // alternative value for SCRIPT_URI if not set in request

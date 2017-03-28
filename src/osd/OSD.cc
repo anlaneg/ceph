@@ -514,6 +514,10 @@ void OSDService::init()
   reserver_finisher.start();
   objecter_finisher.start();
   objecter->set_client_incarnation(0);
+
+  // exclude objecter from daemonperf output
+  objecter->get_logger()->set_suppress_nicks(true);
+
   watch_timer.init();
   agent_timer.init();
   snap_sleep_timer.init();
@@ -735,11 +739,18 @@ void OSDService::check_full_status(const osd_stat_t &osd_stat)
   float full_ratio = std::max(osdmap->get_full_ratio(), nearfull_ratio);
   float failsafe_ratio = std::max(get_failsafe_full_ratio(), full_ratio);
 
-  if (full_ratio <= 0 ||
-      nearfull_ratio <= 0) {
+  if (!osdmap->test_flag(CEPH_OSDMAP_REQUIRE_LUMINOUS)) {
+    // use the failsafe for nearfull and full; the mon isn't using the
+    // flags anyway because we're mid-upgrade.
+    full_ratio = failsafe_ratio;
+    nearfull_ratio = failsafe_ratio;
+  } else if (full_ratio <= 0 ||
+	     nearfull_ratio <= 0) {
     derr << __func__ << " full_ratio or nearfull_ratio is <= 0" << dendl;
-    cur_state = NONE;
-    return;
+    // use failsafe flag.  ick.  the monitor did something wrong or the user
+    // did something stupid.
+    full_ratio = failsafe_ratio;
+    nearfull_ratio = failsafe_ratio;
   }
 
   enum s_names new_state;
@@ -1899,7 +1910,12 @@ bool OSD::asok_command(string command, cmdmap_t& cmdmap, string format,
 	Please enable \"osd_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
     }
   } else if (command == "dump_historic_ops") {
-    if (!op_tracker.dump_historic_ops(f)) {
+    if (!op_tracker.dump_historic_ops(f, false)) {
+      ss << "op_tracker tracking is not enabled now, so no ops are tracked currently, even those get stuck. \
+	Please enable \"osd_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
+    }
+  } else if (command == "dump_historic_ops_by_duration") {
+    if (!op_tracker.dump_historic_ops(f, true)) {
       ss << "op_tracker tracking is not enabled now, so no ops are tracked currently, even those get stuck. \
 	Please enable \"osd_enable_op_tracker\", and the tracker will start to track new ops received afterwards.";
     }
@@ -2450,6 +2466,10 @@ void OSD::final_init()
 				     asok_hook,
 				     "show slowest recent ops");
   assert(r == 0);
+  r = admin_socket->register_command("dump_historic_ops_by_duration", "dump_historic_ops_by_duration",
+				     asok_hook,
+				     "show slowest recent ops, sorted by duration");
+  assert(r == 0);
   r = admin_socket->register_command("dump_op_pq_state", "dump_op_pq_state",
 				     asok_hook,
 				     "dump op priority queue state");
@@ -2864,6 +2884,7 @@ int OSD::shutdown()
   cct->get_admin_socket()->unregister_command("ops");
   cct->get_admin_socket()->unregister_command("dump_blocked_ops");
   cct->get_admin_socket()->unregister_command("dump_historic_ops");
+  cct->get_admin_socket()->unregister_command("dump_historic_ops_by_duration");
   cct->get_admin_socket()->unregister_command("dump_op_pq_state");
   cct->get_admin_socket()->unregister_command("dump_blacklist");
   cct->get_admin_socket()->unregister_command("dump_watchers");
@@ -3054,9 +3075,8 @@ int OSD::update_crush_location()
     bufferlist inbl;
     C_SaferCond w;
     string outs;
-    int r = monc->start_mon_command(vcmd, inbl, NULL, &outs, &w);
-    if (r == 0)
-      r = w.wait();
+    monc->start_mon_command(vcmd, inbl, NULL, &outs, &w);
+    int r = w.wait();
     if (r < 0) {
       if (r == -ENOENT && !created) {
 	string newcmd = "{\"prefix\": \"osd create\", \"id\": " + stringify(whoami)
@@ -3065,9 +3085,8 @@ int OSD::update_crush_location()
 	bufferlist inbl;
 	C_SaferCond w;
 	string outs;
-	int r = monc->start_mon_command(vnewcmd, inbl, NULL, &outs, &w);
-	if (r == 0)
-	  r = w.wait();
+	monc->start_mon_command(vnewcmd, inbl, NULL, &outs, &w);
+	int r = w.wait();
 	if (r < 0) {
 	  derr << __func__ << " fail: osd does not exist and created failed: "
 	       << cpp_strerror(r) << dendl;
@@ -3758,7 +3777,7 @@ void OSD::handle_pg_peering_evt(
       pgid, history, epoch, up, up_primary, acting, acting_primary);
 
     if (!valid_history || epoch < history.same_interval_since) {//错误的参数,搞不定,返回
-      dout(10) << "get_or_create_pg " << pgid << " acting changed in "
+      dout(10) << __func__ << pgid << " acting changed in "
 	       << history.same_interval_since << " (msg from " << epoch << ")"
 	       << dendl;
       return;
@@ -3887,7 +3906,7 @@ void OSD::handle_pg_peering_evt(
   } else {
     // already had it.  did the mapping change?
     if (epoch < pg->info.history.same_interval_since) {//错误的参数,搞不定.
-      dout(10) << *pg << " get_or_create_pg acting changed in "
+      dout(10) << *pg << __func__ << " acting changed in "
 	       << pg->info.history.same_interval_since
 	       << " (msg from " << epoch << ")" << dendl;
       pg->unlock();
@@ -6844,7 +6863,8 @@ void OSD::handle_osd_map(MOSDMap *m)
     session->put();
 
   // share with the objecter
-  service.objecter->handle_osd_map(m);
+  if (!is_preboot())
+    service.objecter->handle_osd_map(m);
 
   epoch_t first = m->get_first();//获取m的首版本
   epoch_t last = m->get_last();//获取m的末版本

@@ -137,7 +137,6 @@ void PGLog::trim(
 }
 
 void PGLog::proc_replica_log(
-  ObjectStore::Transaction& t,
   pg_info_t &oinfo,
   const pg_log_t &olog,
   pg_missing_t& omissing,
@@ -252,10 +251,9 @@ void PGLog::proc_replica_log(
  * This rewinds entries off the head of our log that are divergent.
  * This is used by replicas during activation.
  *
- * @param t transaction
  * @param newhead new head to rewind to
  */
-void PGLog::rewind_divergent_log(ObjectStore::Transaction& t, eversion_t newhead,
+void PGLog::rewind_divergent_log(eversion_t newhead,
 				 pg_info_t &info, LogEntryHandler *rollbacker,
 				 bool &dirty_info, bool &dirty_big_info)
 {
@@ -287,8 +285,7 @@ void PGLog::rewind_divergent_log(ObjectStore::Transaction& t, eversion_t newhead
   dirty_big_info = true;
 }
 
-void PGLog::merge_log(ObjectStore::Transaction& t,
-                      pg_info_t &oinfo, pg_log_t &olog, pg_shard_t fromosd,
+void PGLog::merge_log(pg_info_t &oinfo, pg_log_t &olog, pg_shard_t fromosd,
                       pg_info_t &info, LogEntryHandler *rollbacker,
                       bool &dirty_info, bool &dirty_big_info)
 {
@@ -353,7 +350,7 @@ void PGLog::merge_log(ObjectStore::Transaction& t,
   // do we have divergent entries to throw out?
   //一直觉得这种情况不应出现,但epoch是一个u32_t类型,所以可能发生环回.
   if (olog.head < log.head) {
-    rewind_divergent_log(t, olog.head, info, rollbacker, dirty_info, dirty_big_info);
+    rewind_divergent_log(olog.head, info, rollbacker, dirty_info, dirty_big_info);
     changed = true;
   }
 

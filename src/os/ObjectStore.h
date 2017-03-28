@@ -135,7 +135,14 @@ public:
    */
   struct Sequencer_impl : public RefCountedObject {
     CephContext* cct;
+
+    // block until any previous transactions are visible.  specifically,
+    // collection_list and collection_empty need to reflect prior operations.
     virtual void flush() = 0;
+
+    // called when we are done with the impl.  the impl may have a different
+    // (longer) lifecycle than the Sequencer.
+    virtual void discard() {}
 
     /**
      * Async flush_commit
@@ -154,7 +161,7 @@ public:
 
     //初始引用计数为0
     Sequencer_impl(CephContext* cct) : RefCountedObject(NULL, 0), cct(cct)  {}
-    virtual ~Sequencer_impl() {}
+    ~Sequencer_impl() override {}
   };
   typedef boost::intrusive_ptr<Sequencer_impl> Sequencer_implRef;
 
@@ -168,8 +175,11 @@ public:
     Sequencer_implRef p;//集成的内部实现
 
     explicit Sequencer(string n)
-      : name(n), shard_hint(spg_t()), p(NULL) {}
+      : name(n), shard_hint(spg_t()), p(NULL) {
+    }
     ~Sequencer() {
+      if (p)
+	p->discard();  // tell impl we are done with it
     }
 
     /// return a unique string identifier for this sequencer

@@ -33,8 +33,8 @@ class KernelDevice : public BlockDevice {
   Mutex debug_lock;
   interval_set<uint64_t> debug_inflight;
 
-  Mutex flush_lock;
-  atomic_t io_since_flush;
+  std::atomic<bool> io_since_flush;
+  std::mutex flush_mutex;
 
   FS::aio_queue_t aio_queue;//(仅向kernel提交aio,暂没有队列)
   aio_callback_t aio_callback;//aio完成时的回调函数
@@ -44,7 +44,7 @@ class KernelDevice : public BlockDevice {
   struct AioCompletionThread : public Thread {
     KernelDevice *bdev;
     explicit AioCompletionThread(KernelDevice *b) : bdev(b) {}
-    void *entry() {
+    void *entry() override {
       bdev->_aio_thread();//实现aio写
       return NULL;
     }

@@ -141,7 +141,7 @@ public:
       apply_manager(cct, journal, finisher),
       replaying(false) {}
 
-  ~JournalingObjectStore() {
+  ~JournalingObjectStore() override {
   }
 };
 

@@ -205,9 +205,9 @@ protected:
 
   virtual PGBackend *get_pgbackend() = 0;//返回pg对应的后端，由于pg被replicatedpg继承，故此函数直接返回replicatedpg的成员
 public:
-  std::string gen_prefix() const;
-  CephContext *get_cct() const { return cct; }
-  unsigned get_subsys() const { return ceph_subsys_osd; }
+  std::string gen_prefix() const override;
+  CephContext *get_cct() const override { return cct; }
+  unsigned get_subsys() const override { return ceph_subsys_osd; }
 
   /*** PG ****/
   void update_snap_mapper_bits(uint32_t bits) {
@@ -545,7 +545,7 @@ public:
     eversion_t v;
     C_UpdateLastRollbackInfoTrimmedToApplied(PG *pg, epoch_t e, eversion_t v)
       : pg(pg), e(e), v(v) {}
-    void finish(int) {
+    void finish(int) override {
       pg->lock();
       if (!pg->pg_has_reset_since(e)) {
 	pg->last_rollback_info_trimmed_to_applied = v;
@@ -991,8 +991,7 @@ public:
 
   virtual void calc_trim_to() = 0;
 
-  void proc_replica_log(ObjectStore::Transaction& t,
-			pg_info_t &oinfo, const pg_log_t &olog,
+  void proc_replica_log(pg_info_t &oinfo, const pg_log_t &olog,
 			pg_missing_t& omissing, pg_shard_t from);
   void proc_master_log(ObjectStore::Transaction& t, pg_info_t &oinfo, pg_log_t &olog,
 		       pg_missing_t& omissing, pg_shard_t from);
@@ -1006,21 +1005,21 @@ public:
 
     // LogEntryHandler
     //向to_remove中加数据
-    void remove(const hobject_t &hoid) {
+    void remove(const hobject_t &hoid) override {
       pg->get_pgbackend()->remove(hoid, t);
     }
     //向to_stash中加数据
-    void try_stash(const hobject_t &hoid, version_t v) {
+    void try_stash(const hobject_t &hoid, version_t v) override {
       pg->get_pgbackend()->try_stash(hoid, v, t);
     }
-    void rollback(const pg_log_entry_t &entry) {
+    void rollback(const pg_log_entry_t &entry) override {
       assert(entry.can_rollback());
       pg->get_pgbackend()->rollback(entry, t);
     }
-    void rollforward(const pg_log_entry_t &entry) {
+    void rollforward(const pg_log_entry_t &entry) override {
       pg->get_pgbackend()->rollforward(entry, t);
     }
-    void trim(const pg_log_entry_t &entry) {
+    void trim(const pg_log_entry_t &entry) override {
       pg->get_pgbackend()->trim(entry, t);
     }
   };
@@ -1375,7 +1374,7 @@ public:
     EVT evt;
     QueuePeeringEvt(PG *pg, epoch_t epoch, EVT evt) :
       pg(pg), epoch(epoch), evt(evt) {}
-    void finish(int r) {
+    void finish(int r) override {
       pg->lock();
       pg->queue_peering_event(PG::CephPeeringEvtRef(
 				new PG::CephPeeringEvt(
@@ -2161,7 +2160,7 @@ public:
  public:
   PG(OSDService *o, OSDMapRef curmap,
      const PGPool &pool, spg_t p);
-  virtual ~PG();
+  ~PG() override;
 
  private:
   // Prevent copying

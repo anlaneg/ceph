@@ -102,7 +102,7 @@ void Mutex::Lock(bool no_lockdep) {
 
   //开启了锁错误检测，并且全局变量容许锁错误检测，并且本函数未明确规定不做
   //错误检测，则进行锁错误检测
-  if (lockdep && g_lockdep && !no_lockdep) _will_lock();
+  if (lockdep && g_lockdep && !no_lockdep && !recursive) _will_lock();
 
   if (logger && cct && cct->_conf->mutex_perf_counter) {
     utime_t start;

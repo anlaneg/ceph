@@ -164,6 +164,18 @@ namespace rbd {
 namespace mirror {
 
 template <>
+struct Threads<librbd::MockTestImageCtx> {
+  Mutex &timer_lock;
+  SafeTimer *timer;
+  ContextWQ *work_queue;
+
+  Threads(Threads<librbd::ImageCtx> *threads)
+    : timer_lock(threads->timer_lock), timer(threads->timer),
+      work_queue(threads->work_queue) {
+  }
+};
+
+template <>
 struct MirrorStatusWatcher<librbd::MockTestImageCtx> {
   static MirrorStatusWatcher* s_instance;
 
@@ -194,7 +206,8 @@ template <>
 struct Instances<librbd::MockTestImageCtx> {
   static Instances* s_instance;
 
-  static Instances *create(Threads *threads, librados::IoCtx &ioctx) {
+  static Instances *create(Threads<librbd::MockTestImageCtx> *threads,
+                           librados::IoCtx &ioctx) {
     assert(s_instance != nullptr);
     return s_instance;
   }
@@ -260,6 +273,17 @@ public:
   typedef MirrorStatusWatcher<librbd::MockTestImageCtx> MockMirrorStatusWatcher;
   typedef Instances<librbd::MockTestImageCtx> MockInstances;
   typedef LeaderWatcher<librbd::MockTestImageCtx> MockLeaderWatcher;
+  typedef Threads<librbd::MockTestImageCtx> MockThreads;
+
+  void SetUp() override {
+    TestMockFixture::SetUp();
+    m_mock_threads = new MockThreads(m_threads);
+  }
+
+  void TearDown() override {
+    delete m_mock_threads;
+    TestMockFixture::TearDown();
+  }
 
   void expect_construct(MockManagedLock &mock_managed_lock) {
     EXPECT_CALL(mock_managed_lock, construct());
@@ -377,12 +401,12 @@ public:
 
   void expect_init(MockMirrorStatusWatcher &mock_mirror_status_watcher, int r) {
     EXPECT_CALL(mock_mirror_status_watcher, init(_))
-      .WillOnce(CompleteContext(m_threads->work_queue, r));
+      .WillOnce(CompleteContext(m_mock_threads->work_queue, r));
   }
 
   void expect_shut_down(MockMirrorStatusWatcher &mock_mirror_status_watcher, int r) {
     EXPECT_CALL(mock_mirror_status_watcher, shut_down(_))
-      .WillOnce(CompleteContext(m_threads->work_queue, r));
+      .WillOnce(CompleteContext(m_mock_threads->work_queue, r));
     expect_destroy(mock_mirror_status_watcher);
   }
 
@@ -392,12 +416,12 @@ public:
 
   void expect_init(MockInstances &mock_instances, int r) {
     EXPECT_CALL(mock_instances, init(_))
-      .WillOnce(CompleteContext(m_threads->work_queue, r));
+      .WillOnce(CompleteContext(m_mock_threads->work_queue, r));
   }
 
   void expect_shut_down(MockInstances &mock_instances, int r) {
     EXPECT_CALL(mock_instances, shut_down(_))
-      .WillOnce(CompleteContext(m_threads->work_queue, r));
+      .WillOnce(CompleteContext(m_mock_threads->work_queue, r));
     expect_destroy(mock_instances);
   }
 
@@ -416,6 +440,8 @@ public:
       .WillOnce(CompleteContext(r));
     expect_is_leader(mock_managed_lock, false, false);
   }
+
+  MockThreads *m_mock_threads;
 };
 
 TEST_F(TestMockLeaderWatcher, InitShutdown) {
@@ -430,10 +456,11 @@ TEST_F(TestMockLeaderWatcher, InitShutdown) {
   InSequence seq;
 
   expect_construct(mock_managed_lock);
-  MockLeaderWatcher leader_watcher(m_threads, m_local_io_ctx, &listener);
+  MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Inint
   C_SaferCond on_heartbeat_finish;
+  expect_is_leader(mock_managed_lock, false, false);
   expect_try_acquire_lock(mock_managed_lock, 0);
   expect_init(mock_mirror_status_watcher, 0);
   expect_init(mock_instances, 0);
@@ -450,6 +477,7 @@ TEST_F(TestMockLeaderWatcher, InitShutdown) {
   expect_is_leader(mock_managed_lock, false, false);
   expect_release_lock(mock_managed_lock, 0);
   expect_shut_down(mock_managed_lock, true, 0);
+  expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
 }
@@ -466,10 +494,11 @@ TEST_F(TestMockLeaderWatcher, InitReleaseShutdown) {
   InSequence seq;
 
   expect_construct(mock_managed_lock);
-  MockLeaderWatcher leader_watcher(m_threads, m_local_io_ctx, &listener);
+  MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Inint
   C_SaferCond on_heartbeat_finish;
+  expect_is_leader(mock_managed_lock, false, false);
   expect_try_acquire_lock(mock_managed_lock, 0);
   expect_init(mock_mirror_status_watcher, 0);
   expect_init(mock_instances, 0);
@@ -493,6 +522,7 @@ TEST_F(TestMockLeaderWatcher, InitReleaseShutdown) {
 
   // Shutdown
   expect_shut_down(mock_managed_lock, false, 0);
+  expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
 }
@@ -510,10 +540,11 @@ TEST_F(TestMockLeaderWatcher, AcquireError) {
   InSequence seq;
 
   expect_construct(mock_managed_lock);
-  MockLeaderWatcher leader_watcher(m_threads, m_local_io_ctx, &listener);
+  MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Inint
   C_SaferCond on_get_locker_finish;
+  expect_is_leader(mock_managed_lock, false, false);
   expect_try_acquire_lock(mock_managed_lock, -EAGAIN);
   expect_get_locker(mock_managed_lock, librbd::managed_lock::Locker(), 0,
                     &on_get_locker_finish);
@@ -522,6 +553,7 @@ TEST_F(TestMockLeaderWatcher, AcquireError) {
 
   // Shutdown
   expect_shut_down(mock_managed_lock, false, 0);
+  expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
 }
@@ -538,10 +570,11 @@ TEST_F(TestMockLeaderWatcher, ReleaseError) {
   InSequence seq;
 
   expect_construct(mock_managed_lock);
-  MockLeaderWatcher leader_watcher(m_threads, m_local_io_ctx, &listener);
+  MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Inint
   C_SaferCond on_heartbeat_finish;
+  expect_is_leader(mock_managed_lock, false, false);
   expect_try_acquire_lock(mock_managed_lock, 0);
   expect_init(mock_mirror_status_watcher, 0);
   expect_init(mock_instances, 0);
@@ -565,6 +598,7 @@ TEST_F(TestMockLeaderWatcher, ReleaseError) {
 
   // Shutdown
   expect_shut_down(mock_managed_lock, false, 0);
+  expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
 }
@@ -591,14 +625,13 @@ TEST_F(TestMockLeaderWatcher, Break) {
   InSequence seq;
 
   expect_construct(mock_managed_lock);
-  MockLeaderWatcher leader_watcher(m_threads, m_local_io_ctx, &listener);
+  MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Init
-  for (int i = 0; i <= max_acquire_attempts; i++) {
+  expect_is_leader(mock_managed_lock, false, false);
+  for (int i = 0; i < max_acquire_attempts; i++) {
     expect_try_acquire_lock(mock_managed_lock, -EAGAIN);
-    if (i < max_acquire_attempts) {
-      expect_get_locker(mock_managed_lock, locker, 0);
-    }
+    expect_get_locker(mock_managed_lock, locker, 0);
   }
   C_SaferCond on_break;
   expect_break_lock(mock_managed_lock, locker, 0, &on_break);
@@ -619,6 +652,7 @@ TEST_F(TestMockLeaderWatcher, Break) {
   expect_is_leader(mock_managed_lock, false, false);
   expect_release_lock(mock_managed_lock, 0);
   expect_shut_down(mock_managed_lock, true, 0);
+  expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
 }

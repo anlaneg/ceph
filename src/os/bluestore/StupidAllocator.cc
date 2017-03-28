@@ -253,7 +253,7 @@ int64_t StupidAllocator::allocate(
 }
 
 //释放时，存入uncommitted的map中
-int StupidAllocator::release(
+void StupidAllocator::release(
   uint64_t offset, uint64_t length)
 {
   std::lock_guard<std::mutex> l(lock);
@@ -261,7 +261,6 @@ int StupidAllocator::release(
 	   << std::dec << dendl;
   _insert_free(offset, length);
   num_free += length;
-  return 0;
 }
 
 uint64_t StupidAllocator::get_free()

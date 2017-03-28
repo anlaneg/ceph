@@ -95,8 +95,8 @@ void global_pre_init(std::vector < const char * > *alt_def_args,
   std::string conf_file_list;//配置文件列表
   std::string cluster = "";//cluster名称
   //分析模块名称，所属集群，以及要读取的配置文件（也会处理版本号并退出进程）
-  CephInitParameters iparams = ceph_argparse_early_args(args, module_type, flags,
-							&cluster, &conf_file_list);//模块类型及id
+  CephInitParameters iparams = ceph_argparse_early_args(args, module_type,
+							&cluster, &conf_file_list)//模块类型及id;
   CephContext *cct = common_preinit(iparams, code_env, flags, data_dir_option);//构造cephcontext并设置部分conf
   cct->_conf->cluster = cluster;//设置cluster
   //设置全局变量（配置及context)

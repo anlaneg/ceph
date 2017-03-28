@@ -354,7 +354,7 @@ public:
     return manager.try_get_read_lock(hoid, obc);
   }
 
-  void release_locks(ObcLockManager &manager) {
+  void release_locks(ObcLockManager &manager) override {
     release_object_locks(manager);
   }
 
@@ -379,7 +379,6 @@ public:
     ObjectStore::Transaction &t) override {
     if (hset_history) {
       info.hit_set = *hset_history;
-      dirty_info = true;
     }
     append_log(logv, trim_to, roll_forward_to, t, transaction_applied);
   }
@@ -1295,17 +1294,17 @@ protected:
   friend struct C_Flush;
 
   // -- scrub --
-  virtual bool _range_available_for_scrub(
+  bool _range_available_for_scrub(
     const hobject_t &begin, const hobject_t &end) override;
-  virtual void scrub_snapshot_metadata(
+  void scrub_snapshot_metadata(
     ScrubMap &map,
     const std::map<hobject_t, pair<uint32_t, uint32_t>> &missing_digest) override;
-  virtual void _scrub_clear_state() override;
-  virtual void _scrub_finish() override;
+  void _scrub_clear_state() override;
+  void _scrub_finish() override;
   object_stat_collection_t scrub_cstat;
 
-  virtual void _split_into(pg_t child_pgid, PG *child,
-			   unsigned split_bits) override;
+  void _split_into(pg_t child_pgid, PG *child,
+                   unsigned split_bits) override;
   void apply_and_flush_repops(bool requeue);
 
   void calc_trim_to() override;
@@ -1342,7 +1341,7 @@ protected:
 public:
   PrimaryLogPG(OSDService *o, OSDMapRef curmap,
 	       const PGPool &_pool, spg_t p);
-  ~PrimaryLogPG() {}
+  ~PrimaryLogPG() override {}
 
   int do_command(
     cmdmap_t cmdmap,

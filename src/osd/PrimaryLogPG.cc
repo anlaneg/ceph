@@ -122,7 +122,7 @@ protected:
 
 public:
   /// Provide the final size of the copied object to the CopyCallback
-  ~CopyCallback() {}
+  ~CopyCallback() override {}
 };
 
 template <typename T>
@@ -209,7 +209,7 @@ struct OnReadComplete : public Context {
       opcontext->async_read_result = r;
     opcontext->finish_read(pg);
   }
-  ~OnReadComplete() {}
+  ~OnReadComplete() override {}
 };
 
 class PrimaryLogPG::C_OSD_AppliedRecoveredObject : public Context {
@@ -280,7 +280,7 @@ public:
     : results(NULL),
       retval(0),
       ctx(ctx_) {}
-  ~CopyFromCallback() {}
+  ~CopyFromCallback() override {}
 
   void finish(PrimaryLogPG::CopyCallbackResults results_) override {
     results = results_.get<1>();
@@ -692,7 +692,7 @@ public:
 
     return 0;
   }
-  ~PGLSPlainFilter() {}
+  ~PGLSPlainFilter() override {}
   bool filter(const hobject_t &obj, bufferlist& xattr_data,
                       bufferlist& outdata) override;
 };
@@ -715,7 +715,7 @@ public:
 
     return 0;
   }
-  ~PGLSParentFilter() {}
+  ~PGLSParentFilter() override {}
   bool filter(const hobject_t &obj, bufferlist& xattr_data,
                       bufferlist& outdata) override;
 };
@@ -1984,13 +1984,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     wait_for_degraded_object(snapdir, op);
     return;
   }
- 
-  // asking for SNAPDIR is only ok for reads
-  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {//快照目录仅可读.当前是写操作,报错
-    dout(20) << __func__ << ": write to snapdir not valid " << *m << dendl;
-    osd->reply_op_error(op, -EINVAL);
-    return;
-  }
 
   // dup/resent?
   if (op->may_write() || op->may_cache()) {//针对写及cache操作,防客户端重复请求
@@ -3159,7 +3152,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
       if (m && !ctx->sent_reply) {
 	MOSDOpReply *reply = ctx->reply;
 	if (reply)
-	  ctx->reply = NULL;
+	  ctx->reply = nullptr;
 	else {
 	  reply = new MOSDOpReply(m, 0, get_osdmap()->get_epoch(), 0, true);
 	  reply->set_reply_versions(ctx->at_version,
@@ -6860,7 +6853,7 @@ void PrimaryLogPG::complete_read_ctx(int result, OpContext *ctx)
   ctx->reply->get_header().data_off = ctx->data_off;
 
   MOSDOpReply *reply = ctx->reply;
-  ctx->reply = NULL;
+  ctx->reply = nullptr;
 
   if (result >= 0) {
     if (!ctx->ignore_log_op_stats) {
