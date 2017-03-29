@@ -162,6 +162,7 @@ WRITE_CLASS_DENC(bluestore_pextent_t)
 
 ostream& operator<<(ostream& out, const bluestore_pextent_t& o);
 
+//这个定义就实现了一个blob对应多个pextent的方式
 typedef mempool::bluestore_meta_other::vector<bluestore_pextent_t> PExtentVector;
 
 template<>

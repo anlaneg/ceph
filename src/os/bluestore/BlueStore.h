@@ -636,7 +636,7 @@ public:
     uint32_t logical_offset = 0;      ///< logical offset //一个对象的逻辑的offset,文件里的偏移量（读写时用）
     uint32_t blob_offset = 0;         ///< blob offset    //这段数据在blob中起始的偏移量
     uint32_t length = 0;              ///< length　　　　　　　　　//这段数据存在哪个blob中
-    //blob数据，通过构造函数注入的数据
+    //blob数据，通过构造函数注入的数据(指向有自身数据的blob)
     BlobRef  blob;                    ///< the blob with our data
 
     /// ctor for lookup only
