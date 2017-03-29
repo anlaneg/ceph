@@ -558,6 +558,7 @@ struct spg_t {
       shard);
   }
 
+  //简单的hash函数
   unsigned hash_to_shard(unsigned num_shards) const {
     return ps() % num_shards;
   }
@@ -1246,7 +1247,7 @@ struct pg_pool_t {
 
   uint64_t flags;           ///< FLAG_*
   __u8 type;                ///< TYPE_* //类型(ec,replication?)
-  __u8 size, min_size;      ///< number of osds in each pg //pg中需要的osd数量
+  __u8 size, min_size;      ///< number of osds in each pg //pg中需要的osd数量,最小数量
   __u8 crush_ruleset;       ///< crush placement rule set //crush规则集.
   __u8 object_hash;         ///< hash mapping object name to ps
 private:
@@ -1462,6 +1463,7 @@ public:
     return has_flag(FLAG_EC_OVERWRITES);
   }
 
+  //对于副本类osd表是可以移除无效osd的,但ec不行
   bool can_shift_osds() const {
     switch (get_type()) {
     case TYPE_REPLICATED:

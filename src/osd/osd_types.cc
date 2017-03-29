@@ -1370,6 +1370,7 @@ pg_t pg_pool_t::raw_pg_to_pg(pg_t pg) const
  * pool id in that value so that different pools don't use the same
  * seeds.
  */
+//将pg.ps与pool_id合并为一个32bit的整数，并将其称之为pps
 ps_t pg_pool_t::raw_pg_to_pps(pg_t pg) const
 {
   if (flags & FLAG_HASHPSPOOL) {

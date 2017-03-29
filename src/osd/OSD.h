@@ -379,6 +379,7 @@ class PGQueueable {
     ThreadPool::TPHandle &handle;
     RunVis(OSD *osd, PGRef &pg, ThreadPool::TPHandle &handle)
       : osd(osd), pg(pg), handle(handle) {}
+    //请求入口
     void operator()(const OpRequestRef &op);
     void operator()(const PGSnapTrim &op);
     void operator()(const PGScrub &op);
@@ -1699,7 +1700,9 @@ private:
     : public ShardedThreadPool::ShardedWQ<pair<spg_t,PGQueueable>>
   {
     struct ShardData {
+    	  //保护条件变量
       Mutex sdata_lock;
+      //条件变量，用于在pqueue时，阻塞等待
       Cond sdata_cond;
 
       Mutex sdata_op_ordering_lock;   ///< protects all members below
@@ -1761,9 +1764,10 @@ private:
       }
     };
 
+    //共享队列
     vector<ShardData*> shard_list;
     OSD *osd;
-    uint32_t num_shards;
+    uint32_t num_shards;//共享队列大小
 
   public:
     ShardedOpWQ(uint32_t pnum_shards,

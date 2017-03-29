@@ -1586,7 +1586,7 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
 	continue;
       }
       if (removed) {
-	osds[i - removed] = osds[i];//前移,保证不存在空
+	osds[i - removed] = osds[i];//前移,保证osds数组中不存在无效的
       }
     }
     if (removed)
@@ -1594,7 +1594,7 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
   } else {
     for (vector<int>::iterator p = osds.begin(); p != osds.end(); ++p) {
       if (!exists(*p))
-	*p = CRUSH_ITEM_NONE;
+	*p = CRUSH_ITEM_NONE;//由于不能移除，故赋为不存在
     }
   }
 }
@@ -1603,7 +1603,7 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
 //pg 对应的pg
 //osds 结果集
 //primary 结果集中的主（第一个）
-//ppps 出参，返回pg对应的pps,暂时未知
+//ppps 出参，返回pg对应的pps,pps就是pg id与pool id合起来映射的一个32bit的整数
 int OSDMap::_pg_to_raw_osds(
   const pg_pool_t& pool, pg_t pg,
   vector<int> *osds, int *primary,
@@ -1622,7 +1622,8 @@ int OSDMap::_pg_to_raw_osds(
   _remove_nonexistent_osds(pool, *osds);//移除掉不存在osd
 
   *primary = -1;
-  for (unsigned i = 0; i < osds->size(); ++i) {//第一个存在的osd即为主.
+  //将第一个存在的osd定为主.
+  for (unsigned i = 0; i < osds->size(); ++i) {
     if ((*osds)[i] != CRUSH_ITEM_NONE) {
       *primary = (*osds)[i];//找到主.
       break;
@@ -1631,6 +1632,7 @@ int OSDMap::_pg_to_raw_osds(
   if (ppps)
     *ppps = pps;
 
+  //返回查找到的数量
   return osds->size();
 }
 
@@ -1639,8 +1641,10 @@ int OSDMap::_pg_to_raw_osds(
 void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
                              vector<int> *up, int *primary) const
 {
-  if (pool.can_shift_osds()) {//幅本的可移动
+  if (pool.can_shift_osds()) {
+	//对于可移除osds集合的这种pool(副本类型）
     // shift left
+	//提取存在且up的osd集合，保存在up集中
     up->clear();
     for (unsigned i=0; i<raw.size(); i++) {
       if (!exists(raw[i]) || is_down(raw[i]))
@@ -1668,6 +1672,7 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
 				     int *primary) const
 {
   // do we have any non-default primary_affinity values for these osds?
+  //如果未设置osd主亲昵性，则跳出检查
   if (!osd_primary_affinity)
     return;
 
@@ -1717,32 +1722,43 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
   }
 }
 
-//通过两个集合,pg_temp,primary_temp来分析此pg的acting集合及acting_primary
+//检查当前osdmap,获知指定pg的temp_pg映射是哪些osd,确定指定pg的temp_primary是哪个
+//osd,如果不存在temp_pg，则返回空集合，如果不存在temp_primary osd，则返回-1
 void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
                             vector<int> *temp_pg, int *temp_primary) const
 {
   pg = pool.raw_pg_to_pg(pg);
   map<pg_t,vector<int32_t> >::const_iterator p = pg_temp->find(pg);
   temp_pg->clear();
-  if (p != pg_temp->end()) {//这个pg在pg_temp集合中
+
+  //首先检查pg当前有pg_temp映射，有则记录到集合temp_pg中
+  if (p != pg_temp->end()) {
+	//这个pg在pg_temp集合中，则检查此pg映射的这组osd集(p->second)
     for (unsigned i=0; i<p->second.size(); i++) {
+    	  //如果当前osd不存在或者是down状态
       if (!exists(p->second[i]) || is_down(p->second[i])) {
 	if (pool.can_shift_osds()) {
 	  continue;
 	} else {
+	  //对于osd顺序敏感的这种，必须设置None项占位
 	  temp_pg->push_back(CRUSH_ITEM_NONE);
 	}
       } else {
+    	  //添加可用的osd记录
 	temp_pg->push_back(p->second[i]);
       }
     }
   }
-  map<pg_t,int32_t>::const_iterator pp = primary_temp->find(pg);//查看这个pg是否在primary_temp集合中
-  *temp_primary = -1;
+
+  //查看这个pg是否有对应的primary_temp映射
+  map<pg_t,int32_t>::const_iterator pp = primary_temp->find(pg);
+  *temp_primary = -1;//默认认为没有
   if (pp != primary_temp->end()) {
     *temp_primary = pp->second;
-  } else if (!temp_pg->empty()) { // apply pg_temp's primary(说明pg_temp中含有此pg)
-    for (unsigned i = 0; i < temp_pg->size(); ++i) {//如果pg不在primary_temp记录中,则返回首个可用的.
+  } else if (!temp_pg->empty()) {
+	//此pg没有temp_primary记录，但它有temp_pg记录，给它设置首个
+	//temp_pg记录为temp_primary记录
+    for (unsigned i = 0; i < temp_pg->size(); ++i) {
       if ((*temp_pg)[i] != CRUSH_ITEM_NONE) {
 	*temp_primary = (*temp_pg)[i];
 	break;
@@ -1778,43 +1794,61 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   _raw_to_up_osds(*pool, raw, up, primary);
   _apply_primary_affinity(pps, *pool, up, primary);
 }
-  
+
+//获取给定pg的up集，up_primary,acting集，acting_primary
 void OSDMap::_pg_to_up_acting_osds(
   const pg_t& pg, vector<int> *up, int *up_primary,
   vector<int> *acting, int *acting_primary,
   bool raw_pg_to_pg) const
 {
+  //获得pg所属的pool
   const pg_pool_t *pool = get_pg_pool(pg.pool());
+
   if (!pool ||
       (!raw_pg_to_pg && pg.ps() >= pool->get_pg_num())) {
+	//要up返回值，则清空up
     if (up)
       up->clear();
+    //要up_primary,则赋初始值（无效的）
     if (up_primary)
       *up_primary = -1;
+    //要acting返回值，则清空acting
     if (acting)
       acting->clear();
+
     if (acting_primary)
       *acting_primary = -1;
     return;
   }
+
   vector<int> raw;//哪些osd负责此pg
   vector<int> _up;//当前哪些osd负责此pg(要求必须存在及有效)
-  vector<int> _acting;
-  int _up_primary;//主
-  int _acting_primary;
+  vector<int> _acting;//当前哪些osd临时负责此pg
+  int _up_primary;//up主
+  int _acting_primary;//临时的主
   ps_t pps;
+
+  //获知_acting集，_acting_primary集（osdmap中的temp_pg,temp_primary定义此数据）
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
   if (_acting.empty() || up || up_primary) {
+	//获取规则查找出来的且存在的osds集合，称之为raw,并在其基础上确定_up_primary
+	//同时将pg_id,pool_id映射为一个32bit的整数，并将其称为pps
     _pg_to_raw_osds(*pool, pg, &raw, &_up_primary, &pps);
+    //将上步获取到的raw集合，排除掉未up的osd后，形成_up集，并在其基础上确定_up_primary
     _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
+    //将上步获取到的_up集，考虑上osd的亲昵性，再做一次排除
     _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
-    if (_acting.empty()) {//acting如果为空,acting与up相同
+
+    //如果不存在temp_pg,则_acting集合和up集合相同
+    //如果不存在_acting_primary，则_acting_primary与_up_primary相同
+    if (_acting.empty()) {
       _acting = _up;
       if (_acting_primary == -1) {
         _acting_primary = _up_primary;
       }
     }
   
+    //出参处理
     if (up)
       up->swap(_up);//如果上层需要,就给人返回
     if (up_primary)
@@ -1827,6 +1861,7 @@ void OSDMap::_pg_to_up_acting_osds(
     *acting_primary = _acting_primary;
 }
 
+//检查给定osd是否在acting集中，如果在，则返回索引号，如果不在，则返回-1
 int OSDMap::calc_pg_rank(int osd, const vector<int>& acting, int nrep)
 {
   if (!nrep)

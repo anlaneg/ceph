@@ -214,6 +214,7 @@ private:
   int num_up_osd;      // not saved; see calc_num_osds //up的osd数目
   int num_in_osd;      // not saved; see calc_num_osds //in的osd数目
 
+  //最大osd id
   int32_t max_osd;
   vector<uint8_t> osd_state;//记录各osd的状态（状态是几个位的掩码，例如CEPH_OSD_UP）
 
@@ -229,6 +230,7 @@ private:
   //用于标记in,out
   vector<__u32>   osd_weight;   // 16.16 fixed point, 0x10000 = "in", 0 = "out"
   vector<osd_info_t> osd_info;
+  //pg_temp映射，给定一个pg_t,获取其对应的一组osd集
   ceph::shared_ptr< map<pg_t,vector<int32_t> > > pg_temp;  // temp pg mapping (e.g. while we rebuild)
   ceph::shared_ptr< map<pg_t,int32_t > > primary_temp;  // temp primary mapping (e.g. while we rebuild)
   ceph::shared_ptr< vector<__u32> > osd_primary_affinity; ///< 16.16 fixed point, 0x10000 = baseline
@@ -436,19 +438,24 @@ public:
     return erasure_code_profiles;
   }
 
+  //检查当前给定osd是否存在
   bool exists(int osd) const {
     //assert(osd >= 0);
+	//先检查有效性，再确定是否存在
     return osd >= 0 && osd < max_osd && (osd_state[osd] & CEPH_OSD_EXISTS);
   }
 
+  //检查当前给定osd是否处理up状态
   bool is_up(int osd) const {
     return exists(osd) && (osd_state[osd] & CEPH_OSD_UP);
   }
 
+  //检查当前给定osd是否从epoch时间点开始一直处理up状态
   bool has_been_up_since(int osd, epoch_t epoch) const {
     return is_up(osd) && get_up_from(osd) <= epoch;
   }
 
+  //检查当前给定osd是否处于down状态
   bool is_down(int osd) const {
     return !is_up(osd);
   }
@@ -519,6 +526,7 @@ public:
     return (*osd_uuid)[osd];
   }
 
+  //获取给定osd从哪个时间点开始是up状态
   const epoch_t& get_up_from(int osd) const {
     assert(exists(osd));
     return osd_info[osd].up_from;
@@ -527,6 +535,8 @@ public:
     assert(exists(osd));
     return osd_info[osd].up_thru;
   }
+
+  //获取给定osd从哪个时间点开始处于down状态
   const epoch_t& get_down_at(int osd) const {
     assert(exists(osd));
     return osd_info[osd].down_at;
@@ -808,14 +818,20 @@ public:
   /*
    * check whether an spg_t maps to a particular osd
    */
+  //检查给定osd是否被映射为此pg的up/acting集中的一员（即是否负责处理此pg的请求）
   bool is_up_acting_osd_shard(spg_t pg, int osd) const {
     vector<int> up, acting;
+    //获取当前pg的up集与acting集
     _pg_to_up_acting_osds(pg.pgid, &up, NULL, &acting, NULL, false);
+    //非共享模式
     if (pg.shard == shard_id_t::NO_SHARD) {
+    	  //检查给定osd是否在acting集中，如果不存，再检查是否在up集中
+    	  //如果两者中存在此osd，则返回true
       if (calc_pg_role(osd, acting, acting.size()) >= 0 ||
 	  calc_pg_role(osd, up, up.size()) >= 0)
 	return true;
     } else {
+    	  //检查osd是否负责此pg
       if (pg.shard < (int)acting.size() && acting[pg.shard] == osd)
 	return true;
       if (pg.shard < (int)up.size() && up[pg.shard] == osd)

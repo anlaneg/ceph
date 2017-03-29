@@ -3409,6 +3409,7 @@ PG *OSD::_create_lock_pg(
   return pg;
 }
 
+//给定spg_t获取其对应的pg对象，获取失败返回NULL
 PG *OSD::_lookup_lock_pg(spg_t pgid)
 {
   RWLock::RLocker l(pg_map_lock);
@@ -9326,6 +9327,7 @@ void OSD::ShardedOpWQ::clear_pg_slots()
 
 void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
 {
+  //由线程索引，知道此线程需要处理哪个队列
   uint32_t shard_index = thread_index % num_shards;
   ShardData *sdata = shard_list[shard_index];
   assert(NULL != sdata);
@@ -9333,12 +9335,14 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   // peek at spg_t
   sdata->sdata_op_ordering_lock.Lock();
   if (sdata->pqueue->empty()) {
+	//队列为空时，阻塞等待
     dout(20) << __func__ << " empty q, waiting" << dendl;
     // optimistically sleep a moment; maybe another work item will come along.
     sdata->sdata_op_ordering_lock.Unlock();
     osd->cct->get_heartbeat_map()->reset_timeout(hb,
       osd->cct->_conf->threadpool_default_timeout, 0);
     sdata->sdata_lock.Lock();
+    //等待一定时间，防止空转
     sdata->sdata_cond.WaitInterval(sdata->sdata_lock,
       utime_t(osd->cct->_conf->threadpool_empty_queue_max_wait, 0));
     sdata->sdata_lock.Unlock();
@@ -9348,18 +9352,23 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
       return;
     }
   }
+  //出队一个操作
   pair<spg_t, PGQueueable> item = sdata->pqueue->dequeue();
   if (osd->is_stopping()) {
+	//防shutdown
     sdata->sdata_op_ordering_lock.Unlock();
     return;    // OSD shutdown, discard.
   }
+
   PGRef pg;
   uint64_t requeue_seq;
   {
+	//注：在item.first不存在时，pg_slots将返回一个构造好的空对象回来
     auto& slot = sdata->pg_slots[item.first];
     dout(30) << __func__ << " " << item.first
 	     << " to_process " << slot.to_process
 	     << " waiting_for_pg=" << (int)slot.waiting_for_pg << dendl;
+    //指明PGQueueable待处理
     slot.to_process.push_back(item.second);
     // note the requeue seq now...
     requeue_seq = slot.requeue_seq;
@@ -9373,19 +9382,23 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
     pg = slot.pg;
     dout(20) << __func__ << " " << item.first << " item " << item.second
 	     << " queued" << dendl;
+    //slot中在运行的数目加1
     ++slot.num_running;
   }
   sdata->sdata_op_ordering_lock.Unlock();
 
+  //测试代码处理
   osd->service.maybe_inject_dispatch_delay();
 
   // [lookup +] lock pg (if we have it)
+  //如果pg没有被赋值，则再尝试一次
   if (!pg) {
     pg = osd->_lookup_lock_pg(item.first);
   } else {
     pg->lock();
   }
 
+  //测试代码处理
   osd->service.maybe_inject_dispatch_delay();
 
   boost::optional<PGQueueable> qi;
@@ -9394,11 +9407,14 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   // osd->service.release_reserved_pushes() call below
   sdata->sdata_op_ordering_lock.Lock();
 
+  //重新获取一遍，此时一定存在
   auto q = sdata->pg_slots.find(item.first);
   assert(q != sdata->pg_slots.end());
   auto& slot = q->second;
   --slot.num_running;
 
+  //存在多个线程负责一个队列的情况，故这里需要检查是否已被另一个线程处理完了。
+  //原因是我们在前面解过锁
   if (slot.to_process.empty()) {
     // raced with wake_pg_waiters or prune_pg_waiters
     dout(20) << __func__ << " " << item.first << " nothing queued" << dendl;
@@ -9419,6 +9435,8 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
     sdata->sdata_op_ordering_lock.Unlock();
     return;
   }
+
+  //确保slot.pg会被赋值
   if (pg && !slot.pg && !pg->deleting) {
     dout(20) << __func__ << " " << item.first << " set pg to " << pg << dendl;
     slot.pg = pg;
@@ -9444,20 +9462,26 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
 	   << " pg " << pg << dendl;
 
   if (!pg) {
+	//本地不存在这个pg,检查是要等待osdmap更新，还是要直接丢掉作务
     // should this pg shard exist on this osd in this (or a later) epoch?
     OSDMapRef osdmap = sdata->waiting_for_pg_osdmap;
+    //检查当前osd是否能处理此pg
     if (osdmap->is_up_acting_osd_shard(item.first, osd->whoami)) {
+    	  //能处理，但pg不存在，等待
       dout(20) << __func__ << " " << item.first
 	       << " no pg, should exist, will wait" << " on " << *qi << dendl;
       slot.to_process.push_front(*qi);
       slot.waiting_for_pg = true;
     } else if (qi->get_map_epoch() > osdmap->get_epoch()) {
+    	  //我们当前不能处理此pg,但别人的消息版本比我们的大，所以存在处理的可能，暂入wait_pg队列
       dout(20) << __func__ << " " << item.first << " no pg, item epoch is "
 	       << qi->get_map_epoch() << " > " << osdmap->get_epoch()
 	       << ", will wait on " << *qi << dendl;
       slot.to_process.push_front(*qi);
       slot.waiting_for_pg = true;
     } else {
+    	  //要么版本比我们小，要么版本和我们相同，但我们不处理此pg
+    	  //丢掉此作务
       dout(20) << __func__ << " " << item.first << " no pg, shouldn't exist,"
 	       << " dropping " << *qi << dendl;
       // share map with client?
@@ -9506,6 +9530,8 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
 
   ThreadPool::TPHandle tp_handle(osd->cct, hb, timeout_interval,
 				 suicide_interval);
+
+  //处理此作务
   qi->run(osd, pg, tp_handle);
 
   {
@@ -9522,7 +9548,9 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   pg->unlock();
 }
 
+//入队处理
 void OSD::ShardedOpWQ::_enqueue(pair<spg_t, PGQueueable> item) {
+  //由spg_t的值来hash出应放在哪个队列里
   uint32_t shard_index =
     item.first.hash_to_shard(shard_list.size());
 
@@ -9532,6 +9560,7 @@ void OSD::ShardedOpWQ::_enqueue(pair<spg_t, PGQueueable> item) {
   unsigned cost = item.second.get_cost();
   sdata->sdata_op_ordering_lock.Lock();
 
+  //入队到选定的队列
   dout(20) << __func__ << " " << item.first << " " << item.second << dendl;
   if (priority >= osd->op_prio_cutoff)
     sdata->pqueue->enqueue_strict(
