@@ -219,6 +219,7 @@ protected:
 
   /* recv_stamp is set when the Messenger starts reading the
    * Message off the wire */
+  //收到消息时的时间
   utime_t recv_stamp;
   /* dispatch_stamp is set when the Messenger starts calling dispatch() on
    * its endpoints */

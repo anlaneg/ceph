@@ -24,6 +24,7 @@
 #endif
 
 OpRequest::OpRequest(Message *req, OpTracker *tracker) :
+  //传入消息收到时的时间
   TrackedOp(tracker, req->get_recv_stamp()),
   rmw_flags(0), request(req),
   hit_flag_points(0), latest_flag_point(0),

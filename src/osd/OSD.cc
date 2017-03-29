@@ -6209,6 +6209,7 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
     assert(ms_can_fast_dispatch(op->get_req()));
     const MOSDFastDispatchOp *m = static_cast<const MOSDFastDispatchOp*>(
       op->get_req());
+    //消息中的osdmap版本号要大
     if (m->get_map_epoch() > osdmap->get_epoch()) {
       break;
     }
@@ -6217,6 +6218,7 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
 
     spg_t pgid;
     if (m->get_type() == CEPH_MSG_OSD_OP) {
+      //尝试规范pg值，防止不规范
       pg_t actual_pgid = osdmap->raw_pg_to_pg(
 	static_cast<const MOSDOp*>(m)->get_pg());
       if (!osdmap->get_primary_shard(actual_pgid, &pgid)) {
@@ -6231,6 +6233,7 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
   if (session->waiting_on_map.empty()) {
     clear_session_waiting_on_map(session);
   } else {
+	//需要提升本地osdmap版本后才能处理这个session,将其入队
     register_session_waiting_on_map(session);
   }
 }
@@ -6255,6 +6258,7 @@ void OSD::ms_fast_dispatch(Message *m)
   // note sender epoch
   op->sent_epoch = static_cast<MOSDFastDispatchOp*>(m)->get_map_epoch();
 
+  //测试代码忽略，用于制造延迟
   service.maybe_inject_dispatch_delay();
 
   if (m->get_connection()->has_features(CEPH_FEATUREMASK_RESEND_ON_SPLIT) ||
@@ -6273,6 +6277,8 @@ void OSD::ms_fast_dispatch(Message *m)
       {
 	Mutex::Locker l(session->session_dispatch_lock);
 	op->get();
+
+	//加入到session的waiting_on_map，绕一圈，检查是否本地osdmap版本是否可处理
 	session->waiting_on_map.push_back(*op);
 	OSDMapRef nextmap = service.get_nextmap_reserved();
 	dispatch_session_waiting(session, nextmap);
@@ -8681,6 +8687,7 @@ bool OSD::op_is_discardable(const MOSDOp *op)
   return false;
 }
 
+//将请求入队，哪个pg在哪个osdmap版本时入队了哪个操作
 void OSD::enqueue_op(spg_t pg, OpRequestRef& op, epoch_t epoch)
 {
   utime_t latency = ceph_clock_now() - op->get_req()->get_recv_stamp();

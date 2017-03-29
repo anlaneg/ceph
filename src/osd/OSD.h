@@ -575,7 +575,7 @@ public:
    * working from old maps.
    */
 private:
-  OSDMapRef next_osdmap;
+  OSDMapRef next_osdmap;//接下来要生效的osdmap
   Cond pre_publish_cond;
 
 public:
@@ -1484,9 +1484,11 @@ private:
       session_waiting_for_map.erase(i);
     }
   }
+
   //处理等待osdmap的op
   void dispatch_sessions_waiting_on_map() {
     set<Session*> sessions_to_check;
+    //获取到当前等待的所有session
     get_sessions_waiting_for_map(&sessions_to_check);
     for (set<Session*>::iterator i = sessions_to_check.begin();
 	 i != sessions_to_check.end();

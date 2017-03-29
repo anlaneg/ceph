@@ -1357,8 +1357,10 @@ uint32_t pg_pool_t::raw_hash_to_pg(uint32_t v) const
 /*
  * map a raw pg (with full precision ps) into an actual pg, for storage
  */
+//规范pg值
 pg_t pg_pool_t::raw_pg_to_pg(pg_t pg) const
 {
+  //使ps值规范，传入的ps值可能不受pg number控制，将其规范为小于pg number
   pg.set_ps(ceph_stable_mod(pg.ps(), pg_num, pg_num_mask));
   return pg;
 }

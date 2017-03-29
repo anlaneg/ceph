@@ -2223,6 +2223,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   // by messages entering the dispatch queue through other paths.
   message->set_dispatch_throttle_size(message_size);
 
+  //读到了消息，设置消息的接收时间
   message->set_recv_stamp(recv_stamp);
   message->set_throttle_stamp(throttle_stamp);
   message->set_recv_complete_stamp(ceph_clock_now());

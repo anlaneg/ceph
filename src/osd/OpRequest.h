@@ -109,6 +109,7 @@ public:
   }
 
   bool check_send_map = true; ///< true until we check if sender needs a map
+  //客户端发送消息过来时，其osdmap版本号，自消息体中拿来的。
   epoch_t sent_epoch = 0;     ///< client's map epoch
 
   bool hitset_inserted;

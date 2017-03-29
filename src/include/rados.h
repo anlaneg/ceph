@@ -81,6 +81,8 @@ struct ceph_pg {
  * b <= bmask and bmask=(2**n)-1
  * e.g., b=12 -> bmask=15, b=123 -> bmask=127
  */
+//此函数的目的是控制pg数量，pg number是任意值，但pg mask是一个2的n次方，故
+//如果我们直接与pg mask进行与操作，会导致计算出来的pg数过大，所以右移后重与
 static inline int ceph_stable_mod(int x, int b, int bmask)
 {
 	if ((x & bmask) < b)

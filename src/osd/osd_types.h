@@ -479,8 +479,8 @@ namespace std {
 } // namespace std
 //可共享的pg
 struct spg_t {
-  pg_t pgid;
-  shard_id_t shard;//共享id
+  pg_t pgid;//指代一个pg
+  shard_id_t shard;//共享id,ec用，副本时用NO_SHARD，ec时表示是第几块
   spg_t() : shard(shard_id_t::NO_SHARD) {}
   spg_t(pg_t pgid, shard_id_t shard) : pgid(pgid), shard(shard) {}
   explicit spg_t(pg_t pgid) : pgid(pgid), shard(shard_id_t::NO_SHARD) {}
@@ -1245,11 +1245,12 @@ struct pg_pool_t {
   }
 
   uint64_t flags;           ///< FLAG_*
-  __u8 type;                ///< TYPE_* //类型
+  __u8 type;                ///< TYPE_* //类型(ec,replication?)
   __u8 size, min_size;      ///< number of osds in each pg //pg中需要的osd数量
   __u8 crush_ruleset;       ///< crush placement rule set //crush规则集.
   __u8 object_hash;         ///< hash mapping object name to ps
 private:
+  //pool中的pg数，pool中的pgp数
   __u32 pg_num, pgp_num;    ///< number of pgs
 
 

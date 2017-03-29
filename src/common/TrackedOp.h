@@ -59,12 +59,16 @@ public:
 struct ShardedTrackingData;
 class OpTracker {
   friend class OpHistory;
+
+  //用seq实现在sharded_in_flight_list之间的轮转，num_optracker_shards取余，决定了用哪个桶内的成员
   atomic64_t seq;
   vector<ShardedTrackingData*> sharded_in_flight_list;
   uint32_t num_optracker_shards;
+
   OpHistory history;
   float complaint_time;
   int log_threshold;
+  //跟踪是否被启用
   bool tracking_enabled;
   RWLock       lock;
 

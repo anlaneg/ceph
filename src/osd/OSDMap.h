@@ -233,6 +233,7 @@ private:
   ceph::shared_ptr< map<pg_t,int32_t > > primary_temp;  // temp primary mapping (e.g. while we rebuild)
   ceph::shared_ptr< vector<__u32> > osd_primary_affinity; ///< 16.16 fixed point, 0x10000 = baseline
 
+  //pool id号与pool之间的映射
   map<int64_t,pg_pool_t> pools;
   map<int64_t,string> pool_name;
   map<string,map<string,string> > erasure_code_profiles;
@@ -718,14 +719,19 @@ public:
     return i->second.ec_pool();
   }
   bool get_primary_shard(const pg_t& pgid, spg_t *out) const {
+	//搞清楚是哪个pool
     map<int64_t, pg_pool_t>::const_iterator i = get_pools().find(pgid.pool());
     if (i == get_pools().end()) {
       return false;
     }
+
+    //非ec类型的pg,将自身构造成spg返回即可
     if (!i->second.ec_pool()) {
       *out = spg_t(pgid);
       return true;
     }
+
+    //ec处理
     int primary;
     vector<int> acting;
     pg_to_acting_osds(pgid, &acting, &primary);
@@ -748,6 +754,8 @@ public:
   int64_t get_pool_max() const {
     return pool_max;
   }
+
+  //获取所有当前osdmap中的所有pool及其id映射表
   const map<int64_t,pg_pool_t>& get_pools() const {
     return pools;
   }
@@ -780,8 +788,9 @@ public:
     return p->second.get_type();
   }
 
-
+  //规范pg值
   pg_t raw_pg_to_pg(pg_t pg) const {
+	//搞清楚是哪个pool
     map<int64_t,pg_pool_t>::const_iterator p = pools.find(pg.pool());
     assert(p != pools.end());
     return p->second.raw_pg_to_pg(pg);

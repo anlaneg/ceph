@@ -123,8 +123,10 @@ void OpHistory::dump_ops_by_duration(utime_t now, Formatter *f)
 
 struct ShardedTrackingData {
   Mutex ops_in_flight_lock_sharded;
+  //用于存放TrackedOp
   TrackedOp::tracked_op_list_t ops_in_flight_sharded;
   explicit ShardedTrackingData(string lock_name):
+      //指定锁名称
       ops_in_flight_lock_sharded(lock_name.c_str()) {}
 };
 
@@ -132,6 +134,7 @@ OpTracker::OpTracker(CephContext *cct_, bool tracking, uint32_t num_shards):
   seq(0),
   num_optracker_shards(num_shards),
   complaint_time(0), log_threshold(0),
+  //通过构造函数传入是否开启跟踪
   tracking_enabled(tracking),
   lock("OpTracker::lock"), cct(cct_) {
     for (uint32_t i = 0; i < num_optracker_shards; i++) {
@@ -198,6 +201,7 @@ bool OpTracker::dump_ops_in_flight(Formatter *f, bool print_only_blocked)
   return true;
 }
 
+//存放TrackedOp
 bool OpTracker::register_inflight_op(TrackedOp *i)
 {
   RWLock::RLocker l(lock);
@@ -211,6 +215,7 @@ bool OpTracker::register_inflight_op(TrackedOp *i)
   {
     Mutex::Locker locker(sdata->ops_in_flight_lock_sharded);
     sdata->ops_in_flight_sharded.push_back(*i);
+    //设置序列
     i->seq = current_seq;
   }
   return true;
@@ -221,6 +226,7 @@ void OpTracker::unregister_inflight_op(TrackedOp *i)
   // caller checks;
   assert(i->state);
 
+  //通过seq定位自已刚才处在那条链上（即自已当前如何删除）
   uint32_t shard_index = i->seq % num_optracker_shards;
   ShardedTrackingData* sdata = sharded_in_flight_list[shard_index];
   assert(NULL != sdata);

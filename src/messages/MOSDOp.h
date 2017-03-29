@@ -38,12 +38,14 @@ class MOSDOp : public MOSDFastDispatchOp {
 
 private:
   uint32_t client_inc;
+  //osdmap的版本号
   __u32 osdmap_epoch;
   __u32 flags;
   utime_t mtime;
   int32_t retry_attempt;   // 0 is first attempt.  -1 if we don't know.
 
   hobject_t hobj;
+  //消息关联的Pg编号
   spg_t pgid;
   bufferlist::iterator p;
   // Decoding flags. Decoding is only needed for messages catched by pipe reader.
@@ -81,6 +83,7 @@ public:
   }
 
   // Fields decoded in partial decoding
+  //提取消息关联的Pg编号
   pg_t get_pg() const {
     assert(!partial_decode_needed);
     return pgid.pgid;
@@ -93,6 +96,8 @@ public:
     assert(!partial_decode_needed);
     return pg_t(hobj.get_hash(), pgid.pgid.pool());
   }
+
+  //获取到消息对应的osdmap版本号
   epoch_t get_map_epoch() const override {
     assert(!partial_decode_needed);
     return osdmap_epoch;
