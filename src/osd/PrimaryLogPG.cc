@@ -1563,6 +1563,8 @@ void PrimaryLogPG::do_request(
   ThreadPool::TPHandle &handle)
 {
   // make sure we have a new enough map
+  //优先校验此是否因请求方osdmap版本比我们大，我们已将其
+  //发送过来的所有请求加入等待osdmap更新队列，如果是，直接加入
   auto p = waiting_for_map.find(op->get_source());
   if (p != waiting_for_map.end()) {
     // preserve ordering
@@ -1572,6 +1574,9 @@ void PrimaryLogPG::do_request(
     op->mark_delayed("waiting_for_map not empty");
     return;
   }
+
+  //如果请求方的osdmap版本比我们的大，则我们必须在更新osdmap版本号后
+  //才能执行op,故加入等待map队列
   if (op_must_wait_for_map(get_osdmap()->get_epoch(), op)) {
     dout(20) << __func__ << " queue on waiting_for_map "
 	     << op->get_source() << dendl;
@@ -1580,6 +1585,7 @@ void PrimaryLogPG::do_request(
     return;
   }
 
+  //为什么这里会有丢请求的检查？
   if (can_discard_request(op)) {
     return;
   }
@@ -1634,7 +1640,8 @@ void PrimaryLogPG::do_request(
   //没有peered时,挂起
   if (!is_peered()) {//恢复时,大家进入Active状态时,置上此标记
     // Delay unless PGBackend says it's ok
-    if (pgbackend->can_handle_while_inactive(op)) {//检查后端是否支持
+	//检查在非peered状态下，是否可以处理请求（ec是不能的，幅本情况下部分命令可以)
+    if (pgbackend->can_handle_while_inactive(op)) {
       bool handled = pgbackend->handle_message(op);
       assert(handled);
       return;
@@ -1646,7 +1653,8 @@ void PrimaryLogPG::do_request(
   }
 
   assert(is_peered() && flushes_in_progress == 0);
-  if (pgbackend->handle_message(op))//交给pg后端处理此操作,如果后端不处理,则返回false
+  //交给pg后端处理此操作,如果后端不处理,则返回false
+  if (pgbackend->handle_message(op))
 	  //这里,读写流程在此处返回的是false
 	  //这里,如果是osd发给副本的消息,则在此处将被处理,不再继续下去
     return;//从这里我们处理的都是不需要发送对端的.
@@ -1654,6 +1662,7 @@ void PrimaryLogPG::do_request(
   switch (op->get_req()->get_type()) {
   case CEPH_MSG_OSD_OP:
   case CEPH_MSG_OSD_BACKOFF:
+	//pg当前不处于active状态，将请求加入等待active队列
     if (!is_active()) {
       dout(20) << " peered, not active, waiting for active on " << op << dendl;
       waiting_for_active.push_back(op);//加入等待active
@@ -1793,9 +1802,11 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   if ((m->get_flags() & (CEPH_OSD_FLAG_BALANCE_READS |
 			 CEPH_OSD_FLAG_LOCALIZE_READS)) &&
       op->may_read() &&
-      !(op->may_write() || op->may_cache())) {//消息有平衡读和本地读标记,且操作集中有读操作,并没有写操作及cache操作.
+      !(op->may_write() || op->may_cache())) {
+	//消息有平衡读和本地读标记,且操作集中有读操作,并没有写操作及cache操作.
     // balanced reads; any replica will do
-    if (!(is_primary() || is_replica())) {//非备,非主时,才报错(防止不负责)
+    if (!(is_primary() || is_replica())) {
+      //非备,非主时,才报错(防止不负责)
       osd->handle_misdirected_op(this, op);
       return;
     }
@@ -1827,6 +1838,9 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     osd->reply_op_error(op, -ENAMETOOLONG);
     return;
   }
+
+  //hobject这个对象比较特殊，如果它内部的object的名称为空，则此时key生效，故这里对key
+  //再做一次长度检查
   if (m->get_hobj().get_key().size() > cct->_conf->osd_max_object_name_len) {
     dout(4) << "do_op locator is longer than "
 	    << cct->_conf->osd_max_object_name_len
@@ -1834,6 +1848,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     osd->reply_op_error(op, -ENAMETOOLONG);
     return;
   }
+
+  //目前暂不清楚namespace的意义
   if (m->get_hobj().nspace.size() > cct->_conf->osd_max_object_namespace_len) {
     dout(4) << "do_op namespace is longer than "
 	    << cct->_conf->osd_max_object_namespace_len
@@ -1842,7 +1858,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
-  //交给后端store进行检查
+  //交给后端store进行检查message's head
   if (int r = osd->store->validate_hobject_key(head)) {
     dout(4) << "do_op object " << head << " invalid for backing store: "
 	    << r << dendl;
@@ -4067,6 +4083,7 @@ int PrimaryLogPG::do_tmapup(OpContext *ctx, bufferlist::iterator& bp, OSDOp& osd
   return result;
 }
 
+//检查offset与len所规定的范围是否有超越max
 static int check_offset_and_length(uint64_t offset, uint64_t length, uint64_t max)
 {
   if (offset >= max ||
@@ -4816,6 +4833,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     case CEPH_OSD_OP_ASSERT_VER:
       ++ctx->num_read;
       {
+    //断言对象的版本号
 	uint64_t ver = op.assert_ver.ver;
 	tracepoint(osd, do_osd_op_pre_assert_ver, soid.oid.name.c_str(), soid.snap.val, ver);
 	if (!ver)
@@ -5134,15 +5152,19 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       }
       break;
       
+    //writefull操作处理
     case CEPH_OSD_OP_WRITEFULL:
       ++ctx->num_write;
       { // write full object
 	tracepoint(osd, do_osd_op_pre_writefull, soid.oid.name.c_str(), soid.snap.val, oi.size, 0, op.extent.length);
 
+	//参数处理，检查宣称的长度和实际要写的长度是否一致
 	if (op.extent.length != osd_op.indata.length()) {
 	  result = -EINVAL;
 	  break;
 	}
+
+	//检查offset与len所规定的范围是否有超越max
 	result = check_offset_and_length(0, op.extent.length, cct->_conf->osd_max_object_size);
 	if (result < 0)
 	  break;
@@ -5156,6 +5178,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	} else if (obs.exists && op.extent.length < oi.size) {
 	  t->truncate(soid, op.extent.length);
 	}
+	//生成写操作
 	if (op.extent.length) {
 	  t->write(soid, 0, op.extent.length, osd_op.indata, op.flags);
 	}

@@ -30,7 +30,7 @@ using namespace std;
 #include "cmp.h"
 
 struct object_t {
-  string name;
+  string name;//对象名称
 
   object_t() {}
   // cppcheck-suppress noExplicitConstructor

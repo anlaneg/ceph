@@ -127,10 +127,10 @@ struct osd_reqid_t {
 WRITE_CLASS_DENC(osd_reqid_t)
 
 
-
+//针对某一个对象说明（由哪个Osd负责，负责的是第几个碎片{幅本无碎片编号})
 struct pg_shard_t {
   int32_t osd;//在哪个osd上
-  shard_id_t shard;
+  shard_id_t shard;//碎片编号
   pg_shard_t() : osd(-1), shard(shard_id_t::NO_SHARD) {}
   explicit pg_shard_t(int osd) : osd(osd), shard(shard_id_t::NO_SHARD) {}
   pg_shard_t(int osd, shard_id_t shard) : osd(osd), shard(shard) {}
@@ -477,10 +477,10 @@ namespace std {
     }
   };
 } // namespace std
-//可共享的pg
+//碎片pg
 struct spg_t {
   pg_t pgid;//指代一个pg
-  shard_id_t shard;//共享id,ec用，副本时用NO_SHARD，ec时表示是第几块
+  shard_id_t shard;//碎片id,ec用，副本时用NO_SHARD，ec时表示是第几块
   spg_t() : shard(shard_id_t::NO_SHARD) {}
   spg_t(pg_t pgid, shard_id_t shard) : pgid(pgid), shard(shard) {}
   explicit spg_t(pg_t pgid) : pgid(pgid), shard(shard_id_t::NO_SHARD) {}
@@ -1249,6 +1249,7 @@ struct pg_pool_t {
   __u8 type;                ///< TYPE_* //类型(ec,replication?)
   __u8 size, min_size;      ///< number of osds in each pg //pg中需要的osd数量,最小数量
   __u8 crush_ruleset;       ///< crush placement rule set //crush规则集.
+  //采用哪种hash算法来映射object名称到ps(eg. CEPH_STR_HASH_RJENKINS)
   __u8 object_hash;         ///< hash mapping object name to ps
 private:
   //pool中的pg数，pool中的pgp数
@@ -4322,6 +4323,7 @@ struct OSDOp {
   ceph_osd_op op;
   sobject_t soid;
 
+  //操作传入的数据，传出的数据
   bufferlist indata, outdata;
   int32_t rval;
 

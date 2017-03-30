@@ -249,6 +249,7 @@ public:
   map<hobject_t, ObjectOperation> op_map;
 private:
   ObjectOperation &get_object_op_for_modify(const hobject_t &hoid) {
+	//生成或者获取此对象对应的op结构体
     auto &op = op_map[hoid];
     assert(!op.is_delete());
     return op;

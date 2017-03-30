@@ -3064,6 +3064,7 @@ void pg_interval_t::generate_test_instances(list<pg_interval_t*>& o)
   o.back()->maybe_went_rw = true;
 }
 
+//检查过去与现在是否处在同一个Interval中，如果不在，返回true,否则返回false
 bool pg_interval_t::is_new_interval(
   int old_acting_primary,
   int new_acting_primary,

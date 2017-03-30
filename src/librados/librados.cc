@@ -3429,6 +3429,7 @@ extern "C" int rados_append(rados_ioctx_t io, const char *o, const char *buf, si
   return retval;
 }
 
+//写对象入口
 extern "C" int rados_write_full(rados_ioctx_t io, const char *o, const char *buf, size_t len)
 {
   tracepoint(librados, rados_write_full_enter, io, o, buf, len);
@@ -3438,6 +3439,7 @@ extern "C" int rados_write_full(rados_ioctx_t io, const char *o, const char *buf
   object_t oid(o);
   bufferlist bl;
   bl.append(buf, len);
+  //调数据封装成bufferlist中，调用write_full执行写操作
   int retval = ctx->write_full(oid, bl);
   tracepoint(librados, rados_write_full_exit, retval);
   return retval;

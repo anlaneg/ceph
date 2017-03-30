@@ -116,6 +116,7 @@ public:
   const Message *get_req() const { return request; }
   Message *get_nonconst_req() { return request; }
 
+  //获取发起请求的源
   entity_name_t get_source() {
     if (request) {
       return request->get_source();

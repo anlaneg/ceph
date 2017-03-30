@@ -3517,17 +3517,20 @@ void PG::requeue_ops(list<OpRequestRef> &ls)
   ls.clear();
 }
 
+//检查map等待队列是否可以处理了
 void PG::requeue_map_waiters()
 {
   epoch_t epoch = get_osdmap()->get_epoch();
   auto p = waiting_for_map.begin();
   while (p != waiting_for_map.end()) {
+	//如果等待队列中宣称的osdmap版本仍比我们当前的版本大，则此操作仍然在队列中
     if (op_must_wait_for_map(epoch, p->second.front())) {
       dout(20) << __func__ << " " << p->first << " front op "
 	       << p->second.front() << " must still wait, doing nothing"
 	       << dendl;
       ++p;
     } else {
+      //osdmap版本更新过来了，将此操作放入队列优先处理.
       dout(20) << __func__ << " " << p->first << " " << p->second << dendl;
       for (auto q = p->second.rbegin(); q != p->second.rend(); ++q) {
 	osd->enqueue_front(info.pgid, PGQueueable(*q, epoch));
@@ -5611,6 +5614,7 @@ bool PG::op_must_wait_for_map(epoch_t cur_epoch, OpRequestRef& op)
 {
   switch (op->get_req()->get_type()) {
   case CEPH_MSG_OSD_OP://对于osdop操作
+	  //!(如果消息体中的版本号小于等于cur_epoch）为假时，返回true
     return !have_same_or_newer_map(
       cur_epoch,
       static_cast<const MOSDOp*>(op->get_req())->get_map_epoch());

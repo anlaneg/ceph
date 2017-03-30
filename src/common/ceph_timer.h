@@ -106,14 +106,16 @@ namespace ceph {
       std::mutex lock;
       using lock_guard = std::lock_guard<std::mutex>;
       using unique_lock = std::unique_lock<std::mutex>;
-      std::condition_variable cond;
+      std::condition_variable cond;//条件变量，防止队列为空时，仍做无用循环
 
-      event* running{ nullptr };
-      uint64_t next_id{ 0 };
+      event* running{ nullptr };//记录正处于运行中的事件
+      uint64_t next_id{ 0 };//分配timer-id用
 
       bool suspended;
       std::thread thread;
 
+      //用一个线程，周期性的对一组event(成员schedule保存）进行检查
+      //如果timer超时，则对其执行回调
       void timer_thread() {
 	unique_lock l(lock);
 	while (!suspended) {
@@ -134,7 +136,7 @@ namespace ceph {
 	    running = &e;
 
 	    l.unlock();
-	    e.f();
+	    e.f();//执行timer回调
 	    l.lock();
 
 	    if (running) {
@@ -173,6 +175,7 @@ namespace ceph {
       }
 
       // Suspend operation of the timer (and let its thread die).
+      //暂停timer线程
       void suspend() {
 	unique_lock l(lock);
 	if (suspended)
@@ -187,6 +190,7 @@ namespace ceph {
 
       // Resume operation of the timer. (Must have been previously
       // suspended.)
+      //重启timer线程
       void resume() {
 	unique_lock l(lock);
 	  if (!suspended)
@@ -198,6 +202,7 @@ namespace ceph {
       }
 
       // Schedule an event in the relative future
+      //添加一个定时器
       template<typename Callable, typename... Args>
       uint64_t add_event(typename TC::duration duration,
 			 Callable&& f, Args&&... args) {
@@ -236,6 +241,7 @@ namespace ceph {
       }
 
       // Adjust the timeout of a currently-scheduled event (relative)
+      //修改定时器的超时时间
       bool adjust_event(uint64_t id, typename TC::duration duration) {
 	return adjust_event(id, TC::now() + duration);
       }
@@ -262,6 +268,7 @@ namespace ceph {
       // Cancel an event. If the event has already come and gone (or you
       // never submitted it) you will receive false. Otherwise you will
       // receive true and it is guaranteed the event will not execute.
+      //取消一个定时器
       bool cancel_event(const uint64_t id) {
 	std::lock_guard<std::mutex> l(lock);
 	event dummy(id);
@@ -300,6 +307,7 @@ namespace ceph {
       //
       // Returns an event id. If you had an event_id from the first
       // scheduling, replace it with this return value.
+      //修改当前正在运行的定时器的超时时间
       uint64_t reschedule_me(typename TC::time_point when) {
 	if (std::this_thread::get_id() != thread.get_id())
 	  throw std::make_error_condition(std::errc::operation_not_permitted);
@@ -318,6 +326,7 @@ namespace ceph {
       }
 
       // Remove all events from the queue.
+      //取消所有记录的定时器
       void cancel_all_events() {
 	std::lock_guard<std::mutex> l(lock);
 	while (!events.empty()) {

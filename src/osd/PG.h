@@ -881,13 +881,15 @@ protected:
   // ops with newer maps than our (or blocked behind them)
   // track these by client, since inter-request ordering doesn't otherwise
   // matter.
+  //按请求方索引的操作列表，入队到此操作列表的意义是，请求方的osdmap更新，
+  //我们需要更新osdmap后再处理请求.
   unordered_map<entity_name_t,list<OpRequestRef>> waiting_for_map;
 
   // ops waiting on peered
-  list<OpRequestRef>            waiting_for_peered;//等待达到peered状态后执行
+  list<OpRequestRef>            waiting_for_peered;//等待达到pg peered状态后执行
 
   // ops waiting on active (require peered as well)
-  list<OpRequestRef>            waiting_for_active;//等待达到active状态后执行
+  list<OpRequestRef>            waiting_for_active;//等待达到pg active状态后执行
   list<OpRequestRef>            waiting_for_scrub;
 
   list<OpRequestRef>            waiting_for_cache_not_full;//等待cache full后刷新的操作列表.

@@ -61,12 +61,16 @@ class PerfCounters;
 // -----------------------------------------
 
 struct ObjectOperation {
+  //按顺序记录各个操作
   vector<OSDOp> ops;
   int flags;
   int priority;
 
+  //按操作相应的索引，存入操作对应的数据
   vector<bufferlist*> out_bl;
+  //按操作相应的索引，存入操作对应的响应回调
   vector<Context*> out_handler;
+  //按操作相应的索引，存入操作对应的返回值
   vector<int*> out_rval;
 
   ObjectOperation() : flags(0), priority(0) {}
@@ -77,6 +81,7 @@ struct ObjectOperation {
     }
   }
 
+  //返回需要执行的操作的数目
   size_t size() {
     return ops.size();
   }
@@ -94,17 +99,24 @@ struct ObjectOperation {
   void add_handler(Context *extra);
 
   OSDOp& add_op(int op) {
+	//增加操作数组空间，设置操作码
     int s = ops.size();
     ops.resize(s+1);
+
     ops[s].op.op = op;
+
     out_bl.resize(s+1);
     out_bl[s] = NULL;
+
     out_handler.resize(s+1);
     out_handler[s] = NULL;
+
     out_rval.resize(s+1);
     out_rval[s] = NULL;
     return ops[s];
   }
+
+  //添加操作并传入操作对应的数据
   void add_data(int op, uint64_t off, uint64_t len, bufferlist& bl) {
     OSDOp& osd_op = add_op(op);
     osd_op.op.extent.offset = off;
@@ -337,6 +349,8 @@ struct ObjectOperation {
   void write(uint64_t off, bufferlist& bl) {
     write(off, bl, 0, 0);
   }
+
+  //add writefull operator，并填充对应数据
   void write_full(bufferlist& bl) {
     add_data(CEPH_OSD_OP_WRITEFULL, 0, bl.length(), bl);
   }
@@ -1005,6 +1019,7 @@ struct ObjectOperation {
     }
   }
 
+  //添加"版本断言"操作
   void assert_version(uint64_t ver) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_VER);
     osd_op.op.assert_ver.ver = ver;
@@ -1160,6 +1175,7 @@ private:
   using unique_lock = std::unique_lock<decltype(rwlock)>;
   using shared_lock = boost::shared_lock<decltype(rwlock)>;
   using shunique_lock = ceph::shunique_lock<decltype(rwlock)>;
+  //定时器
   ceph::timer<ceph::mono_clock> timer;
 
   PerfCounters *logger;
@@ -1182,12 +1198,14 @@ public:
   struct OSDSession;
 
   struct op_target_t {
+	//操作类型,CEPH_OSD_FLAG_READ
     int flags = 0;
 
+    //操作对应的epoch值（即最新的osdmap版本号）
     epoch_t epoch = 0;  ///< latest epoch we calculated the mapping
 
-    object_t base_oid;
-    object_locator_t base_oloc;
+    object_t base_oid;//对象名称
+    object_locator_t base_oloc;//对象所处的位置（例如pool id)
     object_t target_oid;
     object_locator_t target_oloc;
 
@@ -1199,6 +1217,7 @@ public:
 
     pg_t pgid; ///< last (raw) pg we mapped to
     spg_t actual_pgid; ///< last (actual) spg_t we mapped to
+
     unsigned pg_num = 0; ///< last pg_num we mapped to
     unsigned pg_num_mask = 0; ///< last pg_num_mask we mapped to
     vector<int> up; ///< set of up osds for last pg we mapped to
@@ -1212,6 +1231,7 @@ public:
     bool used_replica = false;
     bool paused = false;
 
+    //需要发给哪个osd处理(maybe equal -1)
     int osd = -1;      ///< the final target osd, or -1
 
     epoch_t last_force_resend = 0;
@@ -1269,7 +1289,9 @@ public:
     vector<int*> out_rval;
 
     int priority;
+    //操作执行完成后，此回调需要被触发
     Context *onfinish;
+    //超时定时器id,通过它可以对此定时器进行操作
     uint64_t ontimeout;
 
     ceph_tid_t tid;
@@ -1759,6 +1781,8 @@ public:
 
     unique_completion_lock get_lock(object_t& oid);
   };
+
+  //按Osd编号索引session
   map<int,OSDSession*> osd_sessions;
 
   bool osdmap_full_flag() const;

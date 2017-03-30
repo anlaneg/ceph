@@ -1529,6 +1529,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
 }
 
 // mapping
+//从对象名称映射到其应在的pg
 int OSDMap::map_to_pg(
   int64_t poolid,
   const string& name,
@@ -1549,6 +1550,7 @@ int OSDMap::map_to_pg(
   return 0;
 }
 
+//解决对象的映射
 int OSDMap::object_locator_to_pg(
   const object_t& oid, const object_locator_t& loc, pg_t &pg) const
 {

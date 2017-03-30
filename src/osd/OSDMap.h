@@ -715,6 +715,7 @@ public:
    * set as pg_temp.
    * Each of these pointers must be non-NULL.
    */
+  //获取给定pg的up集，up_primary,acting集，acting_primary
   void pg_to_up_acting_osds(pg_t pg, vector<int> *up, int *up_primary,
                             vector<int> *acting, int *acting_primary) const {
     _pg_to_up_acting_osds(pg, up, up_primary, acting, acting_primary);
@@ -728,6 +729,8 @@ public:
     assert(i != pools.end());
     return i->second.ec_pool();
   }
+
+  //获取主碎片是哪一个（对副本而言，即为获取主)
   bool get_primary_shard(const pg_t& pgid, spg_t *out) const {
 	//搞清楚是哪个pool
     map<int64_t, pg_pool_t>::const_iterator i = get_pools().find(pgid.pool());

@@ -44,7 +44,7 @@ private:
   utime_t mtime;
   int32_t retry_attempt;   // 0 is first attempt.  -1 if we don't know.
 
-  hobject_t hobj;
+  hobject_t hobj;//消息针对的对象
   //消息关联的Pg编号
   spg_t pgid;
   bufferlist::iterator p;

@@ -651,6 +651,7 @@ namespace buffer CEPH_BUFFER_API {
 
   public:
     // cons/des
+    //无参构造函数
     list() : _len(0), _memcopy_count(0), last_p(this) {}
     // cppcheck-suppress noExplicitConstructor
     list(unsigned prealloc) : _len(0), _memcopy_count(0), last_p(this) {

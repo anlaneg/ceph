@@ -692,13 +692,16 @@ int librados::IoCtxImpl::writesame(const object_t& oid, bufferlist& bl,
 int librados::IoCtxImpl::operate(const object_t& oid, ::ObjectOperation *o,
 				 ceph::real_time *pmtime, int flags)
 {
+  //如果未传入时间，则用当前时间
   ceph::real_time ut = (pmtime ? *pmtime :
     ceph::real_clock::now());
 
   /* can't write to a snapshot */
+  //不容许对快照执行写操作
   if (snap_seq != CEPH_NOSNAP)
     return -EROFS;
 
+  //无操作，则直接返回
   if (!o->size())
     return 0;
 
@@ -708,20 +711,27 @@ int librados::IoCtxImpl::operate(const object_t& oid, ::ObjectOperation *o,
   int r;
   version_t ver;
 
+  //注入条件变量，用于摸拟阻塞的调用，在finish调用时，会设置为done并唤醒等待的线程
   Context *oncommit = new C_SafeCond(&mylock, &cond, &done, &r);
 
   int op = o->ops[0].op.op;
   ldout(client->cct, 10) << ceph_osd_op_name(op) << " oid=" << oid
 			 << " nspace=" << oloc.nspace << dendl;
+
+  //类型变换操作，将上层的op变换为Objecter::Op
   Objecter::Op *objecter_op = objecter->prepare_mutate_op(oid, oloc,
 							  *o, snapc, ut, flags,
 							  oncommit, &ver);
+  //提交操作
   objecter->op_submit(objecter_op);
 
+  //摸拟阻塞,等待唤醒
   mylock.Lock();
   while (!done)
     cond.Wait(mylock);
   mylock.Unlock();
+
+  //走到这里，说明请求操作已执行成功
   ldout(client->cct, 10) << "Objecter returned from "
 	<< ceph_osd_op_name(op) << " r=" << r << dendl;
 

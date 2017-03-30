@@ -1702,6 +1702,7 @@ int Objecter::_get_session(int osd, OSDSession **session, shunique_lock& sul)
 
   map<int,OSDSession*>::iterator p = osd_sessions.find(osd);
   if (p != osd_sessions.end()) {
+	//已创建了相应的session,直接设置并返回
     OSDSession *s = p->second;
     s->get();
     *session = s;
@@ -1712,6 +1713,8 @@ int Objecter::_get_session(int osd, OSDSession **session, shunique_lock& sul)
   if (!sul.owns_lock()) {
     return -EAGAIN;
   }
+
+  //创建session，并构造连接
   OSDSession *s = new OSDSession(cct, osd);
   osd_sessions[osd] = s;
   s->con = messenger->get_connection(osdmap->get_inst(osd));
@@ -1911,6 +1914,8 @@ void Objecter::_maybe_request_map()
       << "_maybe_request_map subscribing (onetime) to next osd map" << dendl;
     flag = CEPH_SUBSCRIBE_ONETIME;
   }
+
+  //与monitor通信，请求osdmap
   epoch_t epoch = osdmap->get_epoch() ? osdmap->get_epoch()+1 : 0;
   if (monc->sub_want("osdmap", epoch, flag)) {
     monc->renew_subs();
@@ -2203,6 +2208,7 @@ void Objecter::_op_submit_with_budget(Op *op, shunique_lock& sul,
 {
   assert(initialized.read());
 
+  //op构造函数已保证
   assert(op->ops.size() == op->out_bl.size());
   assert(op->ops.size() == op->out_rval.size());
   assert(op->ops.size() == op->out_handler.size());
@@ -2222,6 +2228,8 @@ void Objecter::_op_submit_with_budget(Op *op, shunique_lock& sul,
     if (op->tid == 0)
       op->tid = last_tid.inc();
     auto tid = op->tid;
+
+    //注册超时处理回调
     op->ontimeout = timer.add_event(osd_timeout,
 				    [this, tid]() {
 				      op_cancel(tid, -ETIMEDOUT); });
@@ -2317,7 +2325,10 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
     == RECALC_OP_TARGET_POOL_DNE;
 
   // Try to get a session, including a retry if we need to take write lock
+  //创建一个与osd对应的session
   int r = _get_session(op->target.osd, &s, sul);
+
+  //防变更处理
   if (r == -EAGAIN ||
       (check_for_latest_map && sul.owns_lock_shared())) {
     epoch_t orig_epoch = osdmap->get_epoch();
@@ -2339,6 +2350,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
       }
     }
   }
+
   if (r == -EAGAIN) {
     assert(s == NULL);
     r = _get_session(op->target.osd, &s, sul);
@@ -2346,6 +2358,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
   assert(r == 0);
   assert(s);  // may be homeless
 
+  //记账
   _send_op_account(op);
 
   // send?
@@ -2397,6 +2410,7 @@ void Objecter::_op_submit(Op *op, shunique_lock& sul, ceph_tid_t *ptid)
   _session_op_assign(s, op);
 
   if (need_send) {
+	//发送操作
     _send_op(op, m);
   }
 
@@ -2679,6 +2693,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   // rwlock is locked
   bool is_read = t->flags & CEPH_OSD_FLAG_READ;
   bool is_write = t->flags & CEPH_OSD_FLAG_WRITE;
+  //设置事务对应的epoch值，用当前的Osdmap版本
   t->epoch = osdmap->get_epoch();
   ldout(cct,20) << __func__ << " epoch " << t->epoch
 		<< " base " << t->base_oid << " " << t->base_oloc
@@ -2688,8 +2703,10 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
 		<< (is_write ? " is_write" : "")
 		<< dendl;
 
+
   const pg_pool_t *pi = osdmap->get_pg_pool(t->base_oloc.pool);
   if (!pi) {
+	//当前osdmap中没有这个pool的信息
     t->osd = -1;
     return RECALC_OP_TARGET_POOL_DNE;
   }
@@ -2707,15 +2724,18 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   }
 
   // apply tiering
+  //考虑cache情况
   t->target_oid = t->base_oid;
   t->target_oloc = t->base_oloc;
   if ((t->flags & CEPH_OSD_FLAG_IGNORE_OVERLAY) == 0) {
     if (is_read && pi->has_read_tier())
-      t->target_oloc.pool = pi->read_tier;
+      t->target_oloc.pool = pi->read_tier;//修改目标对应的pool
     if (is_write && pi->has_write_tier())
+      //修改目标对应的pool
       t->target_oloc.pool = pi->write_tier;
     pi = osdmap->get_pg_pool(t->target_oloc.pool);
     if (!pi) {
+    	//当前osdmap中没有目标对应的pool的信息
       t->osd = -1;
       return RECALC_OP_TARGET_POOL_DNE;
     }
@@ -2728,6 +2748,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
     assert(t->base_oloc.pool == (int64_t)t->base_pgid.pool());
     pgid = t->base_pgid;
   } else {
+	//解决对象的映射，知道对象要放在哪个pg上
     int ret = osdmap->object_locator_to_pg(t->target_oid, t->target_oloc,
 					   pgid);
     if (ret == -ENOENT) {
@@ -2745,6 +2766,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   unsigned pg_num = pi->get_pg_num();
   int up_primary, acting_primary;
   vector<int> up, acting;
+  //获取给定pgid的up集，up_primary,acting集，acting_primary
   osdmap->pg_to_up_acting_osds(pgid, &up, &up_primary,
 			       &acting, &acting_primary);
   bool sort_bitwise = osdmap->test_flag(CEPH_OSDMAP_SORTBITWISE);
@@ -2788,6 +2810,7 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
   }
 
   if (legacy_change || split || force_resend) {
+	//更新或者设置target中缓存的值
     t->pgid = pgid;
     t->acting = acting;
     t->acting_primary = acting_primary;
@@ -2809,14 +2832,16 @@ int Objecter::_calc_target(op_target_t *t, Connection *con, bool any_change)
     if (acting_primary == -1) {
       t->osd = -1;
     } else {
+      //有acting_primary
       int osd;
       bool read = is_read && !is_write;
+      //有平衡读，随机发给acting中的任何一个
       if (read && (t->flags & CEPH_OSD_FLAG_BALANCE_READS)) {
-	int p = rand() % acting.size();
-	if (p)
-	  t->used_replica = true;
-	osd = acting[p];
-	ldout(cct, 10) << " chose random osd." << osd << " of " << acting
+	    int p = rand() % acting.size();
+	    if (p)
+	      t->used_replica = true;
+	    osd = acting[p];
+	    ldout(cct, 10) << " chose random osd." << osd << " of " << acting
 		       << dendl;
       } else if (read && (t->flags & CEPH_OSD_FLAG_LOCALIZE_READS) &&
 		 acting.size() > 1) {
@@ -3079,7 +3104,7 @@ MOSDOp *Objecter::_prepare_osd_op(Op *op)
   m->set_snap_seq(op->snapc.seq);
   m->set_snaps(op->snapc.snaps);
 
-  m->ops = op->ops;
+  m->ops = op->ops;//设置操作集
   m->set_mtime(op->mtime);
   m->set_retry_attempt(op->attempts++);
 
@@ -3166,6 +3191,7 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
 
   m->set_tid(op->tid);
 
+  //对外发送消息
   op->session->con->send_message(m);
 }
 

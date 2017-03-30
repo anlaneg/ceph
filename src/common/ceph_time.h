@@ -235,6 +235,7 @@ namespace ceph {
       typedef std::chrono::time_point<mono_clock> time_point;
       static constexpr const bool is_steady = true;
 
+      //获取当前时间，此时间不受调时影响
       static time_point now() noexcept {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);

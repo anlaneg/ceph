@@ -468,7 +468,7 @@ public:
   struct OpContext {
     OpRequestRef op;//请求
     osd_reqid_t reqid;
-    vector<OSDOp> &ops;
+    vector<OSDOp> &ops;//操作集，记录了本消息要求执行的操作
 
     const ObjectState *obs; // Old objectstate
     const SnapSet *snapset; // Old snapset

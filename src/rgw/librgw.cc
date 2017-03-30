@@ -90,6 +90,7 @@ namespace rgw {
       cct->_conf->rgw_nfs_write_completion_interval_s;
 
     /* start write timer */
+    //启动定时器线程
     RGWLibFS::write_timer.resume();
 
     /* gc loop */

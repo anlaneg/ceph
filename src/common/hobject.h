@@ -59,6 +59,7 @@ public:
     return key;
   }
 
+  //如果key与对象名称相等，则清空内部的key取值，否则将参数取值赋给key
   void set_key(const std::string &key_) {
     if (key_ == oid.name)
       key.clear();
@@ -268,6 +269,7 @@ public:
     hash_reverse_bits = value;
   }
 
+  //与set_key对应，如果Key被设置了值，则返回key的值，如果Key未设置值，则取对象名称
   const string& get_effective_key() const {
     if (key.length())
       return key;

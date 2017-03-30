@@ -169,17 +169,17 @@ extern const char *ceph_osd_state_name(int s);
  * redefined, resulting in special-cases in the helpers.
  */
 #define CEPH_OSD_OP_MODE       0xf000
-#define CEPH_OSD_OP_MODE_RD    0x1000
-#define CEPH_OSD_OP_MODE_WR    0x2000
-#define CEPH_OSD_OP_MODE_RMW   0x3000
-#define CEPH_OSD_OP_MODE_SUB   0x4000
-#define CEPH_OSD_OP_MODE_CACHE 0x8000
+#define CEPH_OSD_OP_MODE_RD    0x1000 //操作为只读
+#define CEPH_OSD_OP_MODE_WR    0x2000 //操作为只写
+#define CEPH_OSD_OP_MODE_RMW   0x3000 //操作为读写
+#define CEPH_OSD_OP_MODE_SUB   0x4000 //内部操作，如push,pull操作等
+#define CEPH_OSD_OP_MODE_CACHE 0x8000 //针对cache的操作
 
 #define CEPH_OSD_OP_TYPE       0x0f00
-#define CEPH_OSD_OP_TYPE_DATA  0x0200
-#define CEPH_OSD_OP_TYPE_ATTR  0x0300
-#define CEPH_OSD_OP_TYPE_EXEC  0x0400
-#define CEPH_OSD_OP_TYPE_PG    0x0500
+#define CEPH_OSD_OP_TYPE_DATA  0x0200 //针对数据的操作
+#define CEPH_OSD_OP_TYPE_ATTR  0x0300 //针对属性的操作
+#define CEPH_OSD_OP_TYPE_EXEC  0x0400 //内部执行的操作，如call操作
+#define CEPH_OSD_OP_TYPE_PG    0x0500 //针对pg的操作
 //      LEAVE UNUSED           0x0600 used to be multiobject ops
 
 #define __CEPH_OSD_OP1(mode, nr) \
@@ -188,7 +188,7 @@ extern const char *ceph_osd_state_name(int s);
 #define __CEPH_OSD_OP(mode, type, nr) \
 	(CEPH_OSD_OP_MODE_##mode | CEPH_OSD_OP_TYPE_##type | (nr))
 
-//定义了ceph中的所有操作
+//定义了ceph中的所有操作（模式|类型|操作符）
 #define __CEPH_FORALL_OSD_OPS(f)					    \
 	/** data **/							    \
 	/* read */							    \
@@ -493,11 +493,12 @@ const char *ceph_osd_backoff_op_name(int op);
  * payload
  */
 struct ceph_osd_op {
+	//操作码
 	__le16 op;           /* CEPH_OSD_OP_* */
 	__le32 flags;        /* CEPH_OSD_OP_FLAG_* */
 	union {
 		struct {
-			__le64 offset, length;
+			__le64 offset, length;//数据范围取值
 			__le64 truncate_size;
 			__le32 truncate_seq;
 		} __attribute__ ((packed)) extent;
