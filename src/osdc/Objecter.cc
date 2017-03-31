@@ -387,6 +387,7 @@ void Objecter::init()
 
   cct->_conf->add_observer(this);
 
+  //标记已初始化
   initialized.set(1);
 }
 
@@ -1002,6 +1003,7 @@ bool Objecter::ms_dispatch(Message *m)
     // these we give others a chance to inspect
 
     // MDS, OSD
+    //osdmap处理入口
   case CEPH_MSG_OSD_MAP:
     handle_osd_map(static_cast<MOSDMap*>(m));
     return false;
@@ -1131,14 +1133,18 @@ void Objecter::_scan_requests(OSDSession *s,
   }
 }
 
+
+//osdmap消息处理
 void Objecter::handle_osd_map(MOSDMap *m)
 {
   shunique_lock sul(rwlock, acquire_unique);
   if (!initialized.read())
     return;
 
+  //object中会对osdmap进行New操作，故不可能为null
   assert(osdmap);
 
+  //文件系统id不相同，不处理
   if (m->fsid != monc->get_fsid()) {
     ldout(cct, 0) << "handle_osd_map fsid " << m->fsid
 		  << " != " << monc->get_fsid() << dendl;
@@ -1160,6 +1166,7 @@ void Objecter::handle_osd_map(MOSDMap *m)
   map<ceph_tid_t, Op*> need_resend;
   map<ceph_tid_t, CommandOp*> need_resend_command;
 
+  //消息体里的osdmap版本没有我们当前的大，说明消息是无效的，忽略
   if (m->get_last() <= osdmap->get_epoch()) {
     ldout(cct, 3) << "handle_osd_map ignoring epochs ["
 		  << m->get_first() << "," << m->get_last()
@@ -1169,27 +1176,34 @@ void Objecter::handle_osd_map(MOSDMap *m)
 		  << m->get_first() << "," << m->get_last()
 		  << "] > " << osdmap->get_epoch() << dendl;
 
+    //通过检查osdmap的取值，获知是否为第一个osdmap
     if (osdmap->get_epoch()) {
-      bool skipped_map = false;
+      bool skipped_map = false;//是否有跳过某些map
       // we want incrementals
+      //从我们的版本向osdmap消息指明的版本渐进
       for (epoch_t e = osdmap->get_epoch() + 1;
 	   e <= m->get_last();
 	   e++) {
 
+    //下一个版本在incremental_maps中
 	if (osdmap->get_epoch() == e-1 &&
 	    m->incremental_maps.count(e)) {
 	  ldout(cct, 3) << "handle_osd_map decoding incremental epoch " << e
 			<< dendl;
+	  //通过buffer来解码获取Incremental
 	  OSDMap::Incremental inc(m->incremental_maps[e]);
+	  //应用增量
 	  osdmap->apply_incremental(inc);
 	  logger->inc(l_osdc_map_inc);
 	}
 	else if (m->maps.count(e)) {
+	  //发现一个全量的版本
 	  ldout(cct, 3) << "handle_osd_map decoding full epoch " << e << dendl;
 	  osdmap->decode(m->maps[e]);
 	  logger->inc(l_osdc_map_full);
 	}
 	else {
+	  //e版本即没有增量，也没有全量，如果monitor上还有此版本的记录，则向它请求
 	  if (e >= m->get_oldest()) {
 	    ldout(cct, 3) << "handle_osd_map requesting missing epoch "
 			  << osdmap->get_epoch()+1 << dendl;
@@ -1231,6 +1245,7 @@ void Objecter::handle_osd_map(MOSDMap *m)
       }
 
     } else {
+      //第一张map,
       // first map.  we want the full thing.
       if (m->maps.count(m->get_last())) {
 	for (map<int,OSDSession*>::iterator p = osd_sessions.begin();
@@ -1241,12 +1256,14 @@ void Objecter::handle_osd_map(MOSDMap *m)
 	}
 	ldout(cct, 3) << "handle_osd_map decoding full epoch "
 		      << m->get_last() << dendl;
+	//解码osdmap表
 	osdmap->decode(m->maps[m->get_last()]);
 
 	_scan_requests(homeless_session, false, false, NULL,
 		       need_resend, need_resend_linger,
 		       need_resend_command, sul);
       } else {
+    //重复的第一张map
 	ldout(cct, 3) << "handle_osd_map hmm, i want a full map, requesting"
 		      << dendl;
 	monc->sub_want("osdmap", 0, CEPH_SUBSCRIBE_ONETIME);
@@ -1900,6 +1917,7 @@ void Objecter::maybe_request_map()
   _maybe_request_map();
 }
 
+//向monitor请求osdmap
 void Objecter::_maybe_request_map()
 {
   // rwlock is locked

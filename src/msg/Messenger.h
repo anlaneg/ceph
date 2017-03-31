@@ -601,8 +601,9 @@ public:
     for (list<Dispatcher*>::iterator p = dispatchers.begin();
 	 p != dispatchers.end();
 	 ++p) {
+      //消息已被处理（返回true),不再继续尝试其它接收者
       if ((*p)->ms_dispatch(m))
-	return;
+	    return;
     }
     lsubdout(cct, ms, 0) << "ms_deliver_dispatch: unhandled message " << m << " " << *m << " from "
 			 << m->get_source_inst() << dendl;

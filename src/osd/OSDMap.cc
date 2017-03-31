@@ -1317,11 +1317,13 @@ int OSDMap::apply_incremental(const Incremental &inc)
   
   assert(inc.epoch == epoch+1);
 
+  //增加osdmap对应的版本号
   epoch++;
   modified = inc.modified;
 
   // full map?
   if (inc.fullmap.length()) {
+	//是fullmap
     bufferlist bl(inc.fullmap);
     decode(bl);
     return 0;
@@ -1342,13 +1344,14 @@ int OSDMap::apply_incremental(const Incremental &inc)
        p != inc.new_pools.end();
        ++p) {
     pools[p->first] = p->second;
-    pools[p->first].last_change = epoch;//创建时间
+    pools[p->first].last_change = epoch;
   }
 
   //设置pool_name,name_pool,实际上是pool到name,name到pool两个索引表
   for (map<int64_t,string>::const_iterator p = inc.new_pool_names.begin();
        p != inc.new_pool_names.end();
        ++p) {
+	//设置pool_name,name_pool
     auto pool_name_entry = pool_name.find(p->first);
     if (pool_name_entry != pool_name.end()) {
       name_pool.erase(pool_name_entry->second);
@@ -1358,6 +1361,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
     name_pool[p->second] = p->first;
   }
+
   //要删除的pool
   for (set<int64_t>::const_iterator p = inc.old_pools.begin();
        p != inc.old_pools.end();
@@ -1402,6 +1406,7 @@ int OSDMap::apply_incremental(const Incremental &inc)
   }
   
   // up/down
+  //明确osd的interval信息
   for (map<int32_t,uint8_t>::const_iterator i = inc.new_state.begin();
        i != inc.new_state.end();
        ++i) {
@@ -1427,6 +1432,8 @@ int OSDMap::apply_incremental(const Incremental &inc)
       osd_state[i->first] ^= s;
     }
   }
+
+  //地址及osd状态信息
   for (map<int32_t,entity_addr_t>::const_iterator i = inc.new_up_client.begin();
        i != inc.new_up_client.end();
        ++i) {
@@ -2115,6 +2122,7 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
   crc_defined = true;
 }
 
+
 void OSDMap::decode(bufferlist& bl)
 {
   bufferlist::iterator p = bl.begin();
@@ -2232,6 +2240,7 @@ void OSDMap::decode_classic(bufferlist::iterator& p)
   post_decode();
 }
 
+//osdmap解码
 void OSDMap::decode(bufferlist::iterator& bl)
 {
   /**
@@ -2347,6 +2356,7 @@ void OSDMap::decode(bufferlist::iterator& bl)
     }
   }
 
+  //解码完成后数据处理
   post_decode();
 }
 

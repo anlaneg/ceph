@@ -5606,6 +5606,7 @@ void OSD::handle_command(MCommand *m)
     return;
   }
 
+  //命令处理入队
   Command *c = new Command(m->cmd, m->get_tid(), m->get_data(), con.get());
   command_wq.queue(c);
 
@@ -5613,11 +5614,11 @@ void OSD::handle_command(MCommand *m)
 }
 
 struct OSDCommand {
-  string cmdstring;
-  string helpstring;
-  string module;
+  string cmdstring;//命令字符串
+  string helpstring;//帮助信息
+  string module;//模块信息
   string perm;
-  string availability;
+  string availability;//可用域
 } osd_commands[] = {
 
 #define COMMAND(parsesig, helptext, module, perm, availability) \
@@ -5718,6 +5719,7 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
     goto out;
   }
 
+  //将cmd解析，将其数据组装成cmdmap
   if (!cmdmap_from_json(cmd, &cmdmap, ss)) {
     r = -EINVAL;
     goto out;
@@ -5725,6 +5727,7 @@ void OSD::do_command(Connection *con, ceph_tid_t tid, vector<string>& cmd, buffe
 
   cmd_getval(cct, cmdmap, "prefix", prefix);
 
+  //显示osd注册的所有命令
   if (prefix == "get_command_descriptions") {
     int cmdnum = 0;
     JSONFormatter *f = new JSONFormatter();
@@ -6362,6 +6365,7 @@ bool OSD::ms_verify_authorizer(Connection *con, int peer_type,
     authorizer_data, authorizer_reply, name, global_id, caps_info, session_key,
     &auid);
 
+  //权限校验成功，创建session
   if (isvalid) {
     Session *s = static_cast<Session *>(con->get_priv());
     if (!s) {
@@ -6459,7 +6463,7 @@ void OSD::_dispatch(Message *m)
     // -- don't need OSDMap --
 
     // map and replication
-  case CEPH_MSG_OSD_MAP://处理osdmap消息
+  case CEPH_MSG_OSD_MAP://osd处理osdmap消息(osdmap消息会被多个处理，如objector)
     handle_osd_map(static_cast<MOSDMap*>(m));//处理osdmap消息
     break;
 
@@ -6871,6 +6875,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // share with the objecter
   if (!is_preboot())
+	//我们在向其它Osd发送消息，cache的读写时，用objector发送消息
     service.objecter->handle_osd_map(m);
 
   epoch_t first = m->get_first();//获取m的首版本
@@ -6899,14 +6904,19 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // missing some?
   bool skip_maps = false;
-  if (first > superblock.newest_map + 1) {//本次发过来的起始版本与我们记录的版本中间有断点,我们忽略此消息,并要求superblock.newest_map+1版本
+  if (first > superblock.newest_map + 1) {
+	  //本次发过来的起始版本与我们记录的版本中间有断点,我们忽略此消息,
+	  //并要求superblock.newest_map+1版本
     dout(10) << "handle_osd_map message skips epochs "
 	     << superblock.newest_map + 1 << ".." << (first-1) << dendl;
-    if (m->oldest_map <= superblock.newest_map + 1) {//发过来的消息与我们之间有断点,但指明存在oldest_map,我们请求superblock.newest_map+1
+    if (m->oldest_map <= superblock.newest_map + 1) {
+    	//发过来的消息与我们之间有断点,但指明存在oldest_map,
+    	//我们请求superblock.newest_map+1
       osdmap_subscribe(superblock.newest_map + 1, false);
       m->put();
       return;
     }
+
     //我们的osdmap与monitor已知的osdmap有断层,并且monitor已经把我们上需要丢掉了.
     //下面的if是尽可能的去让这个断层少一点.
     // always try to get the full range of maps--as many as we can.  this

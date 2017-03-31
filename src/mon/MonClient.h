@@ -230,6 +230,7 @@ public:
   // mon subscriptions
 private:
   map<string,ceph_mon_subscribe_item> sub_sent; // my subs, and current versions
+  //已经订阅了哪些请求
   map<string,ceph_mon_subscribe_item> sub_new;  // unsent new subs
   utime_t sub_renew_sent, sub_renew_after;
 

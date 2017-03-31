@@ -175,6 +175,8 @@ public:
       have_crc(false), full_crc(0), inc_crc(0) {
       memset(&fsid, 0, sizeof(fsid));
     }
+
+    //
     explicit Incremental(bufferlist &bl) {
       bufferlist::iterator p = bl.begin();
       decode(p);
@@ -235,10 +237,12 @@ private:
   ceph::shared_ptr< map<pg_t,int32_t > > primary_temp;  // temp primary mapping (e.g. while we rebuild)
   ceph::shared_ptr< vector<__u32> > osd_primary_affinity; ///< 16.16 fixed point, 0x10000 = baseline
 
-  //pool id号与pool之间的映射
+  //pool id号与pool之间的映射(osdmap中所有的pool)
   map<int64_t,pg_pool_t> pools;
+  //pool-id与pool名称之间的映射
   map<int64_t,string> pool_name;
   map<string,map<string,string> > erasure_code_profiles;
+  //构造的数据，通过pool_name构造一个反向映射name_pool
   map<string,int64_t> name_pool;
 
   ceph::shared_ptr< vector<uuid_d> > osd_uuid;

@@ -41,7 +41,7 @@ class Messenger;
 struct Connection : public RefCountedObject {
   mutable Mutex lock;
   Messenger *msgr;
-  RefCountedObject *priv;
+  RefCountedObject *priv;//连接关联的私有数据，一般存放session
   int peer_type;
   entity_addr_t peer_addr;
   utime_t last_keepalive, last_keepalive_ack;

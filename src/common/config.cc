@@ -773,6 +773,7 @@ void md_config_t::call_all_observers()
   }
 }
 
+//修改配置
 int md_config_t::injectargs(const std::string& s, std::ostream *oss)
 {
   int ret;

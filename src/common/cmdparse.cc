@@ -206,6 +206,8 @@ void cmdmap_dump(const cmdmap_t &cmdmap, Formatter *f)
  * 'ss' captures any errors during JSON parsing; if function returns
  * false, ss is valid */
 
+//将多行字符串拼接起来，构成一个Json串，然后将json串执行解析，将其
+//包含的数据组装成map样式,并返回
 bool
 cmdmap_from_json(vector<string> cmd, map<string, cmd_vartype> *mapp, stringstream &ss)
 {
@@ -218,8 +220,11 @@ cmdmap_from_json(vector<string> cmd, map<string, cmd_vartype> *mapp, stringstrea
     fullcmd += *it;
 
   try {
+	//解析Json串格式失败
     if (!json_spirit::read(fullcmd, v))
       throw runtime_error("unparseable JSON " + fullcmd);
+
+    //错误的格式，非json对象
     if (v.type() != json_spirit::obj_type)
       throw(runtime_error("not JSON object " + fullcmd));
 
@@ -235,10 +240,10 @@ cmdmap_from_json(vector<string> cmd, map<string, cmd_vartype> *mapp, stringstrea
       // already, but it's not public.  Oh well.
 
       switch (it->second.type()) {
-
+      //不能再是对象了
       case json_spirit::obj_type:
       default:
-	throw(runtime_error("JSON array/object not allowed " + fullcmd));
+	    throw(runtime_error("JSON array/object not allowed " + fullcmd));
         break;
 
       case json_spirit::array_type:
@@ -250,13 +255,15 @@ cmdmap_from_json(vector<string> cmd, map<string, cmd_vartype> *mapp, stringstrea
 	    // if an empty array is acceptable, the caller should always check for
 	    // vector<string> if the expected value of "vector<int64_t>" in the
 	    // cmdmap is missing.
-	    (*mapp)[it->first] = vector<string>();
+	    (*mapp)[it->first] = vector<string>();//处理为空串
 	  } else if (spvals.front().type() == json_spirit::str_type) {
 	    vector<string> outv;
 	    for (const auto& sv : spvals) {
 	      if (sv.type() != json_spirit::str_type) {
-		throw(runtime_error("Can't handle arrays of multiple types"));
+		    throw(runtime_error("Can't handle arrays of multiple types"));
 	      }
+
+	      //处理为字符串数组
 	      outv.push_back(sv.get_str());
 	    }
 	    (*mapp)[it->first] = std::move(outv);
@@ -264,8 +271,10 @@ cmdmap_from_json(vector<string> cmd, map<string, cmd_vartype> *mapp, stringstrea
 	    vector<int64_t> outv;
 	    for (const auto& sv : spvals) {
 	      if (spvals.front().type() != json_spirit::int_type) {
-		throw(runtime_error("Can't handle arrays of multiple types"));
+		    throw(runtime_error("Can't handle arrays of multiple types"));
 	      }
+
+	      //处理为整型数组
 	      outv.push_back(sv.get_int64());
 	    }
 	    (*mapp)[it->first] = std::move(outv);

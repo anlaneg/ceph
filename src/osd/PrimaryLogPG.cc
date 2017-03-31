@@ -6616,7 +6616,9 @@ int PrimaryLogPG::prepare_transaction(OpContext *ctx)
   }
 
   // prepare the actual mutation
-  int result = do_osd_ops(ctx, ctx->ops);//这是一个异常复杂的函数
+  //这是一个异常复杂的函数,主要是将osdc端发送过来的
+  //消息转换为os层可以处理的transaction
+  int result = do_osd_ops(ctx, ctx->ops);
   if (result < 0) {
     if (ctx->op->may_write() &&
 	get_osdmap()->test_flag(CEPH_OSDMAP_REQUIRE_KRAKEN)) {

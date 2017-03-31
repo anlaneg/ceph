@@ -40,6 +40,7 @@ class MOSDMap : public Message {
         (e == 0 || i->first < e)) e = i->first;
     return e;
   }
+
   //找最大的epoch
   epoch_t get_last() const {
     epoch_t e = 0;
@@ -50,9 +51,11 @@ class MOSDMap : public Message {
         (e == 0 || i->first > e)) e = i->first;
     return e;
   }
+
   epoch_t get_oldest() {
     return oldest_map;
   }
+
   epoch_t get_newest() {
     return newest_map;
   }

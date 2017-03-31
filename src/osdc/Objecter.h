@@ -1148,7 +1148,7 @@ public:
   using Dispatcher::cct;
   std::multimap<string,string> crush_location;
 
-  atomic_t initialized;
+  atomic_t initialized;//标记是否已初始化
 
 private:
   atomic64_t last_tid;
