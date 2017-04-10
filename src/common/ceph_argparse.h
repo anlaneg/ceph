@@ -38,7 +38,7 @@ public:
   explicit CephInitParameters(uint32_t module_type_);
   std::list<std::string> get_conf_files() const;//无人调用,也没有实现.
 
-  uint32_t module_type;//模块类型,osd,mds,client?等
+  uint32_t module_type;//模块类型,osd,mds,client?等（与name中的type相同）
   EntityName name;//详细设置其类型及id
 };
 

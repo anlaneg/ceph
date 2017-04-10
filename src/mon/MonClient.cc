@@ -65,6 +65,7 @@ MonClient::~MonClient()
 {
 }
 
+//构造monitor map表
 int MonClient::build_initial_monmap()
 {
   ldout(cct, 10) << __func__ << dendl;

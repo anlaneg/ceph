@@ -2662,8 +2662,10 @@ static CephContext *rados_create_cct(const char * const clustername,
 {
   // missing things compared to global_init:
   // g_ceph_context, g_conf, g_lockdep, signal handlers
+  //代码环境为库
   CephContext *cct = common_preinit(*iparams, CODE_ENVIRONMENT_LIBRARY, 0);
   if (clustername)
+	//更新集群名称
     cct->_conf->cluster = clustername;
   cct->_conf->parse_env(); // environment variables override
   cct->_conf->apply_changes(NULL);
@@ -2694,19 +2696,23 @@ extern "C" int rados_create(rados_t *pcluster, const char * const id)
 // 3) flags is for future expansion (maybe some of the global_init()
 //    behavior is appropriate for some consumers of librados, for instance)
 
+//创建rados_t
 extern "C" int rados_create2(rados_t *pcluster, const char *const clustername,
 			     const char * const name, uint64_t flags)
 {
   // client is assumed, but from_str will override
   int retval = 0;
   CephInitParameters iparams(CEPH_ENTITY_TYPE_CLIENT);
+  //通过name更新iparams.name中的所有字段
   if (!name || !iparams.name.from_str(name)) {
     retval = -EINVAL;
   }
 
+  //创建ceph上下文
   CephContext *cct = rados_create_cct(clustername, &iparams);
   tracepoint(librados, rados_create2_enter, clustername, name, flags);
   if (retval == 0) {
+	//初始化RadosClient
     *pcluster = reinterpret_cast<rados_t>(new librados::RadosClient(cct));
   }
   tracepoint(librados, rados_create2_exit, retval, *pcluster);
@@ -2719,6 +2725,7 @@ extern "C" int rados_create2(rados_t *pcluster, const char *const clustername,
  * already called global_init and want to use that particular configuration for
  * their cluster.
  */
+//通过cephcontext类型来初始化，rados_t
 extern "C" int rados_create_with_context(rados_t *pcluster, rados_config_t cct_)
 {
   CephContext *cct = (CephContext *)cct_;
@@ -2731,6 +2738,7 @@ extern "C" int rados_create_with_context(rados_t *pcluster, rados_config_t cct_)
   return 0;
 }
 
+//通过rados获取rados_config_t也即是cephcontext
 extern "C" rados_config_t rados_cct(rados_t cluster)
 {
   tracepoint(librados, rados_cct_enter, cluster);
@@ -2744,7 +2752,7 @@ extern "C" int rados_connect(rados_t cluster)
 {
   tracepoint(librados, rados_connect_enter, cluster);
   librados::RadosClient *client = (librados::RadosClient *)cluster;
-  int retval = client->connect();
+  int retval = client->connect();//处理连接
   tracepoint(librados, rados_connect_exit, retval);
   return retval;
 }

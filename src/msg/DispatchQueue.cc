@@ -36,6 +36,7 @@ double DispatchQueue::get_max_age(utime_t now) const {
     return (now - marrival.begin()->first);
 }
 
+//返回此消息对应的dispatch_throttle_size
 uint64_t DispatchQueue::pre_dispatch(Message *m)
 {
   ldout(cct,1) << "<== " << m->get_source_inst()
@@ -49,11 +50,13 @@ uint64_t DispatchQueue::pre_dispatch(Message *m)
 	       << " " << m->get_footer().data_crc << ")"
 	       << " " << m << " con " << m->get_connection()
 	       << dendl;
+  //关于清掉的解析见注释
   uint64_t msize = m->get_dispatch_throttle_size();
   m->set_dispatch_throttle_size(0); // clear it out, in case we requeue this message.
   return msize;
 }
 
+//分发完成后处理（释放对分发资源的占用）
 void DispatchQueue::post_dispatch(Message *m, uint64_t msize)
 {
   dispatch_throttle_release(msize);
@@ -77,6 +80,7 @@ void DispatchQueue::fast_preprocess(Message *m)
   msgr->ms_fast_preprocess(m);
 }
 
+//入队，消息，优先级，连接id(按连接分类，每个连接是一类）
 void DispatchQueue::enqueue(Message *m, int priority, uint64_t id)
 {
 
@@ -84,9 +88,11 @@ void DispatchQueue::enqueue(Message *m, int priority, uint64_t id)
   ldout(cct,20) << "queue " << m << " prio " << priority << dendl;
   add_arrival(m);
   if (priority >= CEPH_MSG_PRIO_LOW) {
+	//严格按优先级大小入队
     mqueue.enqueue_strict(
         id, priority, QueueItem(m));
   } else {
+	//普通的考虑优先级及花费出入队
     mqueue.enqueue(
         id, priority, m->get_cost(), QueueItem(m));
   }
@@ -129,6 +135,7 @@ void DispatchQueue::run_local_delivery()
   local_delivery_lock.Unlock();
 }
 
+//释放分发资源
 void DispatchQueue::dispatch_throttle_release(uint64_t msize)
 {
   if (msize) {

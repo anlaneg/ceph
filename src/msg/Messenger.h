@@ -143,7 +143,7 @@ public:
       cct(cct_),
       crcflags(get_default_crc_flags(cct->_conf))
   {
-    my_inst.name = w;
+    my_inst.name = w;//实例的类型及其编号
   }
   virtual ~Messenger() {}
 
@@ -369,6 +369,7 @@ public:
     bool first = dispatchers.empty();
     dispatchers.push_front(d);
     if (d->ms_can_fast_dispatch_any())
+    	  //如果此dispatch可以快速分发所有消息，则将其加入到fast_dispatchers的头部
       fast_dispatchers.push_front(d);
     if (first)
       ready();
@@ -385,6 +386,7 @@ public:
     bool first = dispatchers.empty();
     dispatchers.push_back(d);
     if (d->ms_can_fast_dispatch_any())
+    	  //如果此dispatcher可以快速分发所有消息，则加入到fast_dispatchers
       fast_dispatchers.push_back(d);
     if (first)
       ready();
@@ -549,6 +551,7 @@ public:
    *
    * @param m The Message we are testing.
    */
+  //检查此消息是否可被快速分发
   bool ms_can_fast_dispatch(const Message *m) {
     for (list<Dispatcher*>::iterator p = fast_dispatchers.begin();
 	 p != fast_dispatchers.end();
@@ -566,6 +569,7 @@ public:
    * of one reference to it.
    * If none of our Dispatchers can handle it, ceph_abort().
    */
+  //采用快速分发的方式处理此消息，如果此消息不能被快速分发，则挂掉
   void ms_fast_dispatch(Message *m) {
     m->set_dispatch_stamp(ceph_clock_now());
     for (list<Dispatcher*>::iterator p = fast_dispatchers.begin();
@@ -597,7 +601,9 @@ public:
    *  one reference to it.
    */
   void ms_deliver_dispatch(Message *m) {
+	//设置消息被分发时的时间
     m->set_dispatch_stamp(ceph_clock_now());
+    //遍历所有dispatchers列表中所有成员，尝试分发此消息
     for (list<Dispatcher*>::iterator p = dispatchers.begin();
 	 p != dispatchers.end();
 	 ++p) {
@@ -605,6 +611,7 @@ public:
       if ((*p)->ms_dispatch(m))
 	    return;
     }
+    //此消息无法被分发。
     lsubdout(cct, ms, 0) << "ms_deliver_dispatch: unhandled message " << m << " " << *m << " from "
 			 << m->get_source_inst() << dendl;
     assert(!cct->_conf->ms_die_on_unhandled_msg);

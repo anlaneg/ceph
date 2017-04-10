@@ -432,7 +432,7 @@ void MonMap::set_initial_members(CephContext *cct,
   }
 }
 
-
+//monitor map初始化构造
 int MonMap::build_initial(CephContext *cct, ostream& errout)
 {
   const md_config_t *conf = cct->_conf;

@@ -65,12 +65,12 @@ bool librados::RadosClient::ms_get_authorizer(int dest_type,
 }
 
 librados::RadosClient::RadosClient(CephContext *cct_)
-  : Dispatcher(cct_->get()),
+  : Dispatcher(cct_->get()),//注入cct,注入时增加引数
     cct_deleter{cct_, [](CephContext *p) {p->put();}},
     conf(cct_->_conf),
-    state(DISCONNECTED),
-    monclient(cct_),
-    mgrclient(cct_, nullptr),
+    state(DISCONNECTED),//置初始状态为未连接
+    monclient(cct_),//构造和monitor打交道的client
+    mgrclient(cct_, nullptr),//构造与mrg打交道的client
     messenger(NULL),
     instance_id(0),
     objecter(NULL),
@@ -242,10 +242,10 @@ int librados::RadosClient::connect()
 
   // already connected?
   if (state == CONNECTING)
-    return -EINPROGRESS;
+    return -EINPROGRESS;//已经在处理了
   if (state == CONNECTED)
-    return -EISCONN;
-  state = CONNECTING;
+    return -EISCONN;//已经连接上了
+  state = CONNECTING;//开始连接
 
   // get monmap
   err = monclient.build_initial_monmap();
@@ -253,6 +253,7 @@ int librados::RadosClient::connect()
     goto out;
 
   err = -ENOMEM;
+  //构造消息收发员
   messenger = Messenger::create_client_messenger(cct, "radosclient");
   if (!messenger)
     goto out;
@@ -313,12 +314,12 @@ int librados::RadosClient::connect()
   objecter->start();
   lock.Lock();
 
-  timer.init();
+  timer.init();//定时器启动
 
   finisher.start();
 
-  state = CONNECTED;
-  instance_id = monclient.get_global_id();
+  state = CONNECTED;//置为connected状态
+  instance_id = monclient.get_global_id();//填充自身id号
 
   lock.Unlock();
 

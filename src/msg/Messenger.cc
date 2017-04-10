@@ -12,6 +12,7 @@
 #include "msg/xio/XioMessenger.h"
 #endif
 
+//创建client用的消息投递对象
 Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
 {
   std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf->ms_type : cct->_conf->ms_public_type;
@@ -21,6 +22,7 @@ Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
 			   std::move(lname), nonce, 0);
 }
 
+//创建消息投递对象（入口）
 Messenger *Messenger::create(CephContext *cct, const string &type,
 			     entity_name_t name, string lname,
 			     uint64_t nonce, uint64_t cflags)
@@ -39,7 +41,7 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
   //simple消息
   if (r == 0 || type == "simple")
     return new SimpleMessenger(cct, name, std::move(lname), nonce);
-  //async消息
+  //async消息（type中含用async字样，当前默认是async消息类型）
   else if (r == 1 || type.find("async") != std::string::npos)
     return new AsyncMessenger(cct, name, type, std::move(lname), nonce);
 #ifdef HAVE_XIO

@@ -65,7 +65,7 @@ private:
   void ms_handle_remote_reset(Connection *con) override;
   bool ms_handle_refused(Connection *con) override;
 
-  Objecter *objecter;
+  Objecter *objecter;//通过此对象与osd通信
 
   Mutex lock;
   Cond cond;

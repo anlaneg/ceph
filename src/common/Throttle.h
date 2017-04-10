@@ -25,18 +25,15 @@ class PerfCounters;
  * excessive requests for more of them are delayed, until some slots are put
  * back, so @p get_current() drops below the limit after fulfills the requests.
  */
-//这个类比较不好理解
-//首先我们说最简单的情况:
-//Throttle看成一个队列,put向队列里放数据,每次放k个,一经放入即通过条件变量唤醒wait线程
-//wait监听队列,在队列的数据量少于m时,阻塞当前线程,当大于m时,放通当前线程.(_should_wait来解决这个逻辑)
-//take 类似于put,但其不进行唤醒.
+//Throttle用于管理资源，通过get检查是否可占用资源，get遇到不可占用资源时，会主动阻塞
+//并等待资源满足，通过take直接占用资源，通过put归还资源
 class Throttle {
   CephContext *cct;
   const std::string name;
   PerfCounters *logger;
-  ceph::atomic_t count, max;
+  ceph::atomic_t count, max;//占用值，最大可用值（max为0时表示禁用）
   Mutex lock;
-  list<Cond*> cond;
+  list<Cond*> cond;//条件变更列表，在各自变量上阻塞
   const bool use_perf;
 
 public:
@@ -45,14 +42,16 @@ public:
 
 private:
   void _reset_max(int64_t m);
-  //如果最大值为0,则返回false,否则,检查当前计数是否小于m,如果小于m,则当前计数+c后如果大于m将返回true
-  //如果c>m时,cur>m时返回true(这句的目的是?)
+
+  //检查c是否需要等待才能满足
   bool _should_wait(int64_t c) const {
     int64_t m = max.read();
     int64_t cur = count.read();
     return
-      m &&
+      m && //m不能为0，0时表示禁用本功能
+	  //普通情况，c一定小于m
       ((c <= m && cur + c > m) || // normally stay under max
+    	  //特殊情况，c比m还要大，这种除非cur>m否则放通
        (c >= m && cur > m));     // except for large c
   }
 

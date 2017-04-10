@@ -688,6 +688,7 @@ int md_config_t::parse_injectargs(std::vector<const char*>& args,
   return ret;
 }
 
+//如是集群名称已设置，则触发集群配置变更通知
 void md_config_t::apply_changes(std::ostream *oss)
 {
   Mutex::Locker l(lock);

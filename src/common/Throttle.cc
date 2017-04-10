@@ -84,31 +84,38 @@ Throttle::~Throttle()
 void Throttle::_reset_max(int64_t m)
 {
   assert(lock.is_locked());
+  //检查是否有必要变更max取值
   if ((int64_t)max.read() == m)
     return;
+
+  //cond队列不为空，取第一个条件变量，并唤醒第一个等待此条件变量的
   if (!cond.empty())
     cond.front()->SignalOne();
+
   if (logger)
     logger->set(l_throttle_max, m);
+  //重置max
   max.set((size_t)m);
 }
 
-//检查c是否满足_should_wait,如果不满足,返回false
-//否则在本函数内阻塞直到满足_should_wait,并返回true
+//尝试着检查c是否可通过，如果不能通过，就等待，返回值用于表示
+//是否经历了等待
 bool Throttle::_wait(int64_t c)
 {
   utime_t start;
   bool waited = false;
+  //检查c是否需要等待，如果不需要等待，但cond不为空，也认为需要等待
   if (_should_wait(c) || !cond.empty()) { // always wait behind other waiters.
     Cond *cv = new Cond;
     cond.push_back(cv);
-    waited = true;
+    waited = true;//指明需要等待
     ldout(cct, 2) << "_wait waiting..." << dendl;
     if (logger)
       start = ceph_clock_now();
 
     do {
-      cv->Wait(lock);
+      cv->Wait(lock);//阻塞，等待被唤醒
+      //被唤配，再检查是否仍需要阻塞（需要等或者自已需要等排在自已前面的人出队后再处理）
     } while (_should_wait(c) || cv != cond.front());
 
     ldout(cct, 2) << "_wait finished waiting" << dendl;
@@ -117,17 +124,21 @@ bool Throttle::_wait(int64_t c)
       logger->tinc(l_throttle_wait, dur);
     }
 
+    //自已已被唤醒，删除自已等的条件变量
     delete cv;
-    cond.pop_front();
+    cond.pop_front();//一定是自已（唤醒时检查过了）
 
     // wake up the next guy
     if (!cond.empty())
+    	  //给后面的兄弟知会一声，让它也去检查，看能不能出
       cond.front()->SignalOne();
   }
+  //返回是否进行过等待
   return waited;
 }
 
-//重置m,并强制等.
+//重置m,并尝试着唤醒等待者，采用_wait(0)
+//检查自身是否等待（防止在自已前面有人等待）
 bool Throttle::wait(int64_t m)
 {
   if (0 == max.read() && 0 == m) {
@@ -143,7 +154,7 @@ bool Throttle::wait(int64_t m)
   return _wait(0);
 }
 
-//为当前值加c
+//增加占用数
 int64_t Throttle::take(int64_t c)
 {
   if (0 == max.read()) {
@@ -153,17 +164,19 @@ int64_t Throttle::take(int64_t c)
   ldout(cct, 10) << "take " << c << dendl;
   {
     Mutex::Locker l(lock);
-    count.add(c);
+    count.add(c);//增加
   }
   if (logger) {
     logger->inc(l_throttle_take);
     logger->inc(l_throttle_take_sum, c);
     logger->set(l_throttle_val, count.read());
   }
+  //返回增加后的计数
   return count.read();
 }
 
-//检查c是否可以支出,如果可以支出,则更新当前count值.
+//检查c是否可以支出,如果可以支出,则更新当前count值.(m用于更新max)
+//返回是否经历了等待，true经历了，false未经历
 bool Throttle::get(int64_t c, int64_t m)
 {
   if (0 == max.read() && 0 == m) {
@@ -178,12 +191,13 @@ bool Throttle::get(int64_t c, int64_t m)
   bool waited = false;
   {
     Mutex::Locker l(lock);
+    //检查是否要变更max
     if (m) {
       assert(m > 0);
       _reset_max(m);
     }
     waited = _wait(c);
-    count.add(c);
+    count.add(c);//增加占用值
   }
   if (logger) {
     logger->inc(l_throttle_get);
@@ -199,12 +213,14 @@ bool Throttle::get(int64_t c, int64_t m)
 //如果c可满足,则返回true,否则不阻塞并返回false
 bool Throttle::get_or_fail(int64_t c)
 {
+  //0表示禁用此功能
   if (0 == max.read()) {
     return true;
   }
 
   assert (c >= 0);
   Mutex::Locker l(lock);
+  //如果需要等待，则返回false
   if (_should_wait(c) || !cond.empty()) {
     ldout(cct, 10) << "get_or_fail " << c << " failed" << dendl;
     if (logger) {
@@ -212,6 +228,7 @@ bool Throttle::get_or_fail(int64_t c)
     }
     return false;
   } else {
+	//不需要等待，增加计数
     ldout(cct, 10) << "get_or_fail " << c << " success (" << count.read() << " -> " << (count.read() + c) << ")" << dendl;
     count.add(c);
     if (logger) {
@@ -226,6 +243,7 @@ bool Throttle::get_or_fail(int64_t c)
 
 int64_t Throttle::put(int64_t c)
 {
+  //为0时，表示禁用Throttle
   if (0 == max.read()) {
     return 0;
   }
@@ -235,18 +253,21 @@ int64_t Throttle::put(int64_t c)
   Mutex::Locker l(lock);
   if (c) {
     if (!cond.empty())
+    	  //因为每个cond只有一个等待者，故只需要唤醒一个
       cond.front()->SignalOne();
+    //count一定大于等于c
     assert(((int64_t)count.read()) >= c); //if count goes negative, we failed somewhere!
-    count.sub(c);
+    count.sub(c);//归还占用量
     if (logger) {
       logger->inc(l_throttle_put);
       logger->inc(l_throttle_put_sum, c);
       logger->set(l_throttle_val, count.read());
     }
   }
-  return count.read();
+  return count.read();//返回当前占用量
 }
 
+//唤醒并清空所有等待者
 void Throttle::reset()
 {
   Mutex::Locker l(lock);

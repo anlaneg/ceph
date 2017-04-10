@@ -27,6 +27,7 @@ class AuthAuthorizer;
 class CryptoKey;
 class CephContext;
 
+//消息分发基础类
 class Dispatcher {
 public:
   explicit Dispatcher(CephContext *cct_)
@@ -39,9 +40,11 @@ public:
    * The Messenger calls this function to query if you are capable
    * of "fast dispatch"ing a message. Indicating that you can fast
    * dispatch it requires that you:
+   * 快速分发一个消息，需要满足以下条件
    * 1) Handle the Message quickly and without taking long-term contended
    * locks. (This function is likely to be called in-line with message
    * receipt.)
+   * 1。处理消息快，不会出现长时间的锁竞争
    * 2) Be able to accept the Message even if you have not yet received
    * an ms_handle_accept() notification for the Connection it is associated
    * with, and even if you *have* called mark_down() or received an
@@ -59,6 +62,7 @@ public:
    * @param m The message we want to fast dispatch.
    * @returns True if the message can be fast dispatched; false otherwise.
    */
+  //针对消息检查是否支持快速转发。默认不支持快速转发
   virtual bool ms_can_fast_dispatch(const Message *m) const { return false;}
   /**
    * This function determines if a dispatcher is included in the
@@ -66,6 +70,7 @@ public:
    * @returns True if the Dispatcher can handle any messages via
    * fast dispatch; false otherwise.
    */
+  //针对所有消息检查是否支持快速转发。默认不支持
   virtual bool ms_can_fast_dispatch_any() const { return false; }
   /**
    * Perform a "fast dispatch" on a given message. See
@@ -73,6 +78,7 @@ public:
    *
    * @param m The Message to fast dispatch.
    */
+  //对消息m执行快速转发，默认会挂掉
   virtual void ms_fast_dispatch(Message *m) { ceph_abort(); }
   /**
    * Let the Dispatcher preview a Message before it is dispatched. This
@@ -89,6 +95,7 @@ public:
    *
    * @param m A message which has been received
    */
+  //提供对消息m在分发前，执行一次消息预览
   virtual void ms_fast_preprocess(Message *m) {}
   /**
    * The Messenger calls this function to deliver a single message.
@@ -96,6 +103,7 @@ public:
    * @param m The message being delivered. You (the Dispatcher)
    * are given a single reference count on it.
    */
+  //消息投递
   virtual bool ms_dispatch(Message *m) = 0;
 
   /**

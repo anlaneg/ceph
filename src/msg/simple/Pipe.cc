@@ -1757,6 +1757,7 @@ void Pipe::reader()
       ldout(msgr->cct,10) << "reader got message "
 	       << m->get_seq() << " " << m << " " << *m
 	       << dendl;
+      //快速预处理
       in_q->fast_preprocess(m);
 
       if (delay_thread) {
@@ -1768,6 +1769,7 @@ void Pipe::reader()
         }
         delay_thread->queue(release, m);
       } else {
+    	    //支持快速分发的，快速分发此消息
         if (in_q->can_fast_dispatch(m)) {
 	  reader_dispatching = true;
           pipe_lock.Unlock();
@@ -1780,6 +1782,7 @@ void Pipe::reader()
 	    cond.Signal();
 	  }
         } else {
+        	  //不支持快速分发的，将消息入队
           in_q->enqueue(m, m->get_priority(), conn_id);
         }
       }
@@ -2086,7 +2089,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
     ldout(msgr->cct,10) << "reader wants " << message_size << " from dispatch throttler "
 	     << in_q->dispatch_throttler.get_current() << "/"
 	     << in_q->dispatch_throttler.get_max() << dendl;
-    in_q->dispatch_throttler.get(message_size);
+    in_q->dispatch_throttler.get(message_size);//增加分发资源占用
   }
 
   utime_t throttle_stamp = ceph_clock_now();

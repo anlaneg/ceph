@@ -82,7 +82,7 @@ struct EntityName
 private:
   uint32_t type; //mds,osd等
   std::string id;//默认是admin
-  std::string type_id; //实际上是type.id
+  std::string type_id; //实际上是type.id（将type字符串化后，合上id)
 };
 
 uint32_t str_to_ceph_entity_type(const char * str);

@@ -1235,10 +1235,11 @@ public:
     }
 
     /// Create the collection
+    //构造创建collection操作
     void create_collection(const coll_t& cid, int bits) {
       Op* _op = _get_next_op();
       _op->op = OP_MKCOLL;
-      _op->cid = _get_coll_id(cid);
+      _op->cid = _get_coll_id(cid);//对应的cid
       _op->split_bits = bits;
       data.ops++;
     }

@@ -33,8 +33,8 @@ typedef uint8_t entity_type_t;
 
 class entity_name_t {
 public:
-  entity_type_t _type;
-  int64_t _num;
+  entity_type_t _type;//实体类型，如mon,mds,mgr，client,osd等
+  int64_t _num;//实体编号
 
 public:
   static const int TYPE_MON = CEPH_ENTITY_TYPE_MON;
@@ -43,7 +43,7 @@ public:
   static const int TYPE_CLIENT = CEPH_ENTITY_TYPE_CLIENT;
   static const int TYPE_MGR = CEPH_ENTITY_TYPE_MGR;
 
-  static const int64_t NEW = -1;
+  static const int64_t NEW = -1;//用来指代未分配id的
 
   // cons
   entity_name_t() : _type(0), _num(0) { }
@@ -60,12 +60,15 @@ public:
   
   int64_t num() const { return _num; }
   int type() const { return _type; }
+  //类型转字符串
   const char *type_str() const {
     return ceph_entity_type_name(type());
   }
 
+  //检查是否为NEW的id
   bool is_new() const { return num() < 0; }
 
+  //类型检测函数组
   bool is_client() const { return type() == TYPE_CLIENT; }
   bool is_mds() const { return type() == TYPE_MDS; }
   bool is_osd() const { return type() == TYPE_OSD; }
@@ -77,13 +80,17 @@ public:
     return n;
   }
 
+  //给字符串，并解析填充type,number
   bool parse(const string& s) {
     const char *start = s.c_str();
     char *end;
+    //仅完成从前向后检查
     bool got = parse(start, &end);
+    //确保长度也一致
     return got && end == start + s.length();
   }
   bool parse(const char *start, char **end) {
+	//通过strstr函数确定类型，同时start向后移
     if (strstr(start, "mon.") == start) {
       _type = TYPE_MON;
       start += 4;
@@ -100,13 +107,20 @@ public:
       _type = TYPE_MGR;
       start += 4;
     } else {
+    	  //格式不正确
       return false;
     }
+
+    //解析number
     if (isspace(*start))
+    	  //strtoll函数会跳过空字符，所以先检查
       return false;
+    //num转换
     _num = strtoll(start, end, 10);
     if (*end == NULL || *end == start)
+    	  //转换后，end仍有余值，格式有误
       return false;
+    //解析成功
     return true;
   }
 
@@ -504,7 +518,7 @@ WRITE_CLASS_ENCODER_FEATURES(entity_addrvec_t);
 struct entity_inst_t {
   entity_name_t name;
   entity_addr_t addr;
-  entity_inst_t() {}
+  entity_inst_t() {}//提供了有参构造，还要支持无参构造
   entity_inst_t(entity_name_t n, const entity_addr_t& a) : name(n), addr(a) {}
   // cppcheck-suppress noExplicitConstructor
   entity_inst_t(const ceph_entity_inst& i) : name(i.name), addr(i.addr) { }

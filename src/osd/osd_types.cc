@@ -519,13 +519,11 @@ unsigned pg_t::get_split_bits(unsigned pg_num) const {
   assert(pg_num > 1);
 
   // Find unique p such that pg_num \in [2^(p-1), 2^p)
-  //找出pg_num所在的区间,这个区间可以采用p来表式成范围:[2^(p-1),2^p]
-  //注pg_num不能等于0,在调用此函数时.
+  //找一个唯一的p,使得[2^(p-1),2^p)这个区间里，能包含pg_num
+  //由以上定义可知，pg_num必须是非0的数
   unsigned p = cbits(pg_num);
   assert(p); // silence coverity #751330 
 
-  //m_seed % (2^(p-1))
-  //m_seed的意义要搞清楚.
   if ((m_seed % (1<<(p-1))) < (pg_num % (1<<(p-1))))
     return p;
   else

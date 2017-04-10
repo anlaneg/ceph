@@ -3333,6 +3333,7 @@ OSD::res_result OSD::_try_resurrect_pg(
       break;
     cur = cur.get_parent();
   }
+  //给定的pgid及其对应的父pgid均没有执行删除操作
   if (!df)
     return RES_NONE; // good to go
 
@@ -3755,7 +3756,8 @@ void OSD::handle_pg_peering_evt(
   epoch_t epoch,
   PG::CephPeeringEvtRef evt)
 {
-  if (service.splitting(pgid)) {//如果pg正在分裂,则将此事件添加至等待队列.
+  if (service.splitting(pgid)) {
+	//如果pg正在分裂,则将此事件添加至等待队列.
     peering_wait_for_split[pgid].push_back(evt);
     return;
   }
@@ -3789,6 +3791,7 @@ void OSD::handle_pg_peering_evt(
     }
 
     // do we need to resurrect a deleting pg?
+    //防止我们正在恢复一个处于删除过程的pg
     spg_t resurrected;
     PGRef old_pg_state;
     res_result result = _try_resurrect_pg(//常返回RES_NONE(检查此pg是否正在删除)
@@ -3801,7 +3804,8 @@ void OSD::handle_pg_peering_evt(
     switch (result) {
     case RES_NONE: {
       const pg_pool_t* pp = osdmap->get_pg_pool(pgid.pool());//其对应的pool
-      PG::_create(*rctx.transaction, pgid, pgid.get_split_bits(pp->get_pg_num()));//创建操作添加至事务里
+      //创建对应的collect,将创建操作添加至事务里
+      PG::_create(*rctx.transaction, pgid, pgid.get_split_bits(pp->get_pg_num()));
       PG::_init(*rctx.transaction, pgid, pp);
 
       int role = osdmap->calc_pg_role(whoami, acting, acting.size());

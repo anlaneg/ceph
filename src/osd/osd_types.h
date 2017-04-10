@@ -487,7 +487,7 @@ struct spg_t {
   unsigned get_split_bits(unsigned pg_num) const {
     return pgid.get_split_bits(pg_num);
   }
-  //父与其相比pgid中m_seed的最高位小一个1
+  //父与其相比pgid中m_seed的最高位少一个1
   spg_t get_parent() const {
     return spg_t(pgid.get_parent(), shard);
   }

@@ -30,12 +30,13 @@ namespace ceph {
  * In order to provide optimized code, be sure to declare all
  * virutal functions as final in the derived class.
  */
-
+//针对队列操作提供抽象类
 template <typename T, typename K>
 class OpQueue {
 
   public:
     // How many Ops are in the queue
+	//返回队列中的ops数量
     virtual unsigned length() const = 0;
     // Ops will be removed f evaluates to true, f may have sideeffects
     virtual void remove_by_filter(
@@ -51,8 +52,10 @@ class OpQueue {
     // Enqueue the op in the front of the regular queue
     virtual void enqueue_front(K cl, unsigned priority, unsigned cost, T item) = 0;
     // Returns if the queue is empty
+    //队列是否为空
     virtual bool empty() const = 0;
     // Return an op to be dispatch
+    //出队
     virtual T dequeue() = 0;
     // Formatted output of the queue
     virtual void dump(ceph::Formatter *f) const = 0;

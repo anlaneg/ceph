@@ -72,7 +72,7 @@ CephContext *common_preinit(const CephInitParameters &iparams,
     break;
 
   case CODE_ENVIRONMENT_UTILITY_NODOUT:
-  case CODE_ENVIRONMENT_LIBRARY:
+  case CODE_ENVIRONMENT_LIBRARY://库类型的默认配置
     conf->set_val_or_die("log_to_stderr", "false");
     conf->set_val_or_die("err_to_stderr", "false");
     conf->set_val_or_die("log_flush_on_exit", "false");
