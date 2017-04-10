@@ -1319,11 +1319,13 @@ public:
   ClassHandler  *class_handler = nullptr;
   int get_nodeid() { return whoami; }
   
+  //构造osdmap的对象名
   static ghobject_t get_osdmap_pobject_name(epoch_t epoch) {
     char foo[20];
     snprintf(foo, sizeof(foo), "osdmap.%d", epoch);
     return ghobject_t(hobject_t(sobject_t(object_t(foo), 0)));
   }
+  //构造osdmap的增量形式对象名
   static ghobject_t get_inc_osdmap_pobject_name(epoch_t epoch) {
     char foo[22];
     snprintf(foo, sizeof(foo), "inc_osdmap.%d", epoch);

@@ -1675,6 +1675,7 @@ void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
   }
 }
 
+//应用osd亲昵性
 void OSDMap::_apply_primary_affinity(ps_t seed,
 				     const pg_pool_t& pool,
 				     vector<int> *osds,
@@ -1685,6 +1686,7 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
   if (!osd_primary_affinity)
     return;
 
+  //如果记录是有效的，且osd主亲昵性
   bool any = false;
   for (vector<int>::const_iterator p = osds->begin(); p != osds->end(); ++p) {
     if (*p != CRUSH_ITEM_NONE &&
@@ -1703,6 +1705,7 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
   for (unsigned i = 0; i < osds->size(); ++i) {
     int o = (*osds)[i];
     if (o == CRUSH_ITEM_NONE)
+    	  //无效记录，找下一个
       continue;
     unsigned a = (*osd_primary_affinity)[o];
     if (a < CEPH_OSD_MAX_PRIMARY_AFFINITY &&
@@ -1710,18 +1713,20 @@ void OSDMap::_apply_primary_affinity(ps_t seed,
 			seed, o) >> 16) >= a) {
       // we chose not to use this primary.  note it anyway as a
       // fallback in case we don't pick anyone else, but keep looking.
+    	  // 这个不能是primary,但需要考虑它是否第一个，如果它是第一个，则更新
       if (pos < 0)
-	pos = i;
+	    pos = i;
     } else {
       pos = i;
       break;
     }
   }
   if (pos < 0)
-    return;
+    return;//没有选出
 
   *primary = (*osds)[pos];
 
+  //可以移动的，将primary放在0位置上
   if (pool.can_shift_osds() && pos > 0) {
     // move the new primary to the front.
     for (int i = pos; i > 0; --i) {
@@ -1776,6 +1781,7 @@ void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
   }
 }
 
+//由pg生成raw集，及primary
 int OSDMap::pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const
 {
   *primary = -1;
@@ -1787,6 +1793,7 @@ int OSDMap::pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const
   return r;
 }
 
+//由pg生成up集及primary
 void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
 {
   const pg_pool_t *pool = get_pg_pool(pg.pool());

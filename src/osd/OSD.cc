@@ -6736,7 +6736,7 @@ void OSD::wait_for_new_map(OpRequestRef op)
 /** update_map
  * assimilate new OSDMap(s).  scan pgs, etc.
  */
-
+//处理peer down
 void OSD::note_down_osd(int peer)
 {
   assert(osd_lock.is_locked());
@@ -6889,6 +6889,7 @@ void OSD::handle_osd_map(MOSDMap *m)
   logger->inc(l_osd_mape, last - first + 1);
   if (first <= superblock.newest_map)
     logger->inc(l_osd_mape_dup, superblock.newest_map - first + 1);
+  //更新最大的旧版本号
   if (service.max_oldest_map < m->oldest_map) {
     service.max_oldest_map = m->oldest_map;
     assert(service.max_oldest_map >= superblock.oldest_map);
@@ -6896,7 +6897,8 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // make sure there is something new, here, before we bother flushing
   // the queues and such
-  if (last <= superblock.newest_map) {//不如superblock中的新,这个消息对我们没有什么用.
+  if (last <= superblock.newest_map) {
+	//不如superblock中的新,这个消息对我们没有什么用.
     dout(10) << " no new maps here, dropping" << dendl;
     m->put();
     return;
@@ -6935,23 +6937,27 @@ void OSD::handle_osd_map(MOSDMap *m)
   uint64_t txn_size = 0;
 
   // store new maps: queue for disk and put in the osdmap cache
+  //从我们需要的版本开始，一直遍历到消息提供给我们的最大版本
   epoch_t start = MAX(superblock.newest_map + 1, first);
   for (epoch_t e = start; e <= last; e++) {
     if (txn_size >= t.get_num_bytes()) {
       derr << __func__ << " transaction size overflowed" << dendl;
+      //故意挂掉
       assert(txn_size < t.get_num_bytes());
     }
     txn_size = t.get_num_bytes();
     map<epoch_t,bufferlist>::iterator p;
     p = m->maps.find(e);
     if (p != m->maps.end()) {
+    	  //要求的e版本存在full方式的map
       dout(10) << "handle_osd_map  got full map for epoch " << e << dendl;
       OSDMap *o = new OSDMap;
       bufferlist& bl = p->second;
 
-      o->decode(bl);
+      o->decode(bl);//将此版本解码
 
       ghobject_t fulloid = get_osdmap_pobject_name(e);
+      //告知事务，需要写些文件写入
       t.write(coll_t::meta(), fulloid, 0, bl.length(), bl);
       pin_map_bl(e, bl);//加入bl缓存
       pinned_maps.push_back(add_map(o));//加入osdmap缓存
@@ -6960,14 +6966,17 @@ void OSD::handle_osd_map(MOSDMap *m)
       continue;
     }
 
+
     p = m->incremental_maps.find(e);
     if (p != m->incremental_maps.end()) {
+    	//要求的e版本存在full方式的map
       dout(10) << "handle_osd_map  got inc map for epoch " << e << dendl;
       bufferlist& bl = p->second;
       ghobject_t oid = get_inc_osdmap_pobject_name(e);
       t.write(coll_t::meta(), oid, 0, bl.length(), bl);
       pin_map_inc_bl(e, bl);
 
+      //先生成一个全量map，然后在其上加上增量补丁，形成一个完整的osdmap
       OSDMap *o = new OSDMap;
       if (e > 1) {
 	bufferlist obl;
@@ -6987,6 +6996,7 @@ void OSD::handle_osd_map(MOSDMap *m)
       bufferlist fbl;
       o->encode(fbl, inc.encode_features | CEPH_FEATURE_RESERVED);
 
+      //测试代码
       bool injected_failure = false;
       if (cct->_conf->osd_inject_bad_map_crc_probability > 0 &&
 	  (rand() % 10000) < cct->_conf->osd_inject_bad_map_crc_probability*10000.0) {
@@ -6994,6 +7004,7 @@ void OSD::handle_osd_map(MOSDMap *m)
 	injected_failure = true;
       }
 
+      //crc校验失败，处理
       if ((inc.have_crc && o->get_crc() != inc.full_crc) || injected_failure) {
 	dout(2) << "got incremental " << e
 		<< " but failed to encode full with correct crc; requesting"
@@ -7009,6 +7020,7 @@ void OSD::handle_osd_map(MOSDMap *m)
       }
       got_full_map(e);//更新请求下限
 
+      //写入全量map
       ghobject_t fulloid = get_osdmap_pobject_name(e);
       t.write(coll_t::meta(), fulloid, 0, fbl.length(), fbl);//写入硬盘
       pin_map_bl(e, fbl);
@@ -7057,8 +7069,8 @@ void OSD::handle_osd_map(MOSDMap *m)
     service.meta_osr.get(),
     std::move(t),
     new C_OnMapApply(&service, pinned_maps, last),//清空pinned集合
-    new C_OnMapCommit(this, start, last, m), 0);//osdmap写入后回调,做一些配置变更的事
-  service.publish_superblock(superblock);
+    new C_OnMapCommit(this, start, last, m), 0);//osdmap写入后回调,处理等待map的请求等。
+  service.publish_superblock(superblock);//使superblock生效
 }
 
 //当map被存储在硬盘上了,就回调此函数.
@@ -7077,6 +7089,7 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
   bool network_error = false;
 
   // advance through the new maps
+  //从first版本向last，逐个处理
   for (epoch_t cur = first; cur <= last; cur++) {
     dout(10) << " advance to epoch " << cur
 	     << " (<= last " << last
@@ -7126,7 +7139,7 @@ void OSD::_committed_osd_maps(epoch_t first, epoch_t last, MOSDMap *m)
       }
     }
 
-    osdmap = newmap;
+    osdmap = newmap;//使新osdmap生效
     epoch_t up_epoch;
     epoch_t boot_epoch;
     service.retrieve_epochs(&boot_epoch, &up_epoch, NULL);
