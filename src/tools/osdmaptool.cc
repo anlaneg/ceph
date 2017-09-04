@@ -299,16 +299,12 @@ int main(int argc, const char **argv)
     }
     uuid_d fsid;
     memset(&fsid, 0, sizeof(uuid_d));
-<<<<<<< HEAD
-    osdmap.build_simple(g_ceph_context, 0, fsid, num_osd, pg_bits, pgp_bits);//自这里开始分析
-=======
     if (createpool) {
       osdmap.build_simple_with_pool(
 	g_ceph_context, 0, fsid, num_osd, pg_bits, pgp_bits);
     } else {
       osdmap.build_simple(g_ceph_context, 0, fsid, num_osd);
     }
->>>>>>> upstream/master
     modified = true;
   }
 

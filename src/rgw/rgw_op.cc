@@ -3717,16 +3717,10 @@ void RGWPostObj::execute()
       }
     }
 
-<<<<<<< HEAD
-  while (data_pending) {
-     bufferlist data;
-     len = get_data(data);//读取客户端上传的数据
-=======
     bool again;
     do {
       ceph::bufferlist data;
-      len = get_data(data, again);
->>>>>>> upstream/master
+      len = get_data(data, again);//读取客户端上传的数据
 
       if (len < 0) {
         op_ret = len;
