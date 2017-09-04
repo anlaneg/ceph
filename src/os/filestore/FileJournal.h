@@ -16,6 +16,7 @@
 #ifndef CEPH_FILEJOURNAL_H
 #define CEPH_FILEJOURNAL_H
 
+#include <stdlib.h>
 #include <deque>
 using std::deque;
 
@@ -25,11 +26,14 @@ using std::deque;
 #include "common/Thread.h"
 #include "common/Throttle.h"
 #include "JournalThrottle.h"
-
+#include "common/zipkin_trace.h"
 
 #ifdef HAVE_LIBAIO
 # include <libaio.h>
 #endif
+
+// re-include our assert to clobber the system one; fix dout:
+#include "include/assert.h"
 
 /**
  * Implements journaling on top of block device or file.
@@ -44,12 +48,20 @@ class FileJournal :
 public:
   /// Protected by finisher_lock
   struct completion_item {
+<<<<<<< HEAD
     uint64_t seq;//序号
     Context *finish;//回调
     utime_t start;//开始时间
     TrackedOpRef tracked_op;//?
     completion_item(uint64_t o, Context *c, utime_t s,
 		    TrackedOpRef opref)
+=======
+    uint64_t seq;
+    Context *finish;
+    utime_t start;
+    TrackedOpRef tracked_op;
+    completion_item(uint64_t o, Context *c, utime_t s, TrackedOpRef opref)
+>>>>>>> upstream/master
       : seq(o), finish(c), start(s), tracked_op(opref) {}
     completion_item() : seq(0), finish(0), start(0) {}
   };
@@ -58,6 +70,7 @@ public:
     bufferlist bl;//数据
     uint32_t orig_len;
     TrackedOpRef tracked_op;
+    ZTracer::Trace trace;
     write_item(uint64_t s, bufferlist& b, int ol, TrackedOpRef opref) :
       seq(s), orig_len(ol), tracked_op(opref) {
       bl.claim(b, buffer::list::CLAIM_ALLOW_NONSHAREABLE); // potential zero-copy
@@ -144,8 +157,8 @@ public:
      * not known.
      *
      * If the first read on open fails, we can assume corruption
-     * if start_seq > committed_up_thru because the entry would have
-     * a sequence >= start_seq and therefore > committed_up_thru.
+     * if start_seq > committed_up_to because the entry would have
+     * a sequence >= start_seq and therefore > committed_up_to.
      */
     uint64_t start_seq;
 
@@ -254,7 +267,7 @@ private:
   /// state associated with an in-flight aio request
   /// Protected by aio_lock
   struct aio_info {
-    struct iocb iocb;
+    struct iocb iocb {};
     bufferlist bl;
     struct iovec *iov;
     bool done;
@@ -393,6 +406,8 @@ private:
     return ROUND_UP_TO(sizeof(header), block_size);
   }
 
+  ZTracer::Endpoint trace_endpoint;
+
  public:
   FileJournal(CephContext* cct, uuid_d fsid, Finisher *fin, Cond *sync_cond,
 	      const char *f, bool dio=false, bool ai=true, bool faio=false) :
@@ -427,14 +442,15 @@ private:
     write_stop(true),
     aio_stop(true),
     write_thread(this),
-    write_finish_thread(this) {
+    write_finish_thread(this),
+    trace_endpoint("0.0.0.0", 0, "FileJournal") {
 
       if (aio && !directio) {
 	lderr(cct) << "FileJournal::_open_any: aio not supported without directio; disabling aio" << dendl;
         aio = false;
       }
 #ifndef HAVE_LIBAIO
-      if (aio) {
+      if (aio && ::getenv("CEPH_DEV") == NULL) {
 	lderr(cct) << "FileJournal::_open_any: libaio not compiled in; disabling aio" << dendl;
         aio = false;
       }

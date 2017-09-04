@@ -62,9 +62,9 @@ static void fuse_usage()
 void usage()
 {
   cout <<
-"usage: ceph-fuse [-m mon-ip-addr:mon-port] <mount point> [OPTIONS]\n"
-"  --client_mountpoint/-r <root_directory>\n"
-"                    use root_directory as the mounted root, rather than the full Ceph tree.\n"
+"usage: ceph-fuse [-n client.username] [-m mon-ip-addr:mon-port] <mount point> [OPTIONS]\n"
+"  --client_mountpoint/-r <sub_directory>\n"
+"                    use sub_directory as the mounted root, rather than the full Ceph tree.\n"
 "\n";
   fuse_usage();
   generic_client_usage();
@@ -108,12 +108,12 @@ int main(int argc, const char **argv, const char *envp[]) {
   g_ceph_context->_conf->apply_changes(NULL);
 
   // check for 32-bit arch
-  if (sizeof(long) == 4) {
+#ifndef __LP64__
     cerr << std::endl;
     cerr << "WARNING: Ceph inode numbers are 64 bits wide, and FUSE on 32-bit kernels does" << std::endl;
     cerr << "         not cope well with that situation.  Expect to crash shortly." << std::endl;
     cerr << std::endl;
-  }
+#endif
 
   Preforker forker;
   if (g_conf->daemonize) {
@@ -194,7 +194,7 @@ int main(int argc, const char **argv, const char *envp[]) {
 
     // get monmap
     Messenger *messenger = NULL;
-    Client *client;
+    StandaloneClient *client;
     CephFuse *cfuse;
     UserPerm perms;
     int tester_r = 0;
@@ -213,7 +213,7 @@ int main(int argc, const char **argv, const char *envp[]) {
     messenger->set_policy(entity_name_t::TYPE_MDS,
 			  Messenger::Policy::lossless_client(0));
 
-    client = new Client(messenger, mc);
+    client = new StandaloneClient(messenger, mc);
     if (filer_flags) {
       client->set_filer_flags(filer_flags);
     }

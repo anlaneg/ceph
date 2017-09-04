@@ -123,6 +123,10 @@ class Thrasher:
         self.dump_ops_enable = self.config.get('dump_ops_enable')
         self.noscrub_toggle_delay = self.config.get('noscrub_toggle_delay')
         self.chance_thrash_cluster_full = self.config.get('chance_thrash_cluster_full', .05)
+        self.chance_thrash_pg_upmap = self.config.get('chance_thrash_pg_upmap', 1.0)
+        self.chance_thrash_pg_upmap_items = self.config.get('chance_thrash_pg_upmap', 1.0)
+        self.random_eio = self.config.get('random_eio')
+        self.chance_force_recovery = self.config.get('chance_force_recovery', 0.3)
 
         num_osds = self.in_osds + self.out_osds
         self.max_pgs = self.config.get("max_pgs_per_pool_osd", 1200) * num_osds
@@ -139,13 +143,17 @@ class Thrasher:
             self.config = dict()
         # prevent monitor from auto-marking things out while thrasher runs
         # try both old and new tell syntax, in case we are testing old code
-        self.saved_options = {}
+        self.saved_options = []
+        # assuming that the default settings do not vary from one daemon to
+        # another
         first_mon = teuthology.get_first_mon(manager.ctx, self.config).split('.')
-        opt_name = 'mon_osd_down_out_interval'
-        self.saved_options[opt_name] = manager.get_config(first_mon[0],
-                                                          first_mon[1],
-                                                          opt_name)
-        self._set_config('mon', '*', opt_name, 0)
+        opts = [('mon', 'mon_osd_down_out_interval', 0)]
+        for service, opt, new_value in opts:
+            old_value = manager.get_config(first_mon[0],
+                                           first_mon[1],
+                                           opt)
+            self.saved_options.append((service, opt, old_value))
+            self._set_config(service, '*', opt, new_value)
         # initialize ceph_objectstore_tool property - must be done before
         # do_thrash is spawned - http://tracker.ceph.com/issues/18799
         if (self.config.get('powercycle') or
@@ -177,14 +185,9 @@ class Thrasher:
 
     def _set_config(self, service_type, service_id, name, value):
         opt_arg = '--{name} {value}'.format(name=name, value=value)
-        try:
-            whom = '.'.join([service_type, service_id])
-            self.ceph_manager.raw_cluster_cmd('--', 'tell', whom,
-                                              'injectargs', opt_arg)
-        except Exception:
-            self.ceph_manager.raw_cluster_cmd('--', service_type,
-                                              'tell', service_id,
-                                              'injectargs', opt_arg)
+        whom = '.'.join([service_type, service_id])
+        self.ceph_manager.raw_cluster_cmd('--', 'tell', whom,
+                                          'injectargs', opt_arg)
 
 
     def cmd_exists_on_osds(self, cmd):
@@ -255,12 +258,22 @@ class Thrasher:
                         break
                     log.debug("ceph-objectstore-tool binary not present, trying again")
 
-            proc = exp_remote.run(args=cmd, wait=True,
-                                  check_status=False, stdout=StringIO())
-            if proc.exitstatus:
-                raise Exception("ceph-objectstore-tool: "
-                                "exp list-pgs failure with status {ret}".
-                                format(ret=proc.exitstatus))
+            # ceph-objectstore-tool might bogusly fail with "OSD has the store locked"
+            # see http://tracker.ceph.com/issues/19556
+            with safe_while(sleep=15, tries=40, action="ceph-objectstore-tool --op list-pgs") as proceed:
+                while proceed():
+                    proc = exp_remote.run(args=cmd, wait=True,
+                                          check_status=False,
+                                          stdout=StringIO(), stderr=StringIO())
+                    if proc.exitstatus == 0:
+                        break
+                    elif proc.exitstatus == 1 and proc.stderr == "OSD has the store locked":
+                        continue
+                    else:
+                        raise Exception("ceph-objectstore-tool: "
+                                        "exp list-pgs failure with status {ret}".
+                                        format(ret=proc.exitstatus))
+
             pgs = proc.stdout.getvalue().split('\n')[:-1]
             if len(pgs) == 0:
                 self.log("No PGs found for osd.{osd}".format(osd=exp_osd))
@@ -424,6 +437,12 @@ class Thrasher:
             skip_admin_check=skip_admin_check)
         self.dead_osds.remove(osd)
         self.live_osds.append(osd)
+        if self.random_eio > 0 and osd is self.rerrosd:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err='+str(self.random_eio))
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err='+str(self.random_eio))
+
 
     def out_osd(self, osd=None):
         """
@@ -505,6 +524,119 @@ class Thrasher:
         self.log('Setting full ratio back to .95')
         self.ceph_manager.raw_cluster_cmd('osd', 'set-full-ratio', '.95')
 
+    def thrash_pg_upmap(self):
+        """
+        Install or remove random pg_upmap entries in OSDMap
+        """
+        from random import shuffle
+        out = self.ceph_manager.raw_cluster_cmd('osd', 'dump', '-f', 'json-pretty')
+        j = json.loads(out)
+        self.log('j is %s' % j)
+        try:
+            if random.random() >= .3:
+                pgs = self.ceph_manager.get_pg_stats()
+                pg = random.choice(pgs)
+                pgid = str(pg['pgid'])
+                poolid = int(pgid.split('.')[0])
+                sizes = [x['size'] for x in j['pools'] if x['pool'] == poolid]
+                if len(sizes) == 0:
+                    return
+                n = sizes[0]
+                osds = self.in_osds + self.out_osds
+                shuffle(osds)
+                osds = osds[0:n]
+                self.log('Setting %s to %s' % (pgid, osds))
+                cmd = ['osd', 'pg-upmap', pgid] + [str(x) for x in osds]
+                self.log('cmd %s' % cmd)
+                self.ceph_manager.raw_cluster_cmd(*cmd)
+            else:
+                m = j['pg_upmap']
+                if len(m) > 0:
+                    shuffle(m)
+                    pg = m[0]['pgid']
+                    self.log('Clearing pg_upmap on %s' % pg)
+                    self.ceph_manager.raw_cluster_cmd(
+                        'osd',
+                        'rm-pg-upmap',
+                        pg)
+                else:
+                    self.log('No pg_upmap entries; doing nothing')
+        except CommandFailedError:
+            self.log('Failed to rm-pg-upmap, ignoring')
+
+    def thrash_pg_upmap_items(self):
+        """
+        Install or remove random pg_upmap_items entries in OSDMap
+        """
+        from random import shuffle
+        out = self.ceph_manager.raw_cluster_cmd('osd', 'dump', '-f', 'json-pretty')
+        j = json.loads(out)
+        self.log('j is %s' % j)
+        try:
+            if random.random() >= .3:
+                pgs = self.ceph_manager.get_pg_stats()
+                pg = random.choice(pgs)
+                pgid = str(pg['pgid'])
+                poolid = int(pgid.split('.')[0])
+                sizes = [x['size'] for x in j['pools'] if x['pool'] == poolid]
+                if len(sizes) == 0:
+                    return
+                n = sizes[0]
+                osds = self.in_osds + self.out_osds
+                shuffle(osds)
+                osds = osds[0:n*2]
+                self.log('Setting %s to %s' % (pgid, osds))
+                cmd = ['osd', 'pg-upmap-items', pgid] + [str(x) for x in osds]
+                self.log('cmd %s' % cmd)
+                self.ceph_manager.raw_cluster_cmd(*cmd)
+            else:
+                m = j['pg_upmap_items']
+                if len(m) > 0:
+                    shuffle(m)
+                    pg = m[0]['pgid']
+                    self.log('Clearing pg_upmap on %s' % pg)
+                    self.ceph_manager.raw_cluster_cmd(
+                        'osd',
+                        'rm-pg-upmap-items',
+                        pg)
+                else:
+                    self.log('No pg_upmap entries; doing nothing')
+        except CommandFailedError:
+            self.log('Failed to rm-pg-upmap-items, ignoring')
+
+    def force_recovery(self):
+        """
+        Force recovery on some of PGs
+        """
+        backfill = random.random() >= 0.5
+        j = self.ceph_manager.get_pgids_to_force(backfill)
+        if j:
+            if backfill:
+                self.ceph_manager.raw_cluster_cmd('pg', 'force-backfill', *j)
+            else:
+                self.ceph_manager.raw_cluster_cmd('pg', 'force-recovery', *j)
+
+    def cancel_force_recovery(self):
+        """
+        Force recovery on some of PGs
+        """
+        backfill = random.random() >= 0.5
+        j = self.ceph_manager.get_pgids_to_cancel_force(backfill)
+        if j:
+            if backfill:
+                self.ceph_manager.raw_cluster_cmd('pg', 'cancel-force-backfill', *j)
+            else:
+                self.ceph_manager.raw_cluster_cmd('pg', 'cancel-force-recovery', *j)
+
+    def force_cancel_recovery(self):
+        """
+        Force or cancel forcing recovery
+        """
+        if random.random() >= 0.4:
+           self.force_recovery()
+        else:
+           self.cancel_force_recovery()
+
     def all_up(self):
         """
         Make sure all osds are up and not out.
@@ -515,6 +647,17 @@ class Thrasher:
         while len(self.out_osds) > 0:
             self.log("inning osd")
             self.in_osd()
+
+    def all_up_in(self):
+        """
+        Make sure all osds are up and fully in.
+        """
+        self.all_up();
+        for osd in self.live_osds:
+            self.ceph_manager.raw_cluster_cmd('osd', 'reweight',
+                                              str(osd), str(1))
+            self.ceph_manager.raw_cluster_cmd('osd', 'primary-affinity',
+                                              str(osd), str(1))
 
     def do_join(self):
         """
@@ -553,8 +696,11 @@ class Thrasher:
         """
         if pool is None:
             pool = self.ceph_manager.get_pool()
+            force = False
+        else:
+            force = True
         self.log("fixing pg num pool %s" % (pool,))
-        if self.ceph_manager.set_pool_pgpnum(pool):
+        if self.ceph_manager.set_pool_pgpnum(pool, force):
             self.pools_to_fix_pgp_num.discard(pool)
 
     def test_pool_min_size(self):
@@ -614,7 +760,7 @@ class Thrasher:
         """
         Test backfills stopping when the replica fills up.
 
-        First, use osd_backfill_full_ratio to simulate a now full
+        First, use injectfull admin command to simulate a now full
         osd by setting it to 0 on all of the OSDs.
 
         Second, on a random subset, set
@@ -623,13 +769,14 @@ class Thrasher:
 
         Then, verify that all backfills stop.
         """
-        self.log("injecting osd_backfill_full_ratio = 0")
+        self.log("injecting backfill full")
         for i in self.live_osds:
             self.ceph_manager.set_config(
                 i,
                 osd_debug_skip_full_check_in_backfill_reservation=
-                random.choice(['false', 'true']),
-                osd_backfill_full_ratio=0)
+                random.choice(['false', 'true']))
+            self.ceph_manager.osd_admin_socket(i, command=['injectfull', 'backfillfull'],
+                                     check_status=True, timeout=30, stdout=DEVNULL)
         for i in range(30):
             status = self.ceph_manager.compile_pg_status()
             if 'backfill' not in status.keys():
@@ -642,8 +789,9 @@ class Thrasher:
         for i in self.live_osds:
             self.ceph_manager.set_config(
                 i,
-                osd_debug_skip_full_check_in_backfill_reservation='false',
-                osd_backfill_full_ratio=0.85)
+                osd_debug_skip_full_check_in_backfill_reservation='false')
+            self.ceph_manager.osd_admin_socket(i, command=['injectfull', 'none'],
+                                     check_status=True, timeout=30, stdout=DEVNULL)
 
     def test_map_discontinuity(self):
         """
@@ -658,7 +806,7 @@ class Thrasher:
         while len(self.in_osds) < (self.minin + 1):
             self.in_osd()
         self.log("Waiting for recovery")
-        self.ceph_manager.wait_for_all_up(
+        self.ceph_manager.wait_for_all_osds_up(
             timeout=self.config.get('timeout')
             )
         # now we wait 20s for the pg status to change, if it takes longer,
@@ -723,6 +871,13 @@ class Thrasher:
                         chance_test_backfill_full,))
         if self.chance_thrash_cluster_full > 0:
             actions.append((self.thrash_cluster_full, self.chance_thrash_cluster_full,))
+        if self.chance_thrash_pg_upmap > 0:
+            actions.append((self.thrash_pg_upmap, self.chance_thrash_pg_upmap,))
+        if self.chance_thrash_pg_upmap_items > 0:
+            actions.append((self.thrash_pg_upmap_items, self.chance_thrash_pg_upmap_items,))
+        if self.chance_force_recovery > 0:
+            actions.append((self.force_cancel_recovery, self.chance_force_recovery))
+
         for key in ['heartbeat_inject_failure', 'filestore_inject_stall']:
             for scenario in [
                 (lambda:
@@ -843,6 +998,12 @@ class Thrasher:
         scrubint = self.config.get("scrub_interval", -1)
         maxdead = self.config.get("max_dead", 0)
         delay = self.config.get("op_delay", 5)
+        self.rerrosd = self.live_osds[0]
+        if self.random_eio > 0:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err='+str(self.random_eio))
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err='+str(self.random_eio))
         self.log("starting do_thrash")
         while not self.stopping:
             to_log = [str(x) for x in ["in_osds: ", self.in_osds,
@@ -870,14 +1031,20 @@ class Thrasher:
                         Scrubber(self.ceph_manager, self.config)
             self.choose_action()()
             time.sleep(delay)
+        self.all_up()
+        if self.random_eio > 0:
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--filestore_debug_random_read_err=0.0')
+            self.ceph_manager.raw_cluster_cmd('tell', 'osd.'+str(self.rerrosd),
+                          'injectargs', '--', '--bluestore_debug_random_read_err=0.0')
         for pool in list(self.pools_to_fix_pgp_num):
             if self.ceph_manager.get_pool_pg_num(pool) > 0:
                 self.fix_pgp_num(pool)
         self.pools_to_fix_pgp_num.clear()
-        for opt, value in self.saved_options.iteritems():
-            self._set_config('mon', '*', opt, value)
-        self.saved_options.clear()
-        self.all_up()
+        for service, opt, saved_value in self.saved_options:
+            self._set_config(service, '*', opt, saved_value)
+        self.saved_options = []
+        self.all_up_in()
 
 
 class ObjectStoreTool:
@@ -944,6 +1111,7 @@ class ObjectStoreTool:
         finally:
             if self.do_revive:
                 self.manager.revive_osd(self.osd)
+                self.manager.wait_till_osd_is_up(self.osd, 300)
 
 
 class CephManager:
@@ -1046,6 +1214,47 @@ class CephManager:
                   self.cluster,
                   "-w"],
             wait=False, stdout=StringIO(), stdin=run.PIPE)
+
+    def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
+        """
+        Flush pg stats from a list of OSD ids, ensuring they are reflected
+        all the way to the monitor.  Luminous and later only.
+
+        :param osds: list of OSDs to flush
+        :param no_wait: list of OSDs not to wait for seq id. by default, we
+                        wait for all specified osds, but some of them could be
+                        moved out of osdmap, so we cannot get their updated
+                        stat seq from monitor anymore. in that case, you need
+                        to pass a blacklist.
+        :param wait_for_mon: wait for mon to be synced with mgr. 0 to disable
+                             it. (5 min by default)
+        """
+        seq = {osd: self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats')
+               for osd in osds}
+        if not wait_for_mon:
+            return
+        if no_wait is None:
+            no_wait = []
+        for osd, need in seq.iteritems():
+            if osd in no_wait:
+                continue
+            got = 0
+            while wait_for_mon > 0:
+                got = self.raw_cluster_cmd('osd', 'last-stat-seq', 'osd.%d' % osd)
+                self.log('need seq {need} got {got} for osd.{osd}'.format(
+                    need=need, got=got, osd=osd))
+                if got >= need:
+                    break
+                A_WHILE = 1
+                time.sleep(A_WHILE)
+                wait_for_mon -= A_WHILE
+            else:
+                raise Exception('timed out waiting for mon to be updated with '
+                                'osd.{osd}: {got} < {need}'.
+                                format(osd=osd, got=got, need=need))
+
+    def flush_all_pg_stats(self):
+        self.flush_pg_stats(range(len(self.get_osd_dump())))
 
     def do_rados(self, remote, cmd, check_status=True):
         """
@@ -1210,24 +1419,37 @@ class CephManager:
         """
         get replica for pool, pgnum (e.g. (data, 0)->0
         """
-        output = self.raw_cluster_cmd("pg", "dump", '--format=json')
-        j = json.loads('\n'.join(output.split('\n')[1:]))
         pg_str = self.get_pgid(pool, pgnum)
-        for pg in j['pg_stats']:
-            if pg['pgid'] == pg_str:
-                return int(pg['acting'][-1])
+        output = self.raw_cluster_cmd("pg", "map", pg_str, '--format=json')
+        j = json.loads('\n'.join(output.split('\n')[1:]))
+        return int(j['acting'][-1])
         assert False
+
+    def wait_for_pg_stats(func):
+        # both osd_mon_report_interval_min and mgr_stats_period are 5 seconds
+        # by default, and take the faulty injection in ms into consideration,
+        # 12 seconds are more than enough
+        delays = [1, 1, 2, 3, 5, 8, 13]
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            exc = None
+            for delay in delays:
+                try:
+                    return func(self, *args, **kwargs)
+                except AssertionError as e:
+                    time.sleep(delay)
+                    exc = e
+            raise exc
+        return wrapper
 
     def get_pg_primary(self, pool, pgnum):
         """
         get primary for pool, pgnum (e.g. (data, 0)->0
         """
-        output = self.raw_cluster_cmd("pg", "dump", '--format=json')
-        j = json.loads('\n'.join(output.split('\n')[1:]))
         pg_str = self.get_pgid(pool, pgnum)
-        for pg in j['pg_stats']:
-            if pg['pgid'] == pg_str:
-                return int(pg['acting'][0])
+        output = self.raw_cluster_cmd("pg", "map", pg_str, '--format=json')
+        j = json.loads('\n'.join(output.split('\n')[1:]))
+        return int(j['acting'][0])
         assert False
 
     def get_pool_num(self, pool):
@@ -1380,7 +1602,7 @@ class CephManager:
     def create_pool_with_unique_name(self, pg_num=16,
                                      erasure_code_profile_name=None,
                                      min_size=None,
-                                     erasure_code_use_hacky_overwrites=False):
+                                     erasure_code_use_overwrites=False):
         """
         Create a pool named unique_pool_X where X is unique.
         """
@@ -1393,7 +1615,7 @@ class CephManager:
                 pg_num,
                 erasure_code_profile_name=erasure_code_profile_name,
                 min_size=min_size,
-                erasure_code_use_hacky_overwrites=erasure_code_use_hacky_overwrites)
+                erasure_code_use_overwrites=erasure_code_use_overwrites)
         return name
 
     @contextlib.contextmanager
@@ -1405,15 +1627,14 @@ class CephManager:
     def create_pool(self, pool_name, pg_num=16,
                     erasure_code_profile_name=None,
                     min_size=None,
-                    erasure_code_use_hacky_overwrites=False):
+                    erasure_code_use_overwrites=False):
         """
         Create a pool named from the pool_name parameter.
         :param pool_name: name of the pool being created.
         :param pg_num: initial number of pgs.
         :param erasure_code_profile_name: if set and !None create an
                                           erasure coded pool using the profile
-        :param erasure_code_use_hacky_overwrites: if true, use the hacky
-                                                  overwrites mode
+        :param erasure_code_use_overwrites: if true, allow overwrites
         """
         with self.lock:
             assert isinstance(pool_name, basestring)
@@ -1432,11 +1653,15 @@ class CephManager:
                     'osd', 'pool', 'set', pool_name,
                     'min_size',
                     str(min_size))
-            if erasure_code_use_hacky_overwrites:
+            if erasure_code_use_overwrites:
                 self.raw_cluster_cmd(
                     'osd', 'pool', 'set', pool_name,
-                    'debug_white_box_testing_ec_overwrites',
+                    'allow_ec_overwrites',
                     'true')
+            self.raw_cluster_cmd(
+                'osd', 'pool', 'application', 'enable',
+                pool_name, 'rados', '--yes-i-really-mean-it',
+                run.Raw('||'), 'true')
             self.pools[pool_name] = pg_num
         time.sleep(1)
 
@@ -1556,14 +1781,14 @@ class CephManager:
             self.pools[pool_name] = new_pg_num
             return True
 
-    def set_pool_pgpnum(self, pool_name):
+    def set_pool_pgpnum(self, pool_name, force):
         """
         Set pgpnum property of pool_name pool.
         """
         with self.lock:
             assert isinstance(pool_name, basestring)
             assert pool_name in self.pools
-            if self.get_num_creating() > 0:
+            if not force and self.get_num_creating() > 0:
                 return False
             self.set_pool_property(pool_name, 'pgp_num', self.pools[pool_name])
             return True
@@ -1599,6 +1824,40 @@ class CephManager:
         j = json.loads('\n'.join(out.split('\n')[1:]))
         return j['pg_stats']
 
+    def get_pgids_to_force(self, backfill):
+        """
+        Return the randomized list of PGs that can have their recovery/backfill forced
+        """
+        j = self.get_pg_stats();
+        pgids = []
+        if backfill:
+            wanted = ['degraded', 'backfilling', 'backfill_wait']
+        else:
+            wanted = ['recovering', 'degraded', 'recovery_wait']
+        for pg in j:
+            status = pg['state'].split('+')
+            for t in wanted:
+                if random.random() > 0.5 and not ('forced_backfill' in status or 'forced_recovery' in status) and t in status:
+                    pgids.append(pg['pgid'])
+                    break
+        return pgids
+
+    def get_pgids_to_cancel_force(self, backfill):
+       """
+       Return the randomized list of PGs whose recovery/backfill priority is forced
+       """
+       j = self.get_pg_stats();
+       pgids = []
+       if backfill:
+           wanted = 'forced_backfill'
+       else:
+           wanted = 'forced_recovery'
+       for pg in j:
+           status = pg['state'].split('+')
+           if wanted in status and random.random() > 0.5:
+               pgids.append(pg['pgid'])
+       return pgids
+
     def compile_pg_status(self):
         """
         Return a histogram of pg state values
@@ -1612,29 +1871,17 @@ class CephManager:
                 ret[status] += 1
         return ret
 
-    def pg_scrubbing(self, pool, pgnum):
-        """
-        pg scrubbing wrapper
-        """
+    @wait_for_pg_stats
+    def with_pg_state(self, pool, pgnum, check):
         pgstr = self.get_pgid(pool, pgnum)
         stats = self.get_single_pg_stats(pgstr)
-        return 'scrub' in stats['state']
+        assert(check(stats['state']))
 
-    def pg_repairing(self, pool, pgnum):
-        """
-        pg repairing wrapper
-        """
+    @wait_for_pg_stats
+    def with_pg(self, pool, pgnum, check):
         pgstr = self.get_pgid(pool, pgnum)
         stats = self.get_single_pg_stats(pgstr)
-        return 'repair' in stats['state']
-
-    def pg_inconsistent(self, pool, pgnum):
-        """
-        pg inconsistent wrapper
-        """
-        pgstr = self.get_pgid(pool, pgnum)
-        stats = self.get_single_pg_stats(pgstr)
-        return 'inconsistent' in stats['state']
+        return check(stats)
 
     def get_last_scrub_stamp(self, pool, pgnum):
         """
@@ -1742,6 +1989,10 @@ class CephManager:
         :returns: all osds
         """
         return self.get_osd_dump_json()['osds']
+
+    def get_mgr_dump(self):
+        out = self.raw_cluster_cmd('mgr', 'dump', '--format=json')
+        return json.loads(out)
 
     def get_stuck_pgs(self, type_, threshold):
         """
@@ -1901,7 +2152,7 @@ class CephManager:
         x = self.get_osd_dump()
         return (len(x) == sum([(y['up'] > 0) for y in x]))
 
-    def wait_for_all_up(self, timeout=None):
+    def wait_for_all_osds_up(self, timeout=None):
         """
         When this exits, either the timeout has expired, or all
         osds are up.
@@ -1911,9 +2162,44 @@ class CephManager:
         while not self.are_all_osds_up():
             if timeout is not None:
                 assert time.time() - start < timeout, \
-                    'timeout expired in wait_for_all_up'
+                    'timeout expired in wait_for_all_osds_up'
             time.sleep(3)
         self.log("all up!")
+
+    def pool_exists(self, pool):
+        if pool in self.list_pools():
+            return True
+        return False
+
+    def wait_for_pool(self, pool, timeout=300):
+        """
+        Wait for a pool to exist
+        """
+        self.log('waiting for pool %s to exist' % pool)
+        start = time.time()
+        while not self.pool_exists(pool):
+            if timeout is not None:
+                assert time.time() - start < timeout, \
+                    'timeout expired in wait_for_pool'
+            time.sleep(3)
+
+    def wait_for_pools(self, pools):
+        for pool in pools:
+            self.wait_for_pool(pool)
+
+    def is_mgr_available(self):
+        x = self.get_mgr_dump()
+        return x.get('available', False)
+
+    def wait_for_mgr_available(self, timeout=None):
+        self.log("waiting for mgr available")
+        start = time.time()
+        while not self.is_mgr_available():
+            if timeout is not None:
+                assert time.time() - start < timeout, \
+                    'timeout expired in wait_for_mgr_available'
+            time.sleep(3)
+        self.log("mgr available!")
 
     def wait_for_recovery(self, timeout=None):
         """
@@ -2167,6 +2453,20 @@ class CephManager:
             self.make_admin_daemon_dir(remote)
         self.ctx.daemons.get_daemon('mon', mon, self.cluster).restart()
 
+    def revive_mgr(self, mgr):
+        """
+        Restart by either power cycling (if the config says so),
+        or by doing a normal restart.
+        """
+        if self.config.get('powercycle'):
+            remote = self.find_remote('mgr', mgr)
+            self.log('revive_mgr on mgr.{m} doing powercycle of {s}'.
+                     format(m=mgr, s=remote.name))
+            self._assert_ipmi(remote)
+            remote.console.power_on()
+            self.make_admin_daemon_dir(remote)
+        self.ctx.daemons.get_daemon('mgr', mgr, self.cluster).restart()
+
     def get_mon_status(self, mon):
         """
         Extract all the monitor status information from the cluster
@@ -2258,5 +2558,8 @@ kill_mon = utility_task("kill_mon")
 create_pool = utility_task("create_pool")
 remove_pool = utility_task("remove_pool")
 wait_for_clean = utility_task("wait_for_clean")
+flush_all_pg_stats = utility_task("flush_all_pg_stats")
 set_pool_property = utility_task("set_pool_property")
 do_pg_scrub = utility_task("do_pg_scrub")
+wait_for_pool = utility_task("wait_for_pool")
+wait_for_pools = utility_task("wait_for_pools")

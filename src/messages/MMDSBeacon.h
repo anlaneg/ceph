@@ -43,6 +43,56 @@ enum mds_metric_t {
   MDS_HEALTH_CACHE_OVERSIZED
 };
 
+static inline const char *mds_metric_name(mds_metric_t m)
+{
+  switch (m) {
+  case MDS_HEALTH_TRIM: return "MDS_TRIM";
+  case MDS_HEALTH_CLIENT_RECALL: return "MDS_CLIENT_RECALL";
+  case MDS_HEALTH_CLIENT_LATE_RELEASE: return "MDS_CLIENT_LATE_RELEASE";
+  case MDS_HEALTH_CLIENT_RECALL_MANY: return "MDS_CLIENT_RECALL_MANY";
+  case MDS_HEALTH_CLIENT_LATE_RELEASE_MANY: return "MDS_CLIENT_LATE_RELEASE_MANY";
+  case MDS_HEALTH_CLIENT_OLDEST_TID: return "MDS_CLIENT_OLDEST_TID";
+  case MDS_HEALTH_CLIENT_OLDEST_TID_MANY: return "MDS_CLIENT_OLDEST_TID_MANY";
+  case MDS_HEALTH_DAMAGE: return "MDS_DAMAGE";
+  case MDS_HEALTH_READ_ONLY: return "MDS_READ_ONLY";
+  case MDS_HEALTH_SLOW_REQUEST: return "MDS_SLOW_REQUEST";
+  case MDS_HEALTH_CACHE_OVERSIZED: return "MDS_CACHE_OVERSIZED";
+  default:
+    return "???";
+  }
+}
+
+static inline const char *mds_metric_summary(mds_metric_t m)
+{
+  switch (m) {
+  case MDS_HEALTH_TRIM:
+    return "%num% MDSs behind on trimming";
+  case MDS_HEALTH_CLIENT_RECALL:
+    return "%num% clients failing to respond to cache pressure";
+  case MDS_HEALTH_CLIENT_LATE_RELEASE:
+    return "%num% clients failing to respond to capability release";
+  case MDS_HEALTH_CLIENT_RECALL_MANY:
+    return "%num% MDSs have many clients failing to respond to cache pressure";
+  case MDS_HEALTH_CLIENT_LATE_RELEASE_MANY:
+    return "%num% MDSs have many clients failing to respond to capability "
+      "release";
+  case MDS_HEALTH_CLIENT_OLDEST_TID:
+    return "%num% clients failing to advance oldest client/flush tid";
+  case MDS_HEALTH_CLIENT_OLDEST_TID_MANY:
+    return "%num% MDSs have clients failing to advance oldest client/flush tid";
+  case MDS_HEALTH_DAMAGE:
+    return "%num% MDSs report damaged metadata";
+  case MDS_HEALTH_READ_ONLY:
+    return "%num% MDSs are read only";
+  case MDS_HEALTH_SLOW_REQUEST:
+    return "%num% MDSs report slow requests";
+  case MDS_HEALTH_CACHE_OVERSIZED:
+    return "%num% MDSs report oversized cache";
+  default:
+    return "???";
+  }
+}
+
 /**
  * This structure is designed to allow some flexibility in how we emit health
  * complaints, such that:
@@ -125,7 +175,7 @@ WRITE_CLASS_ENCODER(MDSHealth)
 class MMDSBeacon : public PaxosServiceMessage {
 
   static const int HEAD_VERSION = 7;
-  static const int COMPAT_VERSION = 2;
+  static const int COMPAT_VERSION = 6;
 
   uuid_d fsid;
   mds_gid_t global_id;
@@ -225,21 +275,13 @@ public:
     ::decode(name, p);
     ::decode(standby_for_rank, p);
     ::decode(standby_for_name, p);
-    if (header.version >= 2)
-      ::decode(compat, p);
-    if (header.version >= 3) {
-      ::decode(health, p);
-    }
-    if (state == MDSMap::STATE_BOOT &&
-	header.version >= 4) {
+    ::decode(compat, p);
+    ::decode(health, p);
+    if (state == MDSMap::STATE_BOOT) {
       ::decode(sys_info, p);
     }
-    if (header.version >= 5) {
-      ::decode(mds_features, p);
-    }
-    if (header.version >= 6) {
-      ::decode(standby_for_fscid, p);
-    }
+    ::decode(mds_features, p);
+    ::decode(standby_for_fscid, p);
     if (header.version >= 7) {
       ::decode(standby_replay, p);
     }

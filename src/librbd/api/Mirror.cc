@@ -383,13 +383,15 @@ int Mirror<I>::image_resync(I *ictx) {
     return r;
   }
 
-  std::string mirror_uuid;
-  r = Journal<I>::get_tag_owner(ictx, &mirror_uuid);
+  C_SaferCond tag_owner_ctx;
+  bool is_tag_owner;
+  Journal<I>::is_tag_owner(ictx, &is_tag_owner, &tag_owner_ctx);
+  r = tag_owner_ctx.wait();
   if (r < 0) {
     lderr(cct) << "failed to determine tag ownership: " << cpp_strerror(r)
                << dendl;
     return r;
-  } else if (mirror_uuid == Journal<>::LOCAL_MIRROR_UUID) {
+  } else if (is_tag_owner) {
     lderr(cct) << "image is primary, cannot resync to itself" << dendl;
     return -EINVAL;
   }
@@ -796,7 +798,7 @@ int Mirror<I>::image_status_list(librados::IoCtx& io_ctx,
 
   r = librbd::cls_client::mirror_image_status_list(&io_ctx, start_id, max,
       					           &images_, &statuses_);
-  if (r < 0) {
+  if (r < 0 && r != -ENOENT) {
     lderr(cct) << "failed to list mirror image statuses: "
                << cpp_strerror(r) << dendl;
     return r;

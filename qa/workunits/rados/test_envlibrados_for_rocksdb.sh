@@ -1,4 +1,6 @@
-#!/bin/bash -ex
+#!/usr/bin/env bash
+set -ex
+
 ############################################
 #			Helper functions
 ############################################
@@ -67,7 +69,7 @@ echo "Compile rocksdb"
 if [ -e rocksdb ]; then
 	rm -fr rocksdb
 fi
-git clone https://github.com/facebook/rocksdb.git
+git clone https://github.com/facebook/rocksdb.git --depth 1
 
 # compile code
 cd rocksdb

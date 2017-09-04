@@ -18,6 +18,7 @@
 
 
 class RGWRados;
+class RGWCoroutine;
 class JSONObj;
 struct RGWObjVersionTracker;
 
@@ -78,9 +79,11 @@ public:
                   real_time mtime, JSONObj *obj, sync_type_t type) = 0;
   virtual int remove(RGWRados *store, string& entry, RGWObjVersionTracker& objv_tracker) = 0;
 
-  virtual int list_keys_init(RGWRados *store, void **phandle) = 0;
+  virtual int list_keys_init(RGWRados *store, const string& marker, void **phandle) = 0;
   virtual int list_keys_next(void *handle, int max, list<string>& keys, bool *truncated) = 0;
   virtual void list_keys_complete(void *handle) = 0;
+
+  virtual string get_marker(void *handle) = 0;
 
   /* key to use for hashing entries for log shard placement */
   virtual void get_hash_key(const string& section, const string& key, string& hash_key) {
@@ -265,6 +268,27 @@ struct RGWMetadataLogData {
 };
 WRITE_CLASS_ENCODER(RGWMetadataLogData)
 
+struct RGWMetadataLogHistory {
+  epoch_t oldest_realm_epoch;
+  std::string oldest_period_id;
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(oldest_realm_epoch, bl);
+    ::encode(oldest_period_id, bl);
+    ENCODE_FINISH(bl);
+  }
+  void decode(bufferlist::iterator& p) {
+    DECODE_START(1, p);
+    ::decode(oldest_realm_epoch, p);
+    ::decode(oldest_period_id, p);
+    DECODE_FINISH(p);
+  }
+
+  static const std::string oid;
+};
+WRITE_CLASS_ENCODER(RGWMetadataLogHistory)
+
 class RGWMetadataManager {
   map<string, RGWMetadataHandler *> handlers;
   CephContext *cct;
@@ -303,6 +327,16 @@ public:
   /// period history
   RGWPeriodHistory::Cursor read_oldest_log_period() const;
 
+  /// read the oldest log period asynchronously and write its result to the
+  /// given cursor pointer
+  RGWCoroutine* read_oldest_log_period_cr(RGWPeriodHistory::Cursor *period,
+                                          RGWObjVersionTracker *objv) const;
+
+  /// try to advance the oldest log period when the given period is trimmed,
+  /// using a rados lock to provide atomicity
+  RGWCoroutine* trim_log_period_cr(RGWPeriodHistory::Cursor period,
+                                   RGWObjVersionTracker *objv) const;
+
   /// find or create the metadata log for the given period
   RGWMetadataLog* get_log(const std::string& period);
 
@@ -320,8 +354,11 @@ public:
   int remove(string& metadata_key);
 
   int list_keys_init(string& section, void **phandle);
+  int list_keys_init(string& section, const string& marker, void **phandle);
   int list_keys_next(void *handle, int max, list<string>& keys, bool *truncated);
   void list_keys_complete(void *handle);
+
+  string get_marker(void *handle);
 
   void dump_log_entry(cls_log_entry& entry, Formatter *f);
 

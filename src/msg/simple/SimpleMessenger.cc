@@ -24,7 +24,7 @@
 #include "common/errno.h"
 #include "common/valgrind.h"
 #include "auth/Crypto.h"
-#include "include/Spinlock.h"
+#include "include/spinlock.h"
 
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
@@ -54,7 +54,6 @@ SimpleMessenger::SimpleMessenger(CephContext *cct, entity_name_t name,
 {
   ANNOTATE_BENIGN_RACE_SIZED(&timeout, sizeof(timeout),
                              "SimpleMessenger read timeout");
-  ceph_spin_init(&global_seq_lock);
   init_local_connection();
 }
 
@@ -67,7 +66,6 @@ SimpleMessenger::~SimpleMessenger()
   assert(!did_bind); // either we didn't bind or we shut down the Accepter
   assert(rank_pipe.empty()); // we don't have any running Pipes.
   assert(!reaper_started); // the reaper thread is stopped
-  ceph_spin_destroy(&global_seq_lock);
 }
 
 void SimpleMessenger::ready()
@@ -157,6 +155,14 @@ void SimpleMessenger::set_addr_unknowns(const entity_addr_t &addr)
     my_inst.addr.set_port(port);
     init_local_connection();
   }
+}
+
+void SimpleMessenger::set_addr(const entity_addr_t &addr)
+{
+  entity_addr_t t = addr;
+  t.set_nonce(nonce);
+  set_myaddr(t);
+  init_local_connection();
 }
 
 int SimpleMessenger::get_proto_version(int peer_type, bool connect)
@@ -310,6 +316,8 @@ int SimpleMessenger::rebind(const set<int>& avoid_ports)
 
 int SimpleMessenger::client_bind(const entity_addr_t &bind_addr)
 {
+  if (!cct->_conf->ms_bind_before_connect)
+    return 0;
   Mutex::Locker l(lock);
   if (did_bind) {
     assert(my_inst.addr == bind_addr);
@@ -444,6 +452,7 @@ void SimpleMessenger::submit_message(Message *m, PipeConnection *con,
 				     const entity_addr_t& dest_addr, int dest_type,
 				     bool already_locked)
 {
+  m->trace.event("simple submitting message");
   if (cct->_conf->ms_dump_on_send) {
     m->encode(-1, true);
     ldout(cct, 0) << "submit_message " << *m << "\n";

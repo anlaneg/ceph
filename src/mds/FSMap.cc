@@ -18,6 +18,8 @@
 #include <sstream>
 using std::stringstream;
 
+#include "mon/health_check.h"
+
 
 void Filesystem::dump(Formatter *f) const
 {
@@ -124,17 +126,10 @@ void FSMap::print_summary(Formatter *f, ostream *out) const
       f->dump_unsigned("max", fs->mds_map.max_mds);
     }
   } else {
-    *out << "e" << get_epoch() << ":";
-    if (filesystems.size() == 1) {
-      auto fs = filesystems.begin()->second;
-      *out << " " << fs->mds_map.up.size() << "/" << fs->mds_map.in.size() << "/"
-           << fs->mds_map.max_mds << " up";
-    } else {
-      for (auto i : filesystems) {
-        auto fs = i.second;
-        *out << " " << fs->mds_map.fs_name << "-" << fs->mds_map.up.size() << "/"
-             << fs->mds_map.in.size() << "/" << fs->mds_map.max_mds << " up";
-      }
+    for (auto i : filesystems) {
+      auto fs = i.second;
+      *out << fs->mds_map.fs_name << "-" << fs->mds_map.up.size() << "/"
+	   << fs->mds_map.in.size() << "/" << fs->mds_map.max_mds << " up ";
     }
   }
 
@@ -237,7 +232,7 @@ void FSMap::create_filesystem(const std::string &name,
   auto fs = std::make_shared<Filesystem>();
   fs->mds_map.fs_name = name;
   fs->mds_map.max_mds = 1;
-  fs->mds_map.data_pools.insert(data_pool);
+  fs->mds_map.data_pools.push_back(data_pool);
   fs->mds_map.metadata_pool = metadata_pool;
   fs->mds_map.cas_pool = -1;
   fs->mds_map.max_file_size = g_conf->mds_max_file_size;
@@ -291,7 +286,14 @@ void FSMap::reset_filesystem(fs_cluster_id_t fscid)
   new_fs->mds_map.modified = ceph_clock_now();
   new_fs->mds_map.session_timeout = g_conf->mds_session_timeout;
   new_fs->mds_map.session_autoclose = g_conf->mds_session_autoclose;
+  new_fs->mds_map.standby_count_wanted = fs->mds_map.standby_count_wanted;
   new_fs->mds_map.enabled = true;
+
+  // Remember mds ranks that have ever started. (They should load old inotable
+  // instead of creating new one if they start again.)
+  new_fs->mds_map.stopped.insert(fs->mds_map.in.begin(), fs->mds_map.in.end());
+  new_fs->mds_map.stopped.insert(fs->mds_map.stopped.begin(), fs->mds_map.stopped.end());
+  new_fs->mds_map.stopped.erase(mds_rank_t(0));
 
   // Persist the new FSMap
   filesystems[new_fs->fscid] = new_fs;
@@ -300,12 +302,79 @@ void FSMap::reset_filesystem(fs_cluster_id_t fscid)
 void FSMap::get_health(list<pair<health_status_t,string> >& summary,
 			list<pair<health_status_t,string> > *detail) const
 {
-  for (auto i : filesystems) {
-    auto fs = i.second;
+  mds_rank_t standby_count_wanted = 0;
+  for (const auto &i : filesystems) {
+    const auto &fs = i.second;
 
     // TODO: move get_health up into here so that we can qualify
     // all the messages with what filesystem they're talking about
     fs->mds_map.get_health(summary, detail);
+
+    standby_count_wanted = std::max(standby_count_wanted, fs->mds_map.get_standby_count_wanted((mds_rank_t)standby_daemons.size()));
+  }
+
+  if (standby_count_wanted) {
+    std::ostringstream oss;
+    oss << "insufficient standby daemons available: have " << standby_daemons.size() << "; want " << standby_count_wanted << " more";
+    summary.push_back(make_pair(HEALTH_WARN, oss.str()));
+  }
+}
+
+bool FSMap::check_health(void)
+{
+  bool changed = false;
+  for (auto &i : filesystems) {
+    changed |= i.second->mds_map.check_health((mds_rank_t)standby_daemons.size());
+  }
+  return changed;
+}
+
+void FSMap::get_health_checks(health_check_map_t *checks) const
+{
+  mds_rank_t standby_count_wanted = 0;
+  for (const auto &i : filesystems) {
+    const auto &fs = i.second;
+    health_check_map_t fschecks;
+
+    fs->mds_map.get_health_checks(&fschecks);
+
+    // Some of the failed ranks might be transient (i.e. there are standbys
+    // ready to replace them).  We will report only on "stuck" failed, i.e.
+    // ranks which are failed and have no standby replacement available.
+    std::set<mds_rank_t> stuck_failed;
+
+    for (const auto &rank : fs->mds_map.failed) {
+      const mds_gid_t replacement = find_replacement_for(
+          {fs->fscid, rank}, {}, g_conf->mon_force_standby_active);
+      if (replacement == MDS_GID_NONE) {
+        stuck_failed.insert(rank);
+      }
+    }
+
+    // FS_WITH_FAILED_MDS
+    if (!stuck_failed.empty()) {
+      health_check_t& fscheck = checks->get_or_add(
+        "FS_WITH_FAILED_MDS", HEALTH_WARN,
+        "%num% filesystem%plurals% %isorare% have a failed mds daemon");
+      ostringstream ss;
+      ss << "fs " << fs->mds_map.fs_name << " has " << stuck_failed.size()
+         << " failed mds" << (stuck_failed.size() > 1 ? "s" : "");
+      fscheck.detail.push_back(ss.str()); }
+
+    checks->merge(fschecks);
+    standby_count_wanted = std::max(
+      standby_count_wanted,
+      fs->mds_map.get_standby_count_wanted((mds_rank_t)standby_daemons.size()));
+  }
+
+  // MDS_INSUFFICIENT_STANDBY
+  if (standby_count_wanted) {
+    std::ostringstream oss, dss;
+    oss << "insufficient standby MDS daemons available";
+    auto& d = checks->get_or_add("MDS_INSUFFICIENT_STANDBY", HEALTH_WARN, oss.str());
+    dss << "have " << standby_daemons.size() << "; want " << standby_count_wanted
+	<< " more";
+    d.detail.push_back(dss.str());
   }
 }
 
@@ -389,7 +458,7 @@ void FSMap::decode(bufferlist::iterator& p)
       while (n--) {
         __u32 m;
         ::decode(m, p);
-        legacy_mds_map.data_pools.insert(m);
+        legacy_mds_map.data_pools.push_back(m);
       }
       __s32 s;
       ::decode(s, p);
@@ -650,8 +719,8 @@ mds_gid_t FSMap::find_standby_for(mds_role_t role, const std::string& name) cons
   return result;
 }
 
-mds_gid_t FSMap::find_unused(fs_cluster_id_t fscid,
-			     bool force_standby_active) const {
+mds_gid_t FSMap::find_unused_for(mds_role_t role,
+				 bool force_standby_active) const {
   for (const auto &i : standby_daemons) {
     const auto &gid = i.first;
     const auto &info = i.second;
@@ -661,7 +730,10 @@ mds_gid_t FSMap::find_unused(fs_cluster_id_t fscid,
       continue;
 
     if (info.standby_for_fscid != FS_CLUSTER_ID_NONE &&
-        info.standby_for_fscid != fscid)
+        info.standby_for_fscid != role.fscid)
+      continue;
+    if (info.standby_for_rank != MDS_RANK_NONE &&
+        info.standby_for_rank != role.rank)
       continue;
 
     // To be considered 'unused' a daemon must either not
@@ -680,7 +752,7 @@ mds_gid_t FSMap::find_replacement_for(mds_role_t role, const std::string& name,
   if (standby)
     return standby;
   else
-    return find_unused(role.fscid, force_standby_active);
+    return find_unused_for(role, force_standby_active);
 }
 
 void FSMap::sanity() const

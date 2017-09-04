@@ -276,7 +276,7 @@ private:
   int _flush(FileWriter *h, bool force);
   int _fsync(FileWriter *h, std::unique_lock<std::mutex>& l);
 
-  void _claim_completed_aios(FileWriter *h, list<FS::aio_t> *ls);
+  void _claim_completed_aios(FileWriter *h, list<aio_t> *ls);
   void wait_for_aio(FileWriter *h);  // safe to call without a lock
 
   int _flush_and_sync_log(std::unique_lock<std::mutex>& l,
@@ -290,6 +290,7 @@ private:
 
   //void _aio_finish(void *priv);
 
+  void _flush_bdev_safely(FileWriter *h);
   void flush_bdev();  // this is safe to call without a lock
 
   int _preallocate(FileRef f, uint64_t off, uint64_t len);
@@ -335,6 +336,7 @@ public:
   int mount();
   void umount();
 
+  void collect_metadata(map<string,string> *pm);
   int fsck();
 
   uint64_t get_fs_usage();
@@ -371,6 +373,7 @@ public:
   int unlink(const string& dirname, const string& filename);
   int mkdir(const string& dirname);
   int rmdir(const string& dirname);
+  bool wal_is_rotational();
 
   bool dir_exists(const string& dirname);
   int stat(const string& dirname, const string& filename,
@@ -385,7 +388,7 @@ public:
   /// sync any uncommitted state to disk
   void sync_metadata();
 
-  int add_block_device(unsigned bdev, string path);
+  int add_block_device(unsigned bdev, const string& path);
   bool bdev_support_label(unsigned id);
   uint64_t get_block_device_size(unsigned bdev);
 

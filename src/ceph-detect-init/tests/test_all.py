@@ -65,30 +65,35 @@ class TestCephDetectInit(testtools.TestCase):
         self.assertEqual('sysvinit', centos.choose_init())
 
     def test_debian(self):
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='debian',
-                                 codename='wheezy'):
-            self.assertEqual('sysvinit', debian.choose_init())
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='debian',
-                                 codename='squeeze'):
-            self.assertEqual('sysvinit', debian.choose_init())
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='debian',
-                                 codename='jessie'):
+        with mock.patch.multiple('os.path',
+                                 isdir=lambda x: x == '/run/systemd/system'):
             self.assertEqual('systemd', debian.choose_init())
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='ubuntu',
-                                 codename='trusty'):
-            self.assertEqual('upstart', debian.choose_init())
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='ubuntu',
-                                 codename='vivid'):
-            self.assertEqual('systemd', debian.choose_init())
-        with mock.patch.multiple('ceph_detect_init.debian',
-                                 distro='not-debian',
-                                 codename='andy'):
-            self.assertIs(None, debian.choose_init())
+
+        def mock_call_with_upstart(*args, **kwargs):
+            if args[0] == '. /lib/lsb/init-functions ; init_is_upstart' and \
+               kwargs['shell']:
+                return 0
+            else:
+                return 1
+        with mock.patch.multiple('os.path',
+                                 isdir=lambda x: False,
+                                 isfile=lambda x: False):
+            with mock.patch.multiple('subprocess',
+                                     call=mock_call_with_upstart):
+                self.assertEqual('upstart', debian.choose_init())
+        with mock.patch.multiple('os.path',
+                                 isdir=lambda x: False,
+                                 isfile=lambda x: x == '/sbin/init',
+                                 islink=lambda x: x != '/sbin/init'):
+            with mock.patch.multiple('subprocess',
+                                     call=lambda *args, **kwargs: 1):
+                self.assertEqual('sysvinit', debian.choose_init())
+        with mock.patch.multiple('os.path',
+                                 isdir=lambda x: False,
+                                 isfile=lambda x: False):
+            with mock.patch.multiple('subprocess',
+                                     call=lambda *args, **kwargs: 1):
+                self.assertIs(None, debian.choose_init())
 
     def test_fedora(self):
         with mock.patch('ceph_detect_init.fedora.release',
@@ -183,8 +188,6 @@ class TestCephDetectInit(testtools.TestCase):
             self.assertEqual('debian', distro.distro)
             self.assertEqual(False, distro.is_el)
             self.assertEqual('6.0', distro.release)
-            self.assertEqual('squeeze', distro.codename)
-            self.assertEqual('sysvinit', distro.init)
 
         with mock.patch.multiple('platform',
                                  system=lambda: 'FreeBSD',
@@ -217,6 +220,7 @@ class TestCephDetectInit(testtools.TestCase):
         self.assertEqual(suse, g('suse'))
         self.assertEqual(rhel, g('redhat', use_rhceph=True))
         self.assertEqual(gentoo, g('gentoo'))
+        self.assertEqual(centos, g('virtuozzo'))
 
     def test_normalized_distro_name(self):
         n = ceph_detect_init._normalized_distro_name
@@ -246,33 +250,14 @@ class TestCephDetectInit(testtools.TestCase):
         self.assertEqual('gentoo', n('funtoo'))
         self.assertEqual('gentoo', n('Exherbo'))
         self.assertEqual('gentoo', n('exherbo'))
+        self.assertEqual('virtuozzo', n('Virtuozzo Linux'))
 
     @mock.patch('platform.system', lambda: 'Linux')
     def test_platform_information_linux(self):
         with mock.patch('platform.linux_distribution',
-                        lambda **kwargs: (('debian', '6.0', ''))):
-            self.assertEqual(('debian', '6.0', 'squeeze'),
-                             ceph_detect_init.platform_information())
-
-        with mock.patch('platform.linux_distribution',
-                        lambda **kwargs: (('debian', '7.0', ''))):
-            self.assertEqual(('debian', '7.0', 'wheezy'),
-                             ceph_detect_init.platform_information())
-
-        with mock.patch('platform.linux_distribution',
                         lambda **kwargs: (('debian', '8.0', ''))):
-            self.assertEqual(('debian', '8.0', 'jessie'),
-                             ceph_detect_init.platform_information())
-
-        with mock.patch('platform.linux_distribution',
-                        lambda **kwargs: (('debian', 'jessie/sid', ''))):
-            self.assertEqual(('debian', 'jessie/sid', 'sid'),
-                             ceph_detect_init.platform_information())
-
-        with mock.patch('platform.linux_distribution',
-                        lambda **kwargs: (('debian', 'sid/jessie', ''))):
-            self.assertEqual(('debian', 'sid/jessie', 'sid'),
-                             ceph_detect_init.platform_information())
+            self.assertEqual(('debian', '8.0'),
+                             ceph_detect_init.platform_information()[:-1])
 
         with mock.patch('platform.linux_distribution',
                         lambda **kwargs: (('Oracle Linux Server', '7.3', ''))):
@@ -282,6 +267,11 @@ class TestCephDetectInit(testtools.TestCase):
         with mock.patch('platform.linux_distribution',
                         lambda **kwargs: (('Oracle VM server', '3.4.2', ''))):
             self.assertEqual(('Oracle VM server', '3.4.2', 'OVS3.4.2'),
+                             ceph_detect_init.platform_information())
+
+        with mock.patch('platform.linux_distribution',
+                        lambda **kwargs: (('Virtuozzo Linux', '7.3', ''))):
+            self.assertEqual(('Virtuozzo Linux', '7.3', 'virtuozzo'),
                              ceph_detect_init.platform_information())
 
     @mock.patch('platform.linux_distribution')

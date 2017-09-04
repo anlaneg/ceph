@@ -38,10 +38,16 @@ map is ``active + clean``.
 *Recovering*
   Ceph is migrating/synchronizing objects and their replicas.
 
+*Forced-Recovery*
+  High recovery priority of that PG is enforced by user.
+
 *Backfill*
   Ceph is scanning and synchronizing the entire contents of a placement group
   instead of inferring what contents need to be synchronized from the logs of
   recent operations. *Backfill* is a special case of recovery.
+
+*Forced-Backfill*
+  High backfill priority of that PG is enforced by user.
 
 *Wait-backfill*
   The placement group is waiting in line to start backfill.
@@ -54,7 +60,8 @@ map is ``active + clean``.
   Ceph detects that a placement group is missing information about
   writes that may have occurred, or does not have any healthy
   copies. If you see this state, try to start any failed OSDs that may
-  contain the needed information.
+  contain the needed information. In the case of an erasure coded pool
+  temporarily reducing min_size may allow recovery.
 
 *Stale*
   The placement group is in an unknown state - the monitors have not received

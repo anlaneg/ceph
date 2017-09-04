@@ -117,6 +117,12 @@ public:
       const std::string &prefix ///< [in] Prefix by which to remove keys
       ) = 0;
 
+    virtual void rm_range_keys(
+      const string &prefix,    ///< [in] Prefix by which to remove keys
+      const string &start,     ///< [in] The start bound of remove keys
+      const string &end        ///< [in] The start bound of remove keys
+      ) = 0;
+
     /// Merge value into key
     virtual void merge(
       const std::string &prefix,   ///< [in] Prefix ==> MUST match some established merge operator
@@ -295,6 +301,10 @@ public:
 
   virtual uint64_t get_estimated_size(std::map<std::string,uint64_t> &extra) = 0;
   virtual int get_statfs(struct store_statfs_t *buf) {
+    return -EOPNOTSUPP;
+  }
+
+  virtual int set_cache_size(uint64_t) {
     return -EOPNOTSUPP;
   }
 

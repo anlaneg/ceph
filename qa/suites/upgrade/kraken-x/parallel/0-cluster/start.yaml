@@ -6,6 +6,7 @@ meta:
    CephFS tests running on client 2,3
 roles:
 - - mon.a
+  - mgr.x
   - mds.a
   - osd.0
   - osd.1
@@ -23,5 +24,9 @@ overrides:
     - scrub mismatch
     - ScrubResult
     - wrongly marked
+    - (POOL_APP_NOT_ENABLED)
+    - overall HEALTH_
     conf:
+      global:
+        enable experimental unrecoverable data corrupting features: "*"
     fs: xfs

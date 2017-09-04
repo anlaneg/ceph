@@ -328,6 +328,69 @@ struct SnapshotNamespaceOnDisk {
 };
 WRITE_CLASS_ENCODER(SnapshotNamespaceOnDisk);
 
+enum TrashImageSource {
+  TRASH_IMAGE_SOURCE_USER = 0,
+  TRASH_IMAGE_SOURCE_MIRRORING = 1
+};
+
+inline void encode(const TrashImageSource &source, bufferlist& bl,
+		   uint64_t features=0)
+{
+  ::encode(static_cast<uint8_t>(source), bl);
+}
+
+inline void decode(TrashImageSource &source, bufferlist::iterator& it)
+{
+  uint8_t int_source;
+  ::decode(int_source, it);
+  source = static_cast<TrashImageSource>(int_source);
+}
+
+struct TrashImageSpec {
+  TrashImageSource source = TRASH_IMAGE_SOURCE_USER;
+  std::string name;
+  utime_t deletion_time; // time of deletion
+  utime_t deferment_end_time;
+
+  TrashImageSpec() {}
+  TrashImageSpec(TrashImageSource source, const std::string &name,
+                   utime_t deletion_time, utime_t deferment_end_time) :
+    source(source), name(name), deletion_time(deletion_time),
+    deferment_end_time(deferment_end_time) {}
+
+  void encode(bufferlist &bl) const;
+  void decode(bufferlist::iterator& it);
+  void dump(Formatter *f) const;
+};
+WRITE_CLASS_ENCODER(TrashImageSpec);
+
+struct MirrorImageMap {
+  MirrorImageMap() {
+  }
+
+  MirrorImageMap(const std::string &instance_id,
+                 const bufferlist &data)
+    : instance_id(instance_id),
+      data(data) {
+  }
+
+  std::string instance_id;
+  bufferlist data;
+
+  void encode(bufferlist &bl) const;
+  void decode(bufferlist::iterator &it);
+  void dump(Formatter *f) const;
+
+  static void generate_test_instances(std::list<MirrorImageMap*> &o);
+
+  bool operator==(const MirrorImageMap &rhs) const;
+  bool operator<(const MirrorImageMap &rhs) const;
+};
+
+std::ostream& operator<<(std::ostream& os, const MirrorImageMap &image_map);
+
+WRITE_CLASS_ENCODER(MirrorImageMap);
+
 } // namespace rbd
 } // namespace cls
 

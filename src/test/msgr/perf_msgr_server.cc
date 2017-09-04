@@ -22,7 +22,6 @@
 
 using namespace std;
 
-#include "include/atomic.h"
 #include "common/ceph_argparse.h"
 #include "common/debug.h"
 #include "global/global_init.h"
@@ -157,7 +156,7 @@ int main(int argc, char **argv)
 
   int worker_threads = atoi(args[1]);
   int think_time = atoi(args[2]);
-  std::string public_msgr_type = g_ceph_context->_conf->ms_public_type.empty() ? g_ceph_context->_conf->ms_type : g_ceph_context->_conf->ms_public_type;
+  std::string public_msgr_type = g_ceph_context->_conf->ms_public_type.empty() ? g_ceph_context->_conf->get_val<std::string>("ms_type") : g_ceph_context->_conf->ms_public_type;
 
   cerr << " This tool won't handle connection error alike things, " << std::endl;
   cerr << "please ensure the proper network environment to test." << std::endl;

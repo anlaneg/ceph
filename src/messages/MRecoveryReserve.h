@@ -19,7 +19,7 @@
 
 class MRecoveryReserve : public Message {
   static const int HEAD_VERSION = 2;
-  static const int COMPAT_VERSION = 1;
+  static const int COMPAT_VERSION = 2;
 public:
   spg_t pgid;
   epoch_t query_epoch;
@@ -45,19 +45,19 @@ public:
   }
 
   void print(ostream& out) const override {
-    out << "MRecoveryReserve ";
+    out << "MRecoveryReserve(" << pgid;
     switch (type) {
     case REQUEST:
-      out << "REQUEST ";
+      out << " REQUEST";
       break;
     case GRANT:
-      out << "GRANT ";
+      out << " GRANT";
       break;
     case RELEASE:
-      out << "RELEASE ";
+      out << " RELEASE";
       break;
     }
-    out << " pgid: " << pgid << ", query_epoch: " << query_epoch;
+    out << " e" << query_epoch << ")";
     return;
   }
 
@@ -66,10 +66,7 @@ public:
     ::decode(pgid.pgid, p);
     ::decode(query_epoch, p);
     ::decode(type, p);
-    if (header.version >= 2)
-      ::decode(pgid.shard, p);
-    else
-      pgid.shard = shard_id_t::NO_SHARD;
+    ::decode(pgid.shard, p);
   }
 
   void encode_payload(uint64_t features) override {

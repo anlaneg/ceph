@@ -50,6 +50,7 @@ struct MockManagedLock {
   MOCK_CONST_METHOD0(is_shutdown, bool());
 
   MOCK_CONST_METHOD0(is_state_post_acquiring, bool());
+  MOCK_CONST_METHOD0(is_state_pre_releasing, bool());
   MOCK_CONST_METHOD0(is_state_locked, bool());
 };
 
@@ -145,6 +146,10 @@ struct ManagedLock<MockTestImageCtx> {
 
   bool is_state_post_acquiring() const {
     return MockManagedLock::get_instance().is_state_post_acquiring();
+  }
+
+  bool is_state_pre_releasing() const {
+    return MockManagedLock::get_instance().is_state_pre_releasing();
   }
 
   bool is_state_locked() const {
@@ -264,6 +269,8 @@ struct MockListener : public LeaderWatcher<librbd::MockTestImageCtx>::Listener {
 
   MOCK_METHOD1(post_acquire_handler, void(Context *));
   MOCK_METHOD1(pre_release_handler, void(Context *));
+
+  MOCK_METHOD1(update_leader_handler, void(const std::string &));
 };
 
 MockListener *MockListener::s_instance = nullptr;
@@ -325,18 +332,14 @@ public:
   }
 
   void expect_get_locker(MockManagedLock &mock_managed_lock,
-                         const librbd::managed_lock::Locker &locker, int r,
-                         Context *on_finish = nullptr) {
+                         const librbd::managed_lock::Locker &locker, int r) {
     EXPECT_CALL(mock_managed_lock, get_locker(_, _))
-      .WillOnce(Invoke([on_finish, r, locker](librbd::managed_lock::Locker *out,
-                                              Context *ctx) {
+      .WillOnce(Invoke([r, locker](librbd::managed_lock::Locker *out,
+                                   Context *ctx) {
                          if (r == 0) {
                            *out = locker;
                          }
                          ctx->complete(r);
-                         if (on_finish != nullptr) {
-                           on_finish->complete(0);
-                         }
                        }));
   }
 
@@ -374,6 +377,8 @@ public:
     EXPECT_CALL(mock_managed_lock, is_state_post_acquiring())
       .Times(AtLeast(0)).WillRepeatedly(Return(false));
     EXPECT_CALL(mock_managed_lock, is_state_locked())
+      .Times(AtLeast(0)).WillRepeatedly(Return(false));
+    EXPECT_CALL(mock_managed_lock, is_state_pre_releasing())
       .Times(AtLeast(0)).WillRepeatedly(Return(false));
   }
 
@@ -543,16 +548,26 @@ TEST_F(TestMockLeaderWatcher, AcquireError) {
   MockLeaderWatcher leader_watcher(m_mock_threads, m_local_io_ctx, &listener);
 
   // Inint
-  C_SaferCond on_get_locker_finish;
+  C_SaferCond on_heartbeat_finish;
   expect_is_leader(mock_managed_lock, false, false);
   expect_try_acquire_lock(mock_managed_lock, -EAGAIN);
-  expect_get_locker(mock_managed_lock, librbd::managed_lock::Locker(), 0,
-                    &on_get_locker_finish);
+  expect_get_locker(mock_managed_lock, librbd::managed_lock::Locker(), -ENOENT);
+  expect_try_acquire_lock(mock_managed_lock, 0);
+  expect_init(mock_mirror_status_watcher, 0);
+  expect_init(mock_instances, 0);
+  expect_acquire_notify(mock_managed_lock, listener, 0);
+  expect_notify_heartbeat(mock_managed_lock, &on_heartbeat_finish);
+
   ASSERT_EQ(0, leader_watcher.init());
-  ASSERT_EQ(0, on_get_locker_finish.wait());
+  ASSERT_EQ(0, on_heartbeat_finish.wait());
 
   // Shutdown
-  expect_shut_down(mock_managed_lock, false, 0);
+  expect_release_notify(mock_managed_lock, listener, 0);
+  expect_shut_down(mock_instances, 0);
+  expect_shut_down(mock_mirror_status_watcher, 0);
+  expect_is_leader(mock_managed_lock, false, false);
+  expect_release_lock(mock_managed_lock, 0);
+  expect_shut_down(mock_managed_lock, true, 0);
   expect_is_leader(mock_managed_lock, false, false);
 
   leader_watcher.shut_down();
@@ -608,8 +623,8 @@ TEST_F(TestMockLeaderWatcher, Break) {
   EXPECT_EQ(0, _rados->conf_set("rbd_mirror_leader_max_missed_heartbeats",
                                 "1"));
   CephContext *cct = reinterpret_cast<CephContext *>(m_local_io_ctx.cct());
-  int max_acquire_attempts =
-    cct->_conf->rbd_mirror_leader_max_acquire_attempts_before_break;
+  int max_acquire_attempts = cct->_conf->get_val<int64_t>(
+    "rbd_mirror_leader_max_acquire_attempts_before_break");
 
   MockManagedLock mock_managed_lock;
   MockMirrorStatusWatcher mock_mirror_status_watcher;
@@ -621,6 +636,7 @@ TEST_F(TestMockLeaderWatcher, Break) {
   expect_is_shutdown(mock_managed_lock);
   expect_is_leader(mock_managed_lock);
   expect_destroy(mock_managed_lock);
+  EXPECT_CALL(listener, update_leader_handler(_));
 
   InSequence seq;
 

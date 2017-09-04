@@ -12,35 +12,17 @@
  * 
  */
 
-
-
-#include "include/types.h"
+#include "common/LogClient.h"
 #include "include/str_map.h"
-#include "include/uuid.h"
-
-#include "msg/Messenger.h"
-#include "msg/Message.h"
-
 #include "messages/MLog.h"
 #include "messages/MLogAck.h"
 #include "mon/MonMap.h"
-
-#include <iostream>
-#include <errno.h>
-#include <sys/stat.h>
-#include <syslog.h>
+#include "common/Graylog.h"
 
 #ifdef DARWIN
 #include <sys/param.h>
 #include <sys/mount.h>
 #endif // DARWIN
-
-#include "common/Graylog.h"
-// wipe the assert() introduced by boost headers included by Graylog.h
-#include "include/assert.h"
-#include "common/LogClient.h"
-
-#include "common/config.h"
 
 #define dout_subsys ceph_subsys_monc
 
@@ -241,10 +223,17 @@ void LogChannel::do_log(clog_type prio, const std::string& s)
   e.stamp = ceph_clock_now();
   // seq and who should be set for syslog/graylog/log_to_mon
   e.who = parent->get_myinst();
-  e.seq = parent->get_next_seq();
+  e.name = parent->get_myname();
   e.prio = prio;
   e.msg = s;
   e.channel = get_log_channel();
+
+  // log to monitor?
+  if (log_to_monitors) {
+    e.seq = parent->queue(e);
+  } else {
+    e.seq = parent->get_next_seq();
+  }
 
   // log to syslog?
   if (do_log_to_syslog()) {
@@ -257,22 +246,17 @@ void LogChannel::do_log(clog_type prio, const std::string& s)
     ldout(cct,0) << __func__ << " log to graylog"  << dendl;
     graylog->log_log_entry(&e);
   }
+}
 
-  // log to monitor?
-  if (log_to_monitors) {
-    parent->queue(e);
+Message *LogClient::get_mon_log_message(bool flush)
+{
+  Mutex::Locker l(log_lock);
+  if (flush) {
+    if (log_queue.empty())
+      return nullptr;
+    // reset session
+    last_log_sent = log_queue.front().seq;
   }
-}
-
-void LogClient::reset_session()
-{
-  Mutex::Locker l(log_lock);
-  last_log_sent = last_log - log_queue.size();
-}
-
-Message *LogClient::get_mon_log_message()
-{
-  Mutex::Locker l(log_lock);
   return _get_mon_log_message();
 }
 
@@ -285,8 +269,8 @@ bool LogClient::are_pending()
 Message *LogClient::_get_mon_log_message()
 {
   assert(log_lock.is_locked());
-   if (log_queue.empty())
-     return NULL;
+  if (log_queue.empty())
+    return NULL;
 
   // only send entries that haven't been sent yet during this mon
   // session!  monclient needs to call reset_session() on mon session
@@ -341,6 +325,7 @@ void LogClient::_send_to_mon()
 version_t LogClient::queue(LogEntry &entry)
 {
   Mutex::Locker l(log_lock);
+  entry.seq = ++last_log;
   log_queue.push_back(entry);
 
   if (is_mon) {
@@ -352,12 +337,18 @@ version_t LogClient::queue(LogEntry &entry)
 
 uint64_t LogClient::get_next_seq()
 {
+  Mutex::Locker l(log_lock);
   return ++last_log;
 }
 
 const entity_inst_t& LogClient::get_myinst()
 {
   return messenger->get_myinst();
+}
+
+const EntityName& LogClient::get_myname()
+{
+  return cct->_conf->name;
 }
 
 bool LogClient::handle_log_ack(MLogAck *m)

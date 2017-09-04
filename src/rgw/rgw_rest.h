@@ -29,11 +29,11 @@ extern void rgw_flush_formatter(struct req_state *s,
 				ceph::Formatter *formatter);
 
 extern int rgw_rest_read_all_input(struct req_state *s, char **data, int *plen,
-				   int max_len);
+				   uint64_t max_len, bool allow_chunked=true);
 
 template <class T>
 int rgw_rest_get_json_input(CephContext *cct, req_state *s, T& out,
-			    int max_len, bool *empty)
+			    uint64_t max_len, bool *empty)
 {
   int rv, data_len;
   char *data;
@@ -72,7 +72,7 @@ int rgw_rest_get_json_input(CephContext *cct, req_state *s, T& out,
 }
 
 template <class T>
-int rgw_rest_get_json_input_keep_data(CephContext *cct, req_state *s, T& out, int max_len, char **pdata, int *len)
+int rgw_rest_get_json_input_keep_data(CephContext *cct, req_state *s, T& out, uint64_t max_len, char **pdata, int *len)
 {
   int rv, data_len;
   char *data;
@@ -161,6 +161,18 @@ public:
   int get_params() override;
 };
 
+class RGWGetObjTags_ObjStore : public RGWGetObjTags {
+public:
+  RGWGetObjTags_ObjStore() {};
+  ~RGWGetObjTags_ObjStore() {};
+};
+
+class RGWPutObjTags_ObjStore: public RGWPutObjTags {
+public:
+  RGWPutObjTags_ObjStore() {};
+  ~RGWPutObjTags_ObjStore() {};
+};
+
 class RGWListBuckets_ObjStore : public RGWListBuckets {
 public:
   RGWListBuckets_ObjStore() {}
@@ -212,18 +224,78 @@ public:
   int verify_params() override;
   int get_params() override;
   int get_data(bufferlist& bl) override;
-
-  int get_padding_last_aws4_chunk_encoded(bufferlist &bl, uint64_t chunk_size);
 };
 
 class RGWPostObj_ObjStore : public RGWPostObj
 {
+  std::string boundary;
+
+public:
+  struct post_part_field {
+    std::string val;
+    std::map<std::string, std::string> params;
+  };
+
+  struct post_form_part {
+    std::string name;
+    std::map<std::string, post_part_field, ltstr_nocase> fields;
+    ceph::bufferlist data;
+  };
+
+protected:
+  using parts_collection_t = \
+    std::map<std::string, post_form_part, const ltstr_nocase>;
+
+  std::string err_msg;
+  ceph::bufferlist in_data;
+
+  int read_with_boundary(ceph::bufferlist& bl,
+                         uint64_t max,
+                         bool check_eol,
+                         bool& reached_boundary,
+                         bool& done);
+
+  int read_line(ceph::bufferlist& bl,
+                uint64_t max,
+                bool& reached_boundary,
+                bool& done);
+
+  int read_data(ceph::bufferlist& bl,
+                uint64_t max,
+                bool& reached_boundary,
+                bool& done);
+
+  int read_form_part_header(struct post_form_part *part, bool& done);
+
+  int get_params() override;
+
+  static int parse_part_field(const std::string& line,
+                              std::string& field_name, /* out */
+                              post_part_field& field); /* out */
+
+  static void parse_boundary_params(const std::string& params_str,
+                                    std::string& first,
+                                    std::map<std::string, std::string>& params);
+
+  static bool part_str(parts_collection_t& parts,
+                       const std::string& name,
+                       std::string *val);
+
+  static std::string get_part_str(parts_collection_t& parts,
+                                  const std::string& name,
+                                  const std::string& def_val = std::string());
+
+  static bool part_bl(parts_collection_t& parts,
+                      const std::string& name,
+                      ceph::bufferlist *pbl);
+
 public:
   RGWPostObj_ObjStore() {}
   ~RGWPostObj_ObjStore() override {}
 
   int verify_params() override;
 };
+
 
 class RGWPutMetadataAccount_ObjStore : public RGWPutMetadataAccount
 {
@@ -371,6 +443,12 @@ public:
   ~RGWBulkDelete_ObjStore() override {}
 };
 
+class RGWBulkUploadOp_ObjStore : public RGWBulkUploadOp {
+public:
+  RGWBulkUploadOp_ObjStore() = default;
+  ~RGWBulkUploadOp_ObjStore() = default;
+};
+
 class RGWDeleteMultiObj_ObjStore : public RGWDeleteMultiObj {
 public:
   RGWDeleteMultiObj_ObjStore() {}
@@ -423,7 +501,6 @@ public:
   RGWHandler_REST() {}
   ~RGWHandler_REST() override {}
 
-  static int validate_tenant_name(const string& bucket);
   static int validate_bucket_name(const string& bucket);
   static int validate_object_name(const string& object);
 
@@ -558,8 +635,6 @@ public:
 static constexpr int64_t NO_CONTENT_LENGTH = -1;
 static constexpr int64_t CHUNKED_TRANSFER_ENCODING = -2;
 
-extern void set_req_state_err(struct rgw_err &err, int err_no, int prot_flags);
-extern void set_req_state_err(struct req_state *s, int err_no);
 extern void dump_errno(int http_ret, string& out);
 extern void dump_errno(const struct rgw_err &err, string& out);
 extern void dump_errno(struct req_state *s);
@@ -623,6 +698,7 @@ static inline void dump_header_if_nonempty(struct req_state* s,
 }
 
 extern void dump_content_length(struct req_state *s, uint64_t len);
+extern int64_t parse_content_length(const char *content_length);
 extern void dump_etag(struct req_state *s,
                       const boost::string_ref& etag,
                       bool quoted = false);

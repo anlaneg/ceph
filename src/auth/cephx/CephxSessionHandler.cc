@@ -41,9 +41,9 @@ int CephxSessionHandler::_calc_signature(Message *m, uint64_t *psig)
     __le32 middle_crc;
     __le32 data_crc;
   } __attribute__ ((packed)) sigblock = {
-    1, mswab64(AUTH_ENC_MAGIC), mswab32(4*4),
-    mswab32(header.crc), mswab32(footer.front_crc),
-    mswab32(footer.middle_crc), mswab32(footer.data_crc)
+    1, mswab(AUTH_ENC_MAGIC), mswab<uint32_t>(4*4),
+    mswab<uint32_t>(header.crc), mswab<uint32_t>(footer.front_crc),
+    mswab<uint32_t>(footer.middle_crc), mswab<uint32_t>(footer.data_crc)
   };
   bufferlist bl_plaintext;
   bl_plaintext.append(buffer::create_static(sizeof(sigblock), (char*)&sigblock));
@@ -81,7 +81,6 @@ int CephxSessionHandler::sign_message(Message *m)
   ceph_msg_footer& f = m->get_footer();
   f.sig = sig;
   f.flags = (unsigned)f.flags | CEPH_MSG_FOOTER_SIGNED;
-  messages_signed++;
   ldout(cct, 20) << "Putting signature in client message(seq # " << m->get_seq()
 		 << "): sig = " << sig << dendl;
   return 0;
@@ -103,8 +102,6 @@ int CephxSessionHandler::check_message_signature(Message *m)
   if (r < 0)
     return r;
 
-  signatures_checked++;
-
   if (sig != m->get_footer().sig) {
     // Should have been signed, but signature check failed.  PLR
     if (!(m->get_footer().flags & CEPH_MSG_FOOTER_SIGNED)) {
@@ -122,13 +119,9 @@ int CephxSessionHandler::check_message_signature(Message *m)
     // security failure, particularly when there are large numbers of
     // them, since the latter is a potential sign of an attack.  PLR
 
-    signatures_failed++;
     ldout(cct, 0) << "Signature failed." << dendl;
     return (SESSION_SIGNATURE_FAILURE);
   }
-
-  // If we get here, the signature checked.  PLR
-  signatures_matched++;
 
   return 0;
 }

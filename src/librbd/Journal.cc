@@ -64,7 +64,7 @@ struct C_IsTagOwner : public Context {
   Journaler *journaler;
   cls::journal::Client client;
   journal::ImageClientMeta client_meta;
-  uint64_t tag_tid;
+  uint64_t tag_tid = 0;
   journal::TagData tag_data;
 
   C_IsTagOwner(librados::IoCtx &io_ctx, const std::string &image_id,
@@ -337,7 +337,7 @@ Journal<I>::Journal(I &image_ctx)
   cct->lookup_or_create_singleton_object<ThreadPoolSingleton>(
     thread_pool_singleton, "librbd::journal::thread_pool");
   m_work_queue = new ContextWQ("librbd::journal::work_queue",
-                               cct->_conf->rbd_op_thread_timeout,
+                               cct->_conf->get_val<int64_t>("rbd_op_thread_timeout"),
                                thread_pool_singleton);
   ImageCtx::get_timer_instance(cct, &m_timer, &m_timer_lock);
 }
@@ -456,25 +456,6 @@ int Journal<I>::reset(librados::IoCtx &io_ctx, const std::string &image_id) {
 }
 
 template <typename I>
-int Journal<I>::is_tag_owner(I *image_ctx, bool *is_tag_owner) {
-  return Journal<I>::is_tag_owner(image_ctx->md_ctx, image_ctx->id,
-                                  is_tag_owner, image_ctx->op_work_queue);
-}
-
-template <typename I>
-int Journal<I>::is_tag_owner(librados::IoCtx& io_ctx, std::string& image_id,
-                             bool *is_tag_owner, ContextWQ *op_work_queue) {
-  C_SaferCond ctx;
-  Journal<I>::is_tag_owner(io_ctx, image_id, is_tag_owner, op_work_queue, &ctx);
-
-  int r = ctx.wait();
-  if (r < 0) {
-    return r;
-  }
-  return r;
-}
-
-template <typename I>
 void Journal<I>::is_tag_owner(I *image_ctx, bool *owner,
                               Context *on_finish) {
   Journal<I>::is_tag_owner(image_ctx->md_ctx, image_ctx->id, owner,
@@ -493,19 +474,6 @@ void Journal<I>::is_tag_owner(librados::IoCtx& io_ctx, std::string& image_id,
   get_tags(cct, is_tag_owner_ctx->journaler, &is_tag_owner_ctx->client,
 	   &is_tag_owner_ctx->client_meta, &is_tag_owner_ctx->tag_tid,
 	   &is_tag_owner_ctx->tag_data, is_tag_owner_ctx);
-}
-
-template <typename I>
-int Journal<I>::get_tag_owner(I *image_ctx, std::string *mirror_uuid) {
-  C_SaferCond get_tags_ctx;
-  get_tag_owner(image_ctx->md_ctx, image_ctx->id, mirror_uuid,
-                image_ctx->op_work_queue, &get_tags_ctx);
-
-  int r = get_tags_ctx.wait();
-  if (r < 0) {
-    return r;
-  }
-  return 0;
 }
 
 template <typename I>
@@ -1364,9 +1332,11 @@ void Journal<I>::handle_replay_process_safe(ReplayEntry replay_entry, int r) {
 
   ldout(cct, 20) << this << " " << __func__ << ": r=" << r << dendl;
   if (r < 0) {
-    lderr(cct) << this << " " << __func__ << ": "
-               << "failed to commit journal event to disk: " << cpp_strerror(r)
-               << dendl;
+    if (r != -ECANCELED) {
+      lderr(cct) << this << " " << __func__ << ": "
+                 << "failed to commit journal event to disk: "
+                 << cpp_strerror(r) << dendl;
+    }
 
     if (m_state == STATE_REPLAYING) {
       // abort the replay if we have an error
@@ -1800,4 +1770,6 @@ void Journal<I>::remove_listener(journal::Listener *listener) {
 
 } // namespace librbd
 
+#ifndef TEST_F
 template class librbd::Journal<librbd::ImageCtx>;
+#endif

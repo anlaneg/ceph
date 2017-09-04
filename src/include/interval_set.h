@@ -153,6 +153,13 @@ class interval_set {
   };
 
   interval_set() : _size(0) {}
+  interval_set(std::map<T,T>& other) {
+    m.swap(other);
+    _size = 0;
+    for (auto& i : m) {
+      _size += i.second;
+    }
+  }
 
   int num_intervals() const
   {
@@ -228,13 +235,67 @@ class interval_set {
     }
     return p;
   }
+
+  void intersection_size_asym(const interval_set &s, const interval_set &l) {
+    typename decltype(m)::const_iterator ps = s.m.begin(), pl;
+    assert(ps != s.m.end());
+    T offset = ps->first, prev_offset;
+    bool first = true;
+    typename decltype(m)::iterator mi = m.begin();
+
+    while (1) {
+      if (first)
+        first = false;
+      else
+        assert(offset > prev_offset);
+      pl = l.find_inc(offset);
+      prev_offset = offset;
+      if (pl == l.m.end())
+        break;
+      while (ps != s.m.end() && ps->first + ps->second <= pl->first)
+        ++ps;
+      if (ps == s.m.end())
+        break;
+      offset = pl->first + pl->second;
+      if (offset <= ps->first) {
+        offset = ps->first;
+        continue;
+      }
+
+      if (*ps == *pl) {
+        do {
+          mi = m.insert(mi, *ps);
+          _size += ps->second;
+          ++ps;
+          ++pl;
+        } while (ps != s.m.end() && pl != l.m.end() && *ps == *pl);
+        if (ps == s.m.end())
+          break;
+        offset = ps->first;
+        continue;
+      }
+
+      T start = std::max<T>(ps->first, pl->first);
+      T en = std::min<T>(ps->first + ps->second, offset);
+      assert(en > start);
+      typename decltype(m)::value_type i{start, en - start};
+      mi = m.insert(mi, i);
+      _size += i.second;
+      if (ps->first + ps->second <= offset) {
+        ++ps;
+        if (ps == s.m.end())
+          break;
+        offset = ps->first;
+      }
+    }
+  }
   
  public:
   bool operator==(const interval_set& other) const {
     return _size == other._size && m == other.m;
   }
 
-  int size() const {
+  int64_t size() const {
     return _size;
   }
 
@@ -242,15 +303,21 @@ class interval_set {
     denc_traits<std::map<T,T>>::bound_encode(m, p);
   }
   void encode(bufferlist::contiguous_appender& p) const {
-    denc_traits<std::map<T,T>>::encode(m, p);
+    denc(m, p);
   }
   void decode(bufferptr::iterator& p) {
-    denc_traits<std::map<T,T>>::decode(m, p);
+    denc(m, p);
     _size = 0;
-    for (typename std::map<T,T>::const_iterator i = m.begin();
-         i != m.end();
-         i++)
-      _size += i->second;
+    for (const auto& i : m) {
+      _size += i.second;
+    }
+  }
+  void decode(bufferlist::iterator& p) {
+    denc(m, p);
+    _size = 0;
+    for (const auto& i : m) {
+      _size += i.second;
+    }
   }
 
   void encode_nohead(bufferlist::contiguous_appender& p) const {
@@ -259,10 +326,9 @@ class interval_set {
   void decode_nohead(int n, bufferptr::iterator& p) {
     denc_traits<std::map<T,T>>::decode_nohead(n, m, p);
     _size = 0;
-    for (typename std::map<T,T>::const_iterator i = m.begin();
-         i != m.end();
-         i++)
-      _size += i->second;
+    for (const auto& i : m) {
+      _size += i.second;
+    }
   }
 
   void clear() {
@@ -449,19 +515,56 @@ class interval_set {
     assert(&b != this);
     clear();
 
+    const interval_set *s, *l;
+
+    if (a.size() < b.size()) {
+      s = &a;
+      l = &b;
+    } else {
+      s = &b;
+      l = &a;
+    }
+
+    if (!s->size())
+      return;
+
+    /*
+     * Use the lower_bound algorithm for larger size ratios
+     * where it performs better, but not for smaller size
+     * ratios where sequential search performs better.
+     */
+    if (l->size() / s->size() >= 10) {
+      intersection_size_asym(*s, *l);
+      return;
+    }
+
     typename std::map<T,T>::const_iterator pa = a.m.begin();
     typename std::map<T,T>::const_iterator pb = b.m.begin();
-    
+    typename decltype(m)::iterator mi = m.begin();
+
     while (pa != a.m.end() && pb != b.m.end()) {
       // passing?
       if (pa->first + pa->second <= pb->first) 
         { pa++;  continue; }
       if (pb->first + pb->second <= pa->first) 
         { pb++;  continue; }
+
+      if (*pa == *pb) {
+        do {
+          mi = m.insert(mi, *pa);
+          _size += pa->second;
+          ++pa;
+          ++pb;
+        } while (pa != a.m.end() && pb != b.m.end() && *pa == *pb);
+        continue;
+      }
+
       T start = MAX(pa->first, pb->first);
       T en = MIN(pa->first+pa->second, pb->first+pb->second);
       assert(en > start);
-      insert(start, en-start);
+      typename decltype(m)::value_type i{start, en - start};
+      mi = m.insert(mi, i);
+      _size += i.second;
       if (pa->first+pa->second > pb->first+pb->second)
         pb++;
       else
@@ -548,6 +651,14 @@ class interval_set {
     }
   }
 
+  /*
+   * Move contents of m into another std::map<T,T>. Use that instead of
+   * encoding interval_set into bufferlist then decoding it back into std::map.
+   */
+  void move_into(std::map<T,T>& other) {
+    other = std::move(m);
+  }
+
 private:
   // data
   int64_t _size;
@@ -561,6 +672,7 @@ struct denc_traits<interval_set<T>> {
   static constexpr bool supported = true;
   static constexpr bool bounded = false;
   static constexpr bool featured = false;
+  static constexpr bool need_contiguous = denc_traits<T>::need_contiguous;
   static void bound_encode(const interval_set<T>& v, size_t& p) {
     v.bound_encode(p);
   }
@@ -569,6 +681,11 @@ struct denc_traits<interval_set<T>> {
     v.encode(p);
   }
   static void decode(interval_set<T>& v, bufferptr::iterator& p) {
+    v.decode(p);
+  }
+  template<typename U=T>
+    static typename std::enable_if<sizeof(U) && !need_contiguous>::type
+    decode(interval_set<T>& v, bufferlist::iterator& p) {
     v.decode(p);
   }
   static void encode_nohead(const interval_set<T>& v,

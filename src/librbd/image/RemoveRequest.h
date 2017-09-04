@@ -27,11 +27,13 @@ public:
   static RemoveRequest *create(librados::IoCtx &ioctx,
                                const std::string &image_name,
                                const std::string &image_id,
-                               bool force, ProgressContext &prog_ctx,
+                               bool force, bool from_trash_remove,
+                               ProgressContext &prog_ctx,
                                ContextWQ *op_work_queue,
                                Context *on_finish) {
-    return new RemoveRequest(ioctx, image_name, image_id, force, prog_ctx,
-                             op_work_queue, on_finish);
+    return new RemoveRequest(ioctx, image_name, image_id, force,
+                             from_trash_remove, prog_ctx, op_work_queue,
+                             on_finish);
   }
 
   void send();
@@ -97,7 +99,7 @@ private:
    */
 
   RemoveRequest(librados::IoCtx &ioctx, const std::string &image_name,
-                const std::string &image_id, bool force,
+                const std::string &image_id, bool force, bool from_trash_remove,
                 ProgressContext &prog_ctx, ContextWQ *op_work_queue,
                 Context *on_finish);
 
@@ -105,6 +107,7 @@ private:
   std::string m_image_name;
   std::string m_image_id;
   bool m_force;
+  bool m_from_trash_remove;
   ProgressContext &m_prog_ctx;
   ContextWQ *m_op_work_queue;
   Context *m_on_finish;
@@ -115,55 +118,65 @@ private:
   bool m_unknown_format = true;
   ImageCtxT *m_image_ctx;
 
+  decltype(m_image_ctx->exclusive_lock) m_exclusive_lock = nullptr;
+
   int m_ret_val = 0;
   bufferlist m_out_bl;
   std::list<obj_watch_t> m_watchers;
+  std::list<obj_watch_t> m_mirror_watchers;
 
   void open_image();
-  Context *handle_open_image(int *result);
+  void handle_open_image(int r);
 
   void send_journal_remove();
-  Context* handle_journal_remove(int *result);
+  void handle_journal_remove(int r);
 
   void send_object_map_remove();
-  Context* handle_object_map_remove(int *result);
+  void handle_object_map_remove(int r);
 
   void mirror_image_remove();
-  Context* handle_mirror_image_remove(int *result);
+  void handle_mirror_image_remove(int r);
 
   void check_exclusive_lock();
 
   void acquire_exclusive_lock();
-  Context *handle_exclusive_lock(int *result);
-  Context *handle_exclusive_lock_force(int *result);
+  void handle_exclusive_lock(int r);
+  void handle_exclusive_lock_force(int r);
 
   void validate_image_removal();
   void check_image_snaps();
 
-  void filter_out_mirror_watchers();
-  void check_image_watchers();
-  Context *handle_check_image_watchers(int *result);
+  void list_image_watchers();
+  void handle_list_image_watchers(int r);
 
-  void check_image_consistency_group();
-  Context *handle_check_image_consistency_group(int *result);
+  void get_mirror_image();
+  void handle_get_mirror_image(int r);
+
+  void list_mirror_watchers();
+  void handle_list_mirror_watchers(int r);
+
+  void check_image_watchers();
+
+  void check_group();
+  void handle_check_group(int r);
 
   void trim_image();
-  Context *handle_trim_image(int *result);
+  void handle_trim_image(int r);
 
   void remove_child();
-  Context *handle_remove_child(int *result);
+  void handle_remove_child(int r);
 
   void send_disable_mirror();
-  Context *handle_disable_mirror(int *result);
+  void handle_disable_mirror(int r);
 
   void send_close_image(int r);
-  Context *handle_send_close_image(int *result);
+  void handle_send_close_image(int r);
 
   void remove_header();
-  Context *handle_remove_header(int *result);
+  void handle_remove_header(int r);
 
   void remove_header_v2();
-  Context *handle_remove_header_v2(int *result);
+  void handle_remove_header_v2(int r);
 
   void remove_image();
 
@@ -173,16 +186,18 @@ private:
   void remove_v2_image();
 
   void dir_get_image_id();
-  Context *handle_dir_get_image_id(int *result);
+  void handle_dir_get_image_id(int r);
 
   void dir_get_image_name();
-  Context *handle_dir_get_image_name(int *result);
+  void handle_dir_get_image_name(int r);
 
   void remove_id_object();
-  Context *handle_remove_id_object(int *result);
+  void handle_remove_id_object(int r);
 
   void dir_remove_image();
-  Context *handle_dir_remove_image(int *result);
+  void handle_dir_remove_image(int r);
+
+  void finish(int r);
 };
 
 } // namespace image

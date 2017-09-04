@@ -15,11 +15,6 @@
 #ifndef ASYNC_RESERVER_H
 #define ASYNC_RESERVER_H
 
-#include <map>
-#include <utility>
-#include <list>
-
-#include "common/Mutex.h"
 #include "common/Finisher.h"
 #include "common/Formatter.h"
 
@@ -148,6 +143,16 @@ public:
       in_progress.erase(item);
     }
     do_queues();
+  }
+
+  /**
+   * Has reservations
+   *
+   * Return true if there are reservations in progress
+   */
+  bool has_reservation() {
+    Mutex::Locker l(lock);
+    return !in_progress.empty();
   }
   static const unsigned MAX_PRIORITY = (unsigned)-1;
 };

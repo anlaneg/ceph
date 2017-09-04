@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Ceph distributed storage system
 #
@@ -27,12 +27,9 @@ function get_processors() {
     fi
 }
 
-DEFAULT_MAKEOPTS=${DEFAULT_MAKEOPTS:--j$(get_processors)}
-BUILD_MAKEOPTS=${BUILD_MAKEOPTS:-$DEFAULT_MAKEOPTS}
-CHECK_MAKEOPTS=${CHECK_MAKEOPTS:-$DEFAULT_MAKEOPTS}
-
 function run() {
     local install_cmd
+    local which_pkg="which"
     if test -f /etc/redhat-release ; then
         source /etc/os-release
         if ! type bc > /dev/null 2>&1 ; then
@@ -44,6 +41,8 @@ function run() {
         else
             install_cmd="yum install -y"
         fi
+    else
+        which_pkg="debianutils"
     fi
 
     type apt-get > /dev/null 2>&1 && install_cmd="apt-get install -y"
@@ -55,7 +54,7 @@ function run() {
         exit 1
     fi
     if [ -n "$install_cmd" ]; then
-        $DRY_RUN sudo $install_cmd ccache jq
+        $DRY_RUN sudo $install_cmd ccache jq $which_pkg
     else
         echo "WARNING: Don't know how to install packages" >&2
     fi
@@ -63,10 +62,21 @@ function run() {
     if test -f ./install-deps.sh ; then
 	$DRY_RUN ./install-deps.sh || return 1
     fi
+
+    # Init defaults after deps are installed. get_processors() depends on coreutils nproc.
+    DEFAULT_MAKEOPTS=${DEFAULT_MAKEOPTS:--j$(get_processors)}
+    BUILD_MAKEOPTS=${BUILD_MAKEOPTS:-$DEFAULT_MAKEOPTS}
+    CHECK_MAKEOPTS=${CHECK_MAKEOPTS:-$DEFAULT_MAKEOPTS}
+
     $DRY_RUN ./do_cmake.sh $@ || return 1
     $DRY_RUN cd build
     $DRY_RUN make $BUILD_MAKEOPTS tests || return 1
-    $DRY_RUN ctest $CHECK_MAKEOPTS --output-on-failure || return 1
+    # prevent OSD EMFILE death on tests
+    $DRY_RUN sudo ulimit -n 32768
+    if ! $DRY_RUN ctest $CHECK_MAKEOPTS --output-on-failure; then
+        rm -f ${TMPDIR:-/tmp}/ceph-asok.*
+        return 1
+    fi
 }
 
 function main() {

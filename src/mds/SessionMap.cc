@@ -628,6 +628,9 @@ void SessionMap::touch_session(Session *session)
 
 void SessionMap::_mark_dirty(Session *s)
 {
+  if (dirty_sessions.count(s->info.inst.name))
+    return;
+
   if (dirty_sessions.size() >= g_conf->mds_sessionmap_keys_per_op) {
     // Pre-empt the usual save() call from journal segment trim, in
     // order to avoid building up an oversized OMAP update operation
@@ -635,6 +638,7 @@ void SessionMap::_mark_dirty(Session *s)
     save(new C_MDSInternalNoop, version);
   }
 
+  null_sessions.erase(s->info.inst.name);
   dirty_sessions.insert(s->info.inst.name);
 }
 
@@ -822,7 +826,7 @@ void Session::notify_cap_release(size_t n_caps)
  * in order to generate health metrics if the session doesn't see
  * a commensurate number of calls to ::notify_cap_release
  */
-void Session::notify_recall_sent(int const new_limit)
+void Session::notify_recall_sent(const int new_limit)
 {
   if (recalled_at.is_zero()) {
     // Entering recall phase, set up counters so we can later
@@ -1039,5 +1043,15 @@ bool SessionFilter::match(
   }
 
   return true;
+}
+
+std::ostream& operator<<(std::ostream &out, const Session &s)
+{
+ if (s.get_human_name() == stringify(s.info.inst.name.num())) {
+   out << s.get_human_name();
+ } else {
+   out << s.get_human_name() << " (" << std::dec << s.info.inst.name.num() << ")";
+ }
+ return out;
 }
 

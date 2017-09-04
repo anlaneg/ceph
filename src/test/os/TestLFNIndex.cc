@@ -212,8 +212,9 @@ TEST_F(TestLFNIndex, remove_object) {
     ghobject_t hoid(hobject_t(sobject_t("ABC", CEPH_NOSNAP)));
 
     EXPECT_EQ(0, ::chmod("PATH_1", 0000));
-    if (getuid() != 0)
+    if (getuid() != 0) {
       EXPECT_EQ(-EACCES, remove_object(path, hoid));
+    }
     EXPECT_EQ(0, ::chmod("PATH_1", 0700));
     EXPECT_EQ(-ENOENT, remove_object(path, hoid));
     EXPECT_EQ(0, get_mangled_name(path, hoid, &mangled_name, &exists));
@@ -404,8 +405,9 @@ TEST_F(TestLFNIndex, get_mangled_name) {
     exists = 666;
     EXPECT_EQ(0, ::close(::creat(pathname.c_str(), 0600)));
     EXPECT_EQ(0, ::chmod("PATH_1", 0500));
-    if (getuid() != 0)
+    if (getuid() != 0) {
       EXPECT_EQ(-EACCES, get_mangled_name(path, hoid, &mangled_name, &exists));
+    }
     EXPECT_EQ("", mangled_name);
     EXPECT_EQ(666, exists);
     EXPECT_EQ(0, ::chmod("PATH_1", 0700));
@@ -450,6 +452,10 @@ TEST_F(TestLFNIndex, get_mangled_name) {
 
 int main(int argc, char **argv) {
   int fd = ::creat("detect", 0600);
+  if (fd < 0){
+    cerr << "failed to create file detect" << std::endl;
+    return EXIT_FAILURE;
+  }
   int ret = chain_fsetxattr(fd, "user.test", "A", 1);
   ::close(fd);
   ::unlink("detect");

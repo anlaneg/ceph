@@ -20,9 +20,8 @@
 #include "librbd/Journal.h"
 #include "librbd/Utils.h"
 #include "librbd/journal/Types.h"
-#include "tools/rbd_mirror/ImageSync.h"
 #include "tools/rbd_mirror/ProgressContext.h"
-#include "tools/rbd_mirror/ImageSyncThrottler.h"
+#include "tools/rbd_mirror/ImageSync.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd_mirror
@@ -42,9 +41,9 @@ template <typename I>
 BootstrapRequest<I>::BootstrapRequest(
         librados::IoCtx &local_io_ctx,
         librados::IoCtx &remote_io_ctx,
-        std::shared_ptr<ImageSyncThrottler<I>> image_sync_throttler,
+        InstanceWatcher<I> *instance_watcher,
         I **local_image_ctx,
-        const std::string &local_image_name,
+        const std::string &local_image_id,
         const std::string &remote_image_id,
         const std::string &global_image_id,
         ContextWQ *work_queue, SafeTimer *timer,
@@ -59,10 +58,10 @@ BootstrapRequest<I>::BootstrapRequest(
   : BaseRequest("rbd::mirror::image_replayer::BootstrapRequest",
 		reinterpret_cast<CephContext*>(local_io_ctx.cct()), on_finish),
     m_local_io_ctx(local_io_ctx), m_remote_io_ctx(remote_io_ctx),
-    m_image_sync_throttler(image_sync_throttler),
-    m_local_image_ctx(local_image_ctx), m_local_image_name(local_image_name),
-    m_remote_image_id(remote_image_id), m_global_image_id(global_image_id),
-    m_work_queue(work_queue), m_timer(timer), m_timer_lock(timer_lock),
+    m_instance_watcher(instance_watcher), m_local_image_ctx(local_image_ctx),
+    m_local_image_id(local_image_id), m_remote_image_id(remote_image_id),
+    m_global_image_id(global_image_id), m_work_queue(work_queue),
+    m_timer(timer), m_timer_lock(timer_lock),
     m_local_mirror_uuid(local_mirror_uuid),
     m_remote_mirror_uuid(remote_mirror_uuid), m_journaler(journaler),
     m_client_meta(client_meta), m_progress_ctx(progress_ctx),
@@ -76,10 +75,16 @@ BootstrapRequest<I>::~BootstrapRequest() {
 }
 
 template <typename I>
+bool BootstrapRequest<I>::is_syncing() const {
+  Mutex::Locker locker(m_lock);
+  return (m_image_sync != nullptr);
+}
+
+template <typename I>
 void BootstrapRequest<I>::send() {
   *m_do_resync = false;
 
-  get_local_image_id();
+  get_remote_tag_class();
 }
 
 template <typename I>
@@ -89,46 +94,9 @@ void BootstrapRequest<I>::cancel() {
   Mutex::Locker locker(m_lock);
   m_canceled = true;
 
-  m_image_sync_throttler->cancel_sync(m_local_io_ctx, m_local_image_id);
-}
-
-template <typename I>
-void BootstrapRequest<I>::get_local_image_id() {
-  dout(20) << dendl;
-
-  update_progress("GET_LOCAL_IMAGE_ID");
-
-  // attempt to cross-reference a local image by the global image id
-  librados::ObjectReadOperation op;
-  librbd::cls_client::mirror_image_get_image_id_start(&op, m_global_image_id);
-
-  librados::AioCompletion *aio_comp = create_rados_callback<
-    BootstrapRequest<I>, &BootstrapRequest<I>::handle_get_local_image_id>(
-      this);
-  int r = m_local_io_ctx.aio_operate(RBD_MIRRORING, aio_comp, &op, &m_out_bl);
-  assert(r == 0);
-  aio_comp->release();
-}
-
-template <typename I>
-void BootstrapRequest<I>::handle_get_local_image_id(int r) {
-  dout(20) << ": r=" << r << dendl;
-
-  if (r == 0) {
-    bufferlist::iterator iter = m_out_bl.begin();
-    r = librbd::cls_client::mirror_image_get_image_id_finish(
-      &iter, &m_local_image_id);
+  if (m_image_sync != nullptr) {
+    m_image_sync->cancel();
   }
-
-  if (r == -ENOENT) {
-    dout(10) << ": image not registered locally" << dendl;
-  } else if (r < 0) {
-    derr << ": failed to retrieve local image id: " << cpp_strerror(r) << dendl;
-    finish(r);
-    return;
-  }
-
-  get_remote_tag_class();
 }
 
 template <typename I>
@@ -175,6 +143,35 @@ void BootstrapRequest<I>::handle_get_remote_tag_class(int r) {
   m_remote_tag_class = client_meta->tag_class;
   dout(10) << ": remote tag class=" << m_remote_tag_class << dendl;
 
+  open_remote_image();
+}
+
+template <typename I>
+void BootstrapRequest<I>::open_remote_image() {
+  dout(20) << dendl;
+
+  update_progress("OPEN_REMOTE_IMAGE");
+
+  Context *ctx = create_context_callback<
+    BootstrapRequest<I>, &BootstrapRequest<I>::handle_open_remote_image>(
+      this);
+  OpenImageRequest<I> *request = OpenImageRequest<I>::create(
+    m_remote_io_ctx, &m_remote_image_ctx, m_remote_image_id, false,
+    ctx);
+  request->send();
+}
+
+template <typename I>
+void BootstrapRequest<I>::handle_open_remote_image(int r) {
+  dout(20) << ": r=" << r << dendl;
+
+  if (r < 0) {
+    derr << ": failed to open remote image: " << cpp_strerror(r) << dendl;
+    assert(m_remote_image_ctx == nullptr);
+    finish(r);
+    return;
+  }
+
   get_client();
 }
 
@@ -198,11 +195,12 @@ void BootstrapRequest<I>::handle_get_client(int r) {
     dout(10) << ": client not registered" << dendl;
   } else if (r < 0) {
     derr << ": failed to retrieve client: " << cpp_strerror(r) << dendl;
-    finish(r);
+    m_ret_val = r;
+    close_remote_image();
     return;
   } else if (decode_client_meta()) {
     // skip registration if it already exists
-    open_remote_image();
+    is_primary();
     return;
   }
 
@@ -234,40 +232,13 @@ void BootstrapRequest<I>::handle_register_client(int r) {
   if (r < 0) {
     derr << ": failed to register with remote journal: " << cpp_strerror(r)
          << dendl;
-    finish(r);
+    m_ret_val = r;
+    close_remote_image();
     return;
   }
 
+  m_client = {};
   *m_client_meta = librbd::journal::MirrorPeerClientMeta(m_local_image_id);
-  open_remote_image();
-}
-
-template <typename I>
-void BootstrapRequest<I>::open_remote_image() {
-  dout(20) << dendl;
-
-  update_progress("OPEN_REMOTE_IMAGE");
-
-  Context *ctx = create_context_callback<
-    BootstrapRequest<I>, &BootstrapRequest<I>::handle_open_remote_image>(
-      this);
-  OpenImageRequest<I> *request = OpenImageRequest<I>::create(
-    m_remote_io_ctx, &m_remote_image_ctx, m_remote_image_id, false,
-    ctx);
-  request->send();
-}
-
-template <typename I>
-void BootstrapRequest<I>::handle_open_remote_image(int r) {
-  dout(20) << ": r=" << r << dendl;
-
-  if (r < 0) {
-    derr << ": failed to open remote image: " << cpp_strerror(r) << dendl;
-    assert(m_remote_image_ctx == nullptr);
-    finish(r);
-    return;
-  }
-
   is_primary();
 }
 
@@ -305,13 +276,8 @@ void BootstrapRequest<I>::handle_is_primary(int r) {
     return;
   }
 
-  // default local image name to the remote image name if not provided
-  if (m_local_image_name.empty()) {
-    m_local_image_name = m_remote_image_ctx->name;
-  }
-
   if (m_local_image_id.empty()) {
-    create_local_image();
+    update_client_image();
     return;
   }
 
@@ -348,7 +314,7 @@ void BootstrapRequest<I>::handle_update_client_state(int r) {
   if (r < 0) {
     derr << ": failed to update client: " << cpp_strerror(r) << dendl;
   } else {
-    m_client_meta->state = librbd::journal::MIRROR_PEER_STATE_REPLAYING;;
+    m_client_meta->state = librbd::journal::MIRROR_PEER_STATE_REPLAYING;
   }
 
   close_remote_image();
@@ -364,9 +330,8 @@ void BootstrapRequest<I>::open_local_image() {
     BootstrapRequest<I>, &BootstrapRequest<I>::handle_open_local_image>(
       this);
   OpenLocalImageRequest<I> *request = OpenLocalImageRequest<I>::create(
-    m_local_io_ctx, m_local_image_ctx,
-    (!m_local_image_id.empty() ? std::string() : m_local_image_name),
-    m_local_image_id, m_work_queue, ctx);
+    m_local_io_ctx, m_local_image_ctx, m_local_image_id, m_work_queue,
+    ctx);
   request->send();
 }
 
@@ -377,7 +342,7 @@ void BootstrapRequest<I>::handle_open_local_image(int r) {
   if (r == -ENOENT) {
     assert(*m_local_image_ctx == nullptr);
     dout(10) << ": local image missing" << dendl;
-    create_local_image();
+    unregister_client();
     return;
   } else if (r == -EREMOTEIO) {
     assert(*m_local_image_ctx == nullptr);
@@ -425,57 +390,46 @@ void BootstrapRequest<I>::handle_open_local_image(int r) {
     return;
   }
 
-  update_client_image();
+  get_remote_tags();
 }
 
 template <typename I>
-void BootstrapRequest<I>::create_local_image() {
+void BootstrapRequest<I>::unregister_client() {
   dout(20) << dendl;
+  update_progress("UNREGISTER_CLIENT");
 
   m_local_image_id = "";
-  update_progress("CREATE_LOCAL_IMAGE");
-
   Context *ctx = create_context_callback<
-    BootstrapRequest<I>, &BootstrapRequest<I>::handle_create_local_image>(
+    BootstrapRequest<I>, &BootstrapRequest<I>::handle_unregister_client>(
       this);
-  CreateImageRequest<I> *request = CreateImageRequest<I>::create(
-    m_local_io_ctx, m_work_queue, m_global_image_id, m_remote_mirror_uuid,
-    m_local_image_name, m_remote_image_ctx, ctx);
-  request->send();
+  m_journaler->unregister_client(ctx);
 }
 
 template <typename I>
-void BootstrapRequest<I>::handle_create_local_image(int r) {
+void BootstrapRequest<I>::handle_unregister_client(int r) {
   dout(20) << ": r=" << r << dendl;
-
   if (r < 0) {
-    derr << ": failed to create local image: " << cpp_strerror(r) << dendl;
+    derr << ": failed to unregister with remote journal: " << cpp_strerror(r)
+         << dendl;
     m_ret_val = r;
     close_remote_image();
     return;
   }
 
-  m_created_local_image = true;
-  open_local_image();
+  *m_client_meta = librbd::journal::MirrorPeerClientMeta("");
+  register_client();
 }
 
 template <typename I>
 void BootstrapRequest<I>::update_client_image() {
   dout(20) << dendl;
-
   update_progress("UPDATE_CLIENT_IMAGE");
 
-  if (m_client_meta->image_id == (*m_local_image_ctx)->id) {
-    // already registered local image with remote journal
-    get_remote_tags();
-    return;
-  }
-  m_local_image_id = (*m_local_image_ctx)->id;
+  assert(m_local_image_id.empty());
+  m_local_image_id = librbd::util::generate_image_id<I>(m_local_io_ctx);
 
-  dout(20) << dendl;
-
-  librbd::journal::MirrorPeerClientMeta client_meta;
-  client_meta.image_id = m_local_image_id;
+  librbd::journal::MirrorPeerClientMeta client_meta{m_local_image_id};
+  client_meta.state = librbd::journal::MIRROR_PEER_STATE_SYNCING;
 
   librbd::journal::ClientData client_data(client_meta);
   bufferlist data_bl;
@@ -494,19 +448,52 @@ void BootstrapRequest<I>::handle_update_client_image(int r) {
   if (r < 0) {
     derr << ": failed to update client: " << cpp_strerror(r) << dendl;
     m_ret_val = r;
-    close_local_image();
+    close_remote_image();
     return;
   }
 
   if (m_canceled) {
     dout(10) << ": request canceled" << dendl;
     m_ret_val = -ECANCELED;
-    close_local_image();
+    close_remote_image();
     return;
   }
 
-  m_client_meta->image_id = m_local_image_id;
-  get_remote_tags();
+  *m_client_meta = {m_local_image_id};
+  m_client_meta->state = librbd::journal::MIRROR_PEER_STATE_SYNCING;
+  create_local_image();
+}
+
+template <typename I>
+void BootstrapRequest<I>::create_local_image() {
+  dout(20) << dendl;
+  update_progress("CREATE_LOCAL_IMAGE");
+
+  m_remote_image_ctx->snap_lock.get_read();
+  std::string image_name = m_remote_image_ctx->name;
+  m_remote_image_ctx->snap_lock.put_read();
+
+  Context *ctx = create_context_callback<
+    BootstrapRequest<I>, &BootstrapRequest<I>::handle_create_local_image>(
+      this);
+  CreateImageRequest<I> *request = CreateImageRequest<I>::create(
+    m_local_io_ctx, m_work_queue, m_global_image_id, m_remote_mirror_uuid,
+    image_name, m_local_image_id, m_remote_image_ctx, ctx);
+  request->send();
+}
+
+template <typename I>
+void BootstrapRequest<I>::handle_create_local_image(int r) {
+  dout(20) << ": r=" << r << dendl;
+
+  if (r < 0) {
+    derr << ": failed to create local image: " << cpp_strerror(r) << dendl;
+    m_ret_val = r;
+    close_remote_image();
+    return;
+  }
+
+  open_local_image();
 }
 
 template <typename I>
@@ -515,8 +502,7 @@ void BootstrapRequest<I>::get_remote_tags() {
 
   update_progress("GET_REMOTE_TAGS");
 
-  if (m_created_local_image ||
-      m_client_meta->state == librbd::journal::MIRROR_PEER_STATE_SYNCING) {
+  if (m_client_meta->state == librbd::journal::MIRROR_PEER_STATE_SYNCING) {
     // optimization -- no need to compare remote tags if we just created
     // the image locally or sync was interrupted
     image_sync();
@@ -678,27 +664,32 @@ void BootstrapRequest<I>::image_sync() {
   }
 
   dout(20) << dendl;
-  update_progress("IMAGE_SYNC");
-
-  Context *ctx = create_context_callback<
-    BootstrapRequest<I>, &BootstrapRequest<I>::handle_image_sync>(
-      this);
-
   {
     Mutex::Locker locker(m_lock);
-    if (!m_canceled) {
-      m_image_sync_throttler->start_sync(*m_local_image_ctx,
-                                         m_remote_image_ctx, m_timer,
-                                         m_timer_lock,
-                                         m_local_mirror_uuid, m_journaler,
-                                         m_client_meta, m_work_queue, ctx,
-                                         m_progress_ctx);
+    if (m_canceled) {
+      m_ret_val = -ECANCELED;
+    } else {
+      assert(m_image_sync == nullptr);
+
+      Context *ctx = create_context_callback<
+        BootstrapRequest<I>, &BootstrapRequest<I>::handle_image_sync>(this);
+      m_image_sync = ImageSync<I>::create(
+          *m_local_image_ctx, m_remote_image_ctx, m_timer, m_timer_lock,
+          m_local_mirror_uuid, m_journaler, m_client_meta, m_work_queue,
+          m_instance_watcher, ctx, m_progress_ctx);
+
+      m_image_sync->get();
+
+      m_lock.Unlock();
+      update_progress("IMAGE_SYNC");
+      m_lock.Lock();
+
+      m_image_sync->send();
       return;
     }
   }
 
   dout(10) << ": request canceled" << dendl;
-  m_ret_val = -ECANCELED;
   close_remote_image();
 }
 
@@ -706,14 +697,20 @@ template <typename I>
 void BootstrapRequest<I>::handle_image_sync(int r) {
   dout(20) << ": r=" << r << dendl;
 
-  if (m_canceled) {
-    dout(10) << ": request canceled" << dendl;
-    m_ret_val = -ECANCELED;
-  }
+  {
+    Mutex::Locker locker(m_lock);
+    m_image_sync->put();
+    m_image_sync = nullptr;
 
-  if (r < 0) {
-    derr << ": failed to sync remote image: " << cpp_strerror(r) << dendl;
-    m_ret_val = r;
+    if (m_canceled) {
+      dout(10) << ": request canceled" << dendl;
+      m_ret_val = -ECANCELED;
+    }
+
+    if (r < 0) {
+      derr << ": failed to sync remote image: " << cpp_strerror(r) << dendl;
+      m_ret_val = r;
+    }
   }
 
   close_remote_image();

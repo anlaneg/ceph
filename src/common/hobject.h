@@ -15,13 +15,13 @@
 #ifndef __CEPH_OS_HOBJECT_H
 #define __CEPH_OS_HOBJECT_H
 
-#include <string.h>
 #include "include/types.h"
-#include "include/object.h"
 #include "include/cmp.h"
 
 #include "json_spirit/json_spirit_value.h"
 #include "include/assert.h"   // spirit clobbers it!
+
+#include "reverse.h"
 
 namespace ceph {
   class Formatter;
@@ -201,28 +201,11 @@ public:
 
   //实现按比特反转v,返回反转后的值(本函数转_reverse_nibbles计算量大一些)
   static uint32_t _reverse_bits(uint32_t v) {
-    if (v == 0)
-      return v;
-    // reverse bits
-    // swap odd and even bits
-    v = ((v >> 1) & 0x55555555) | ((v & 0x55555555) << 1);// 5=0x101,实现奇偶互换
-    // swap consecutive pairs
-    v = ((v >> 2) & 0x33333333) | ((v & 0x33333333) << 2);//每2位互换
-    // swap nibbles ...
-    v = ((v >> 4) & 0x0F0F0F0F) | ((v & 0x0F0F0F0F) << 4);//每4位互换
-    // swap bytes
-    v = ((v >> 8) & 0x00FF00FF) | ((v & 0x00FF00FF) << 8);//每8位互换
-    // swap 2-byte long pairs
-    v = ( v >> 16             ) | ( v               << 16);//每16位互换
-    return v;
+    return reverse_bits(v);
   }
   //实现按4bit反转retval的原值,返回反转后的值
   static uint32_t _reverse_nibbles(uint32_t retval) {
-    // reverse nibbles
-    retval = ((retval & 0x0f0f0f0f) << 4) | ((retval & 0xf0f0f0f0) >> 4);//每4位互换    {1,2,3,4,5,6,7,8}->{2,1,4,3,6,5,8,7}
-    retval = ((retval & 0x00ff00ff) << 8) | ((retval & 0xff00ff00) >> 8);//每8位互换    {2,1,4,3,6,5,8,7}->{4,3,2,1,8,7,6,5}
-    retval = ((retval & 0x0000ffff) << 16) | ((retval & 0xffff0000) >> 16);//每16位互换 {4,3,2,1,8,7,6,5}->{8,7,6,5,4,3,2,1}
-    return retval;
+    return reverse_nibbles(retval);
   }
 
   /**
@@ -274,6 +257,12 @@ public:
     if (key.length())
       return key;
     return oid.name;
+  }
+
+  hobject_t make_temp_hobject(const string& name) const {
+    return hobject_t(object_t(name), "", CEPH_NOSNAP,
+		     hash,
+		     hobject_t::POOL_TEMP_START - pool, "");
   }
 
   void swap(hobject_t &o) {

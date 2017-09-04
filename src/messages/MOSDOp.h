@@ -37,12 +37,12 @@ class MOSDOp : public MOSDFastDispatchOp {
   static const int COMPAT_VERSION = 3;
 
 private:
-  uint32_t client_inc;
+  uint32_t client_inc = 0;
   //osdmap的版本号
-  __u32 osdmap_epoch;
-  __u32 flags;
+  __u32 osdmap_epoch = 0;
+  __u32 flags = 0;
   utime_t mtime;
-  int32_t retry_attempt;   // 0 is first attempt.  -1 if we don't know.
+  int32_t retry_attempt = -1;   // 0 is first attempt.  -1 if we don't know.
 
   hobject_t hobj;//消息针对的对象
   //消息关联的Pg编号
@@ -61,7 +61,7 @@ private:
   vector<snapid_t> snaps;
 
   uint64_t features;
-
+  bool bdata_encode;
   osd_reqid_t reqid; // reqid explicitly set by sender
 
 public:
@@ -174,7 +174,8 @@ public:
   MOSDOp()
     : MOSDFastDispatchOp(CEPH_MSG_OSD_OP, HEAD_VERSION, COMPAT_VERSION),
       partial_decode_needed(true),
-      final_decode_needed(true) { }
+      final_decode_needed(true),
+      bdata_encode(false) { }
   MOSDOp(int inc, long tid, const hobject_t& ho, spg_t& _pgid,
 	 epoch_t _osdmap_epoch,
 	 int _flags, uint64_t feat)
@@ -185,7 +186,8 @@ public:
       pgid(_pgid),
       partial_decode_needed(false),
       final_decode_needed(false),
-      features(feat) {
+      features(feat),
+      bdata_encode(false) {
     set_tid(tid);
 
     // also put the client_inc in reqid.inc, so that get_reqid() can
@@ -249,8 +251,10 @@ public:
 
   // marshalling
   void encode_payload(uint64_t features) override {
-
-    OSDOp::merge_osd_op_vector_in_data(ops, data);
+    if( false == bdata_encode ) {
+      OSDOp::merge_osd_op_vector_in_data(ops, data);
+      bdata_encode = true;
+    }
 
     if ((features & CEPH_FEATURE_OBJECTLOCATOR) == 0) {
       // here is the old structure we are encoding to: //
@@ -366,6 +370,10 @@ struct ceph_osd_request_head {
       ::encode(osdmap_epoch, payload);
       ::encode(flags, payload);
       ::encode(reqid, payload);
+      encode_trace(payload, features);
+
+      // -- above decoded up front; below decoded post-dispatch thread --
+
       ::encode(client_inc, payload);
       ::encode(mtime, payload);
       ::encode(get_object_locator(), payload);
@@ -398,6 +406,7 @@ struct ceph_osd_request_head {
       ::decode(osdmap_epoch, p);
       ::decode(flags, p);
       ::decode(reqid, p);
+      decode_trace(p);
     } else if (header.version == 7) {
       ::decode(pgid.pgid, p);      // raw pgid
       hobj.set_hash(pgid.pgid.ps());
@@ -559,7 +568,8 @@ struct ceph_osd_request_head {
   }
 
   void clear_buffers() override {
-    ops.clear();
+    OSDOp::clear_data(ops);
+    bdata_encode = false;
   }
 
   const char *get_type_name() const override { return "osd_op"; }

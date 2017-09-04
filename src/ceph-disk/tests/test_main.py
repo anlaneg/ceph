@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env python
 #
 # Copyright (C) 2015, 2016 Red Hat <contact@redhat.com>
 #
@@ -38,6 +38,9 @@ class TestCephDisk(object):
         main.setup_logging(verbose=True, log_stdout=False)
 
     def test_main_list_json(self, capsys):
+        if platform.system() == "FreeBSD":
+            return
+
         data = tempfile.mkdtemp()
         main.setup_statedir(data)
         args = main.parse_args(['list', '--format', 'json'])
@@ -50,6 +53,9 @@ class TestCephDisk(object):
         shutil.rmtree(data)
 
     def test_main_list_plain(self, capsys):
+        if platform.system() == "FreeBSD":
+            return
+
         data = tempfile.mkdtemp()
         main.setup_statedir(data)
         args = main.parse_args(['list'])
@@ -267,6 +273,9 @@ class TestCephDisk(object):
                     'state': 'prepared'} == desc
 
     def test_list_all_partitions(self):
+        if platform.system() == "FreeBSD":
+            return
+
         disk = "Xda"
         partition = "Xda1"
 
@@ -456,6 +465,9 @@ class TestCephDisk(object):
                   main.PTYPE['regular']['journal']['ready'])
 
     def test_list_bluestore(self):
+        if platform.system() == "FreeBSD":
+            return
+
         self.list(main.PTYPE['plain']['osd']['ready'],
                   main.PTYPE['plain']['block']['ready'])
         self.list(main.PTYPE['luks']['osd']['ready'],
@@ -800,7 +812,7 @@ class TestCephDiskDeactivateAndDestroy(unittest.TestCase):
                 stop_daemon=lambda cluster, osd_id: True,
                 _remove_osd_directory_files=lambda path, cluster: True,
                 path_set_context=lambda path: True,
-                unmount=lambda path: True,
+                unmount=lambda path, do_rm: True,
                 dmcrypt_unmap=lambda part_uuid: True,
         ):
             main.main_deactivate(args)
@@ -834,7 +846,7 @@ class TestCephDiskDeactivateAndDestroy(unittest.TestCase):
                 stop_daemon=lambda cluster, osd_id: True,
                 _remove_osd_directory_files=lambda path, cluster: True,
                 path_set_context=lambda path: True,
-                unmount=lambda path: True,
+                unmount=lambda path, do_rm: True,
                 dmcrypt_unmap=lambda part_uuid: True,
         ):
             main.main_deactivate(args)
@@ -1252,9 +1264,6 @@ class TestCephDiskDeactivateAndDestroy(unittest.TestCase):
                 list_devices=list_devices_return,
                 get_partition_base=lambda dev_path: '/dev/sdY',
                 _check_osd_status=lambda cluster, osd_id: 0,
-                _remove_from_crush_map=lambda cluster, osd_id: True,
-                _delete_osd_auth_key=lambda cluster, osd_id: True,
-                _deallocate_osd_id=lambda cluster, osd_id: True,
                 zap=lambda dev: True
         ):
             main.main_destroy(args)
@@ -1275,35 +1284,37 @@ class TestCephDiskDeactivateAndDestroy(unittest.TestCase):
             self.assertRaises(Exception, main.main_destroy, args)
         shutil.rmtree(data)
 
-    def test_remove_from_crush_map_fail(self):
-        cluster = 'ceph'
-        osd_id = '5566'
-        with patch.multiple(
-                main,
-                command=raise_command_error
-        ):
-            self.assertRaises(Exception, main._remove_from_crush_map,
-                              cluster, osd_id)
+    def test_main_fix(self):
+        if platform.system() == "FreeBSD":
+            return
 
-    def test_delete_osd_auth_key_fail(self):
-        cluster = 'ceph'
-        osd_id = '5566'
-        with patch.multiple(
-                main,
-                command=raise_command_error
-        ):
-            self.assertRaises(Exception, main._delete_osd_auth_key,
-                              cluster, osd_id)
+        args = main.parse_args(['fix', '--all', '--selinux', '--permissions'])
+        commands = []
 
-    def test_deallocate_osd_id_fail(self):
-        cluster = 'ceph'
-        osd_id = '5566'
+        def _command(x):
+            commands.append(" ".join(x))
+            return ("", "", None)
+
+        class Os(object):
+            F_OK = 0
+
+            @staticmethod
+            def access(x, y):
+                return True
+
         with patch.multiple(
-                main,
-                command=raise_command_error
+            main,
+            command=_command,
+            command_init=lambda x: commands.append(x),
+            command_wait=lambda x: None,
+            os=Os,
         ):
-            self.assertRaises(Exception, main._deallocate_osd_id,
-                              cluster, osd_id)
+            main.main_fix(args)
+            commands = " ".join(commands)
+            assert '/var/lib/ceph' in commands
+            assert 'restorecon' in commands
+            assert 'chown' in commands
+            assert 'find' in commands
 
 
 def raise_command_error(*args):

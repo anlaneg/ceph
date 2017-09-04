@@ -5,11 +5,14 @@
 
 #include <string>
 #include <map>
+#include <sstream>
 
 #include <boost/utility/string_ref.hpp>
+#include <boost/format.hpp>
 
 #include "common/errno.h"
 #include "common/ceph_json.h"
+#include "common/backport14.h"
 #include "rgw_rados.h"
 #include "rgw_acl.h"
 #include "rgw_acl_s3.h"
@@ -18,6 +21,7 @@
 #include "rgw_bucket.h"
 #include "rgw_user.h"
 #include "rgw_string.h"
+#include "rgw_multi.h"
 
 #include "include/rados/librados.hpp"
 // until everything is moved from rgw_common
@@ -49,18 +53,9 @@ void rgw_get_buckets_obj(const rgw_user& user_id, string& buckets_obj_id)
  * acceptable in bucket names and thus qualified buckets cannot conflict
  * with the legacy or S3 buckets.
  */
-void rgw_make_bucket_entry_name(const string& tenant_name, const string& bucket_name, string& bucket_entry) {
-  if (bucket_name.empty()) {
-    bucket_entry.clear();
-  } else if (tenant_name.empty()) {
-    bucket_entry = bucket_name;
-  } else {
-    bucket_entry = tenant_name + "/" + bucket_name;
-  }
-}
-
-string rgw_make_bucket_entry_name(const string& tenant_name, const string& bucket_name) {
-  string bucket_entry;
+std::string rgw_make_bucket_entry_name(const std::string& tenant_name,
+                                       const std::string& bucket_name) {
+  std::string bucket_entry;
 
   if (bucket_name.empty()) {
     bucket_entry.clear();
@@ -139,6 +134,10 @@ int rgw_read_user_buckets(RGWRados * store,
     }
 
   } while (truncated && total < max);
+
+  if (is_truncated != nullptr) {
+    *is_truncated = truncated;
+  }
 
   if (need_stats) {
     map<string, RGWBucketEnt>& m = buckets.get_buckets();
@@ -424,24 +423,16 @@ int rgw_bucket_set_attrs(RGWRados *store, RGWBucketInfo& bucket_info,
 static void dump_mulipart_index_results(list<rgw_obj_index_key>& objs_to_unlink,
         Formatter *f)
 {
-  // make sure that an appropiately titled header has been opened previously
-  auto oiter = objs_to_unlink.begin();
-
-  f->open_array_section("invalid_multipart_entries");
-
-  for ( ; oiter != objs_to_unlink.end(); ++oiter) {
-    f->dump_string("object",  oiter->name);
+  for (const auto& o : objs_to_unlink) {
+    f->dump_string("object",  o.name);
   }
-
-  f->close_section();
 }
 
 void check_bad_user_bucket_mapping(RGWRados *store, const rgw_user& user_id,
 				   bool fix)
 {
   RGWUserBuckets user_buckets;
-  bool done;
-  bool is_truncated;
+  bool is_truncated = false;
   string marker;
 
   CephContext *cct = store->ctx();
@@ -492,8 +483,7 @@ void check_bad_user_bucket_mapping(RGWRados *store, const rgw_user& user_id,
         }
       }
     }
-    done = (buckets.size() < max_entries);
-  } while (!done);
+  } while (is_truncated);
 }
 
 static bool bucket_object_check_filter(const string& oid)
@@ -535,32 +525,39 @@ int rgw_remove_bucket(RGWRados *store, rgw_bucket& bucket, bool delete_children)
   if (ret < 0)
     return ret;
 
-
   RGWRados::Bucket target(store, info);
   RGWRados::Bucket::List list_op(&target);
+  CephContext *cct = store->ctx();
+  int max = 1000;
 
   list_op.params.list_versions = true;
 
-  if (delete_children) {
-    int max = 1000;
+  do {
+    objs.clear();
 
-    do {
-      objs.clear();
+    ret = list_op.list_objects(max, &objs, &common_prefixes, NULL);
+    if (ret < 0)
+      return ret;
 
-      ret = list_op.list_objects(max, &objs, &common_prefixes, NULL);
+    if (!objs.empty() && !delete_children) {
+      lderr(store->ctx()) << "ERROR: could not remove non-empty bucket " << bucket.name << dendl;
+      return -ENOTEMPTY;
+    }
+
+    for (const auto& obj : objs) {
+      rgw_obj_key key(obj.key);
+      ret = rgw_remove_object(store, info, bucket, key);
       if (ret < 0)
         return ret;
+    }
 
-      std::vector<rgw_bucket_dir_entry>::iterator it = objs.begin();
-      for (; it != objs.end(); ++it) {
-        rgw_obj_key key(it->key);
-        ret = rgw_remove_object(store, info, bucket, key);
-        if (ret < 0)
-          return ret;
-      }
+  } while (!objs.empty());
 
-    } while (!objs.empty());
+  string prefix, delimiter;
 
+  ret = abort_bucket_multiparts(store, cct, info, prefix, delimiter);
+  if (ret < 0) {
+    return ret;
   }
 
   ret = rgw_bucket_sync_user_stats(store, bucket.tenant, info);
@@ -616,6 +613,7 @@ int rgw_remove_bucket_bypass_gc(RGWRados *store, rgw_bucket& bucket,
   map<string, bool> common_prefixes;
   RGWBucketInfo info;
   RGWObjectCtx obj_ctx(store);
+  CephContext *cct = store->ctx();
 
   string bucket_ver, master_ver;
 
@@ -627,6 +625,12 @@ int rgw_remove_bucket_bypass_gc(RGWRados *store, rgw_bucket& bucket,
   if (ret < 0)
     return ret;
 
+  string prefix, delimiter;
+
+  ret = abort_bucket_multiparts(store, cct, info, prefix, delimiter);
+  if (ret < 0) {
+    return ret;
+  }
 
   RGWRados::Bucket target(store, info);
   RGWRados::Bucket::List list_op(&target);
@@ -862,7 +866,7 @@ int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
     policy.create_default(user_info.user_id, display_name);
 
     owner = policy.get_owner();
-    r = store->set_bucket_owner(bucket, owner);
+    r = store->set_bucket_owner(bucket_info.bucket, owner);
     if (r < 0) {
       set_err_msg(err_msg, "failed to set bucket owner: " + cpp_strerror(-r));
       return r;
@@ -873,8 +877,9 @@ int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
     policy.encode(aclbl);
 
     r = store->system_obj_set_attr(NULL, obj, RGW_ATTR_ACL, aclbl, &objv_tracker);
-    if (r < 0)
+    if (r < 0) {
       return r;
+    }
 
     RGWAccessControlPolicy policy_instance;
     policy_instance.create_default(user_info.user_id, display_name);
@@ -884,10 +889,14 @@ int RGWBucket::link(RGWBucketAdminOpState& op_state, std::string *err_msg)
     string oid_bucket_instance = RGW_BUCKET_INSTANCE_MD_PREFIX + key;
     rgw_raw_obj obj_bucket_instance(root_pool, oid_bucket_instance);
     r = store->system_obj_set_attr(NULL, obj_bucket_instance, RGW_ATTR_ACL, aclbl, &objv_tracker);
+    if (r < 0) {
+      return r;
+    }
 
     r = rgw_link_bucket(store, user_info.user_id, bucket_info.bucket, real_time());
-    if (r < 0)
+    if (r < 0) {
       return r;
+    }
   }
 
   return 0;
@@ -990,12 +999,12 @@ static void dump_index_check(map<RGWObjCategory, RGWStorageStats> existing_stats
 }
 
 int RGWBucket::check_bad_index_multipart(RGWBucketAdminOpState& op_state,
-        list<rgw_obj_index_key>& objs_to_unlink, std::string *err_msg)
+               RGWFormatterFlusher& flusher ,std::string *err_msg)
 {
   bool fix_index = op_state.will_fix_index();
   rgw_bucket bucket = op_state.get_bucket();
 
-  int max = 1000;
+  size_t max = 1000;
 
   map<string, bool> common_prefixes;
 
@@ -1015,6 +1024,7 @@ int RGWBucket::check_bad_index_multipart(RGWBucketAdminOpState& op_state,
   RGWRados::Bucket::List list_op(&target);
 
   list_op.params.list_versions = true;
+  list_op.params.ns = RGW_OBJ_NS_MULTIPART;
 
   do {
     vector<rgw_bucket_dir_entry> result;
@@ -1028,15 +1038,9 @@ int RGWBucket::check_bad_index_multipart(RGWBucketAdminOpState& op_state,
 
     vector<rgw_bucket_dir_entry>::iterator iter;
     for (iter = result.begin(); iter != result.end(); ++iter) {
-      rgw_bucket_dir_entry& ent = *iter;
-
-      rgw_obj obj(bucket, ent.key);
-      obj.key.ns.clear();
-
-      rgw_obj_index_key key;
-      obj.key.get_index_key(&key);
-
-      string oid = key.name;
+      rgw_obj_index_key key = iter->key;
+      rgw_obj obj(bucket, key);
+      string oid = obj.get_oid();
 
       int pos = oid.find_last_of('.');
       if (pos < 0) {
@@ -1057,18 +1061,33 @@ int RGWBucket::check_bad_index_multipart(RGWBucketAdminOpState& op_state,
 
   } while (is_truncated);
 
+  list<rgw_obj_index_key> objs_to_unlink;
+  Formatter *f =  flusher.get_formatter();
+
+  f->open_array_section("invalid_multipart_entries");
+
   for (auto aiter = all_objs.begin(); aiter != all_objs.end(); ++aiter) {
     string& name = aiter->second;
-
-    rgw_obj_index_key index_key(aiter->first);
 
     if (meta_objs.find(name) == meta_objs.end()) {
       objs_to_unlink.push_back(aiter->first);
     }
-  }
 
-  if (objs_to_unlink.empty())
-    return 0;
+    if (objs_to_unlink.size() > max) {
+      if (fix_index) {
+	int r = store->remove_objs_from_index(bucket_info, objs_to_unlink);
+	if (r < 0) {
+	  set_err_msg(err_msg, "ERROR: remove_obj_from_index() returned error: " +
+		      cpp_strerror(-r));
+	  return r;
+	}
+      }
+
+      dump_mulipart_index_results(objs_to_unlink, flusher.get_formatter());
+      flusher.flush();
+      objs_to_unlink.clear();
+    }
+  }
 
   if (fix_index) {
     int r = store->remove_objs_from_index(bucket_info, objs_to_unlink);
@@ -1080,6 +1099,10 @@ int RGWBucket::check_bad_index_multipart(RGWBucketAdminOpState& op_state,
     }
   }
 
+  dump_mulipart_index_results(objs_to_unlink, f);
+  f->close_section();
+  flusher.flush();
+
   return 0;
 }
 
@@ -1089,8 +1112,6 @@ int RGWBucket::check_object_index(RGWBucketAdminOpState& op_state,
 {
 
   bool fix_index = op_state.will_fix_index();
-
-  rgw_bucket bucket = op_state.get_bucket();
 
   if (!fix_index) {
     set_err_msg(err_msg, "check-objects flag requires fix index enabled");
@@ -1136,7 +1157,6 @@ int RGWBucket::check_index(RGWBucketAdminOpState& op_state,
         map<RGWObjCategory, RGWStorageStats>& calculated_stats,
         std::string *err_msg)
 {
-  rgw_bucket bucket = op_state.get_bucket();
   bool fix_index = op_state.will_fix_index();
 
   int r = store->bucket_check_index(bucket_info, &existing_stats, &calculated_stats);
@@ -1301,10 +1321,9 @@ int RGWBucketAdminOp::check_index(RGWRados *store, RGWBucketAdminOpState& op_sta
                   RGWFormatterFlusher& flusher)
 {
   int ret;
-  map<string, rgw_bucket_dir_entry> result;
   map<RGWObjCategory, RGWStorageStats> existing_stats;
   map<RGWObjCategory, RGWStorageStats> calculated_stats;
-  list<rgw_obj_index_key> objs_to_unlink;
+
 
   RGWBucket bucket;
 
@@ -1315,12 +1334,9 @@ int RGWBucketAdminOp::check_index(RGWRados *store, RGWBucketAdminOpState& op_sta
   Formatter *formatter = flusher.get_formatter();
   flusher.start(0);
 
-  ret = bucket.check_bad_index_multipart(op_state, objs_to_unlink);
+  ret = bucket.check_bad_index_multipart(op_state, flusher);
   if (ret < 0)
     return ret;
-
-  dump_mulipart_index_results(objs_to_unlink, formatter);
-  flusher.flush();
 
   ret = bucket.check_object_index(op_state, flusher);
   if (ret < 0)
@@ -1345,7 +1361,12 @@ int RGWBucketAdminOp::remove_bucket(RGWRados *store, RGWBucketAdminOpState& op_s
   if (ret < 0)
     return ret;
 
-  return bucket.remove(op_state, bypass_gc, keep_index_consistent);
+  std::string err_msg;
+  ret = bucket.remove(op_state, bypass_gc, keep_index_consistent, &err_msg);
+  if (!err_msg.empty()) {
+    lderr(store->ctx()) << "ERROR: " << err_msg << dendl;
+  }
+  return ret;
 }
 
 int RGWBucketAdminOp::remove_object(RGWRados *store, RGWBucketAdminOpState& op_state)
@@ -1384,8 +1405,12 @@ static int bucket_stats(RGWRados *store, const std::string& tenant_name, std::st
 
   formatter->open_object_section("stats");
   formatter->dump_string("bucket", bucket.name);
+  formatter->dump_string("zonegroup", bucket_info.zonegroup);
+  formatter->dump_string("placement_rule", bucket_info.placement_rule);
+  ::encode_json("explicit_placement", bucket.explicit_placement, formatter);
   formatter->dump_string("id", bucket.bucket_id);
   formatter->dump_string("marker", bucket.marker);
+  formatter->dump_stream("index_type") << bucket_info.index_type;
   ::encode_json("owner", bucket_info.owner, formatter);
   formatter->dump_string("ver", bucket_ver);
   formatter->dump_string("master_ver", master_ver);
@@ -1398,6 +1423,127 @@ static int bucket_stats(RGWRados *store, const std::string& tenant_name, std::st
   return 0;
 }
 
+int RGWBucketAdminOp::limit_check(RGWRados *store,
+				  RGWBucketAdminOpState& op_state,
+				  const std::list<std::string>& user_ids,
+				  RGWFormatterFlusher& flusher,
+				  bool warnings_only)
+{
+  int ret = 0;
+  const size_t max_entries =
+    store->ctx()->_conf->rgw_list_buckets_max_chunk;
+
+  const size_t safe_max_objs_per_shard =
+    store->ctx()->_conf->rgw_safe_max_objects_per_shard;
+
+  uint16_t shard_warn_pct =
+    store->ctx()->_conf->rgw_shard_warning_threshold;
+  if (shard_warn_pct > 100)
+    shard_warn_pct = 90;
+
+  Formatter *formatter = flusher.get_formatter();
+  flusher.start(0);
+
+  formatter->open_array_section("users");
+
+  for (const auto& user_id : user_ids) {
+    formatter->open_object_section("user");
+    formatter->dump_string("user_id", user_id);
+    bool done;
+    formatter->open_array_section("buckets");
+    do {
+      RGWUserBuckets buckets;
+      string marker;
+      bool is_truncated;
+
+      ret = rgw_read_user_buckets(store, user_id, buckets,
+				  marker, string(), max_entries, false,
+				  &is_truncated);
+      if (ret < 0)
+        return ret;
+
+      map<string, RGWBucketEnt>& m_buckets = buckets.get_buckets();
+
+      for (const auto& iter : m_buckets) {
+	auto& bucket = iter.second.bucket;
+	uint32_t num_shards = 1;
+	uint64_t num_objects = 0;
+
+	/* need info for num_shards */
+	RGWBucketInfo info;
+	RGWObjectCtx obj_ctx(store);
+
+	marker = bucket.name; /* Casey's location for marker update,
+			       * as we may now not reach the end of
+			       * the loop body */
+
+	ret = store->get_bucket_info(obj_ctx, bucket.tenant, bucket.name,
+				     info, nullptr);
+	if (ret < 0)
+	  continue;
+
+	/* need stats for num_entries */
+	string bucket_ver, master_ver;
+	std::map<RGWObjCategory, RGWStorageStats> stats;
+	ret = store->get_bucket_stats(info, RGW_NO_SHARD, &bucket_ver,
+				      &master_ver, stats, nullptr);
+
+	if (ret < 0)
+	  continue;
+
+	for (const auto& s : stats) {
+	    num_objects += s.second.num_objects;
+	}
+
+	num_shards = info.num_shards;
+	uint64_t objs_per_shard =
+	  (num_shards) ? num_objects/num_shards : num_objects;
+	{
+	  bool warn = false;
+	  stringstream ss;
+	  if (objs_per_shard > safe_max_objs_per_shard) {
+	    double over =
+	      100 - (safe_max_objs_per_shard/objs_per_shard * 100);
+	      ss << boost::format("OVER %4f%%") % over;
+	      warn = true;
+	  } else {
+	    double fill_pct =
+	      objs_per_shard / safe_max_objs_per_shard * 100;
+	    if (fill_pct >= shard_warn_pct) {
+	      ss << boost::format("WARN %4f%%") % fill_pct;
+	      warn = true;
+	    } else {
+	      ss << "OK";
+	    }
+	  }
+
+	  if (warn || (! warnings_only)) {
+	    formatter->open_object_section("bucket");
+	    formatter->dump_string("bucket", bucket.name);
+	    formatter->dump_string("tenant", bucket.tenant);
+	    formatter->dump_int("num_objects", num_objects);
+	    formatter->dump_int("num_shards", num_shards);
+	    formatter->dump_int("objects_per_shard", objs_per_shard);
+	    formatter->dump_string("fill_status", ss.str());
+	    formatter->close_section();
+	  }
+	}
+      }
+
+      done = (m_buckets.size() < max_entries);
+    } while (!done); /* foreach: bucket */
+
+    formatter->close_section();
+    formatter->close_section();
+    formatter->flush(cout);
+
+  } /* foreach: user_id */
+
+  formatter->close_section();
+  formatter->flush(cout);
+
+  return ret;
+} /* RGWBucketAdminOp::limit_check */
 
 int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
                   RGWFormatterFlusher& flusher)
@@ -1418,7 +1564,7 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
 
   CephContext *cct = store->ctx();
 
-  size_t max_entries = cct->_conf->rgw_list_buckets_max_chunk;
+  const size_t max_entries = cct->_conf->rgw_list_buckets_max_chunk;
 
   bool show_stats = op_state.will_fetch_stats();
   rgw_user user_id = op_state.get_user_id();
@@ -1427,8 +1573,7 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
 
     RGWUserBuckets buckets;
     string marker;
-    bool done;
-    bool is_truncated;
+    bool is_truncated = false;
 
     do {
       ret = rgw_read_user_buckets(store, op_state.get_user_id(), buckets,
@@ -1451,8 +1596,7 @@ int RGWBucketAdminOp::info(RGWRados *store, RGWBucketAdminOpState& op_state,
       }
 
       flusher.flush();
-      done = (m.size() < max_entries);
-    } while (!done);
+    } while (is_truncated);
 
     formatter->close_section();
   } else if (!bucket_name.empty()) {
@@ -1730,6 +1874,8 @@ int RGWDataChangesLog::list_entries(int shard, const real_time& start_time, cons
 				    const string& marker,
 				    string *out_marker,
 				    bool *truncated) {
+  if (shard >= num_shards)
+    return -EINVAL;
 
   list<cls_log_entry> log_entries;
 
@@ -1813,7 +1959,7 @@ int RGWDataChangesLog::trim_entries(int shard_id, const real_time& start_time, c
 
   ret = store->time_log_trim(oids[shard_id], start_time, end_time, start_marker, end_marker);
 
-  if (ret == -ENOENT)
+  if (ret == -ENOENT || ret == -ENODATA)
     ret = 0;
 
   return ret;
@@ -1824,7 +1970,7 @@ int RGWDataChangesLog::trim_entries(const real_time& start_time, const real_time
 {
   for (int shard = 0; shard < num_shards; shard++) {
     int ret = store->time_log_trim(oids[shard], start_time, end_time, start_marker, end_marker);
-    if (ret == -ENOENT) {
+    if (ret == -ENOENT || ret == -ENODATA) {
       continue;
     }
     if (ret < 0)
@@ -1836,11 +1982,11 @@ int RGWDataChangesLog::trim_entries(const real_time& start_time, const real_time
 
 bool RGWDataChangesLog::going_down()
 {
-  return (down_flag.read() != 0);
+  return down_flag;
 }
 
 RGWDataChangesLog::~RGWDataChangesLog() {
-  down_flag.set(1);
+  down_flag = true;
   renew_thread->stop();
   renew_thread->join();
   delete renew_thread;
@@ -1994,7 +2140,7 @@ public:
       return ret;
 
     /*
-     * We're unlinking the bucket but we don't want to update the entrypoint here — we're removing
+     * We're unlinking the bucket but we don't want to update the entrypoint here - we're removing
      * it immediately and don't want to invalidate our cached objv_version or the bucket obj removal
      * will incorrectly fail.
      */
@@ -2016,13 +2162,17 @@ public:
     pool = store->get_zone_params().domain_root;
   }
 
-  int list_keys_init(RGWRados *store, void **phandle) override
-  {
-    list_keys_info *info = new list_keys_info;
+  int list_keys_init(RGWRados *store, const string& marker, void **phandle) override {
+    auto info = ceph::make_unique<list_keys_info>();
 
     info->store = store;
 
-    *phandle = (void *)info;
+    int ret = store->list_raw_objects_init(store->get_zone_params().domain_root, marker,
+                                           &info->ctx);
+    if (ret < 0) {
+      return ret;
+    }
+    *phandle = (void *)info.release();
 
     return 0;
   }
@@ -2038,8 +2188,8 @@ public:
 
     list<string> unfiltered_keys;
 
-    int ret = store->list_raw_objects(store->get_zone_params().domain_root, no_filter,
-                                      max, info->ctx, unfiltered_keys, truncated);
+    int ret = store->list_raw_objects_next(no_filter, max, info->ctx,
+                                           unfiltered_keys, truncated);
     if (ret < 0 && ret != -ENOENT)
       return ret;
     if (ret == -ENOENT) {
@@ -2064,6 +2214,11 @@ public:
   void list_keys_complete(void *handle) override {
     list_keys_info *info = static_cast<list_keys_info *>(handle);
     delete info;
+  }
+
+  string get_marker(void *handle) {
+    list_keys_info *info = static_cast<list_keys_info *>(handle);
+    return info->store->list_raw_objs_get_cursor(info->ctx);
   }
 };
 
@@ -2120,7 +2275,7 @@ public:
       bci.info.bucket.name = bucket_name;
       bci.info.bucket.bucket_id = bucket_instance;
       bci.info.bucket.tenant = tenant_name;
-      ret = store->select_bucket_location_by_rule(bci.info.placement_rule, bci.info.bucket, &rule_info);
+      ret = store->select_bucket_location_by_rule(bci.info.placement_rule, &rule_info);
       if (ret < 0) {
         ldout(store->ctx(), 0) << "ERROR: select_bucket_placement() returned " << ret << dendl;
         return ret;
@@ -2130,6 +2285,33 @@ public:
       /* existing bucket, keep its placement */
       bci.info.bucket.explicit_placement = old_bci.info.bucket.explicit_placement;
       bci.info.placement_rule = old_bci.info.placement_rule;
+    }
+
+    if (exists && old_bci.info.datasync_flag_enabled() != bci.info.datasync_flag_enabled()) {
+      int shards_num = bci.info.num_shards? bci.info.num_shards : 1;
+      int shard_id = bci.info.num_shards? 0 : -1;
+
+      if (!bci.info.datasync_flag_enabled()) {
+      ret = store->stop_bi_log_entries(bci.info, -1);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing bilog" << dendl;
+	   return ret;
+        }
+      } else {
+        ret = store->resync_bi_log_entries(bci.info, -1);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing bilog" << dendl;
+	   return ret;
+        }
+      }
+
+      for (int i = 0; i < shards_num; ++i, ++shard_id) {
+        ret = store->data_log->add_entry(bci.info.bucket, shard_id);
+        if (ret < 0) {
+	   lderr(store->ctx()) << "ERROR: failed writing data log" << dendl;
+	   return ret;
+        }
+      }
     }
 
     // are we actually going to perform this put, or is it too old?
@@ -2179,13 +2361,17 @@ public:
     pool = store->get_zone_params().domain_root;
   }
 
-  int list_keys_init(RGWRados *store, void **phandle) override
-  {
-    list_keys_info *info = new list_keys_info;
+  int list_keys_init(RGWRados *store, const string& marker, void **phandle) override {
+    auto info = ceph::make_unique<list_keys_info>();
 
     info->store = store;
 
-    *phandle = (void *)info;
+    int ret = store->list_raw_objects_init(store->get_zone_params().domain_root, marker,
+                                           &info->ctx);
+    if (ret < 0) {
+      return ret;
+    }
+    *phandle = (void *)info.release();
 
     return 0;
   }
@@ -2201,8 +2387,8 @@ public:
 
     list<string> unfiltered_keys;
 
-    int ret = store->list_raw_objects(store->get_zone_params().domain_root, no_filter,
-                                      max, info->ctx, unfiltered_keys, truncated);
+    int ret = store->list_raw_objects_next(no_filter, max, info->ctx,
+                                           unfiltered_keys, truncated);
     if (ret < 0 && ret != -ENOENT)
       return ret;
     if (ret == -ENOENT) {
@@ -2230,6 +2416,11 @@ public:
   void list_keys_complete(void *handle) override {
     list_keys_info *info = static_cast<list_keys_info *>(handle);
     delete info;
+  }
+
+  string get_marker(void *handle) {
+    list_keys_info *info = static_cast<list_keys_info *>(handle);
+    return info->store->list_raw_objs_get_cursor(info->ctx);
   }
 
   /*

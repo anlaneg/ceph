@@ -17,25 +17,26 @@
  
 #include "common/Mutex.h"
 #include "common/Cond.h"
-#include "include/atomic.h"
 #include "common/ceph_context.h"
 #include "common/valgrind.h"
+
+// re-include our assert to clobber the system one; fix dout:
+#include "include/assert.h"
 
 //实现简单的引用计数功能,通过继承此对象,可使得子类获得引入计数功能.
 struct RefCountedObject {
 private:
-  mutable atomic_t nref;
+  mutable std::atomic<uint64_t> nref;
   CephContext *cct;//输出log用
 public:
   RefCountedObject(CephContext *c = NULL, int n=1) : nref(n), cct(c) {}
   virtual ~RefCountedObject() {
-	//断言，销毁时，必须为0
-    assert(nref.read() == 0);
+    assert(nref == 0); //断言，销毁时，必须为0
   }
   
   //get时增加引用计数
   const RefCountedObject *get() const {
-    int v = nref.inc();
+    int v = ++nref;
     if (cct)
       lsubdout(cct, refs, 1) << "RefCountedObject::get " << this << " "
 			     << (v - 1) << " -> " << v
@@ -45,7 +46,7 @@ public:
 
   //get时增加引用计数
   RefCountedObject *get() {
-    int v = nref.inc();
+    int v = ++nref;
     if (cct)
       lsubdout(cct, refs, 1) << "RefCountedObject::get " << this << " "
 			     << (v - 1) << " -> " << v
@@ -56,7 +57,7 @@ public:
   //put时减少引用计数，如果引用计数为0，则释放对象
   void put() const {
     CephContext *local_cct = cct;
-    int v = nref.dec();
+    int v = --nref;
     if (v == 0) {
       ANNOTATE_HAPPENS_AFTER(&nref);
       ANNOTATE_HAPPENS_BEFORE_FORGET_ALL(&nref);
@@ -77,7 +78,7 @@ public:
 
   //获取当前的引用数
   uint64_t get_nref() const {
-    return nref.read();
+    return nref;
   }
 };
 
@@ -133,11 +134,10 @@ struct RefCountedCond : public RefCountedObject {
  *    
  */
 struct RefCountedWaitObject {
-  atomic_t nref;
+  std::atomic<uint64_t> nref = { 1 };
   RefCountedCond *c;
 
-  //构造时，创建引用计数功能的条件变量
-  RefCountedWaitObject() : nref(1) {
+  RefCountedWaitObject() {
     c = new RefCountedCond;
   }
   virtual ~RefCountedWaitObject() {
@@ -145,7 +145,7 @@ struct RefCountedWaitObject {
   }
 
   RefCountedWaitObject *get() {
-    nref.inc();
+    nref++;
     return this;
   }
 
@@ -155,7 +155,7 @@ struct RefCountedWaitObject {
     RefCountedCond *cond = c;
     cond->get();
     //如果是最后一个
-    if (nref.dec() == 0) {
+    if (--nref == 0) {
       cond->done();//指明完成
       delete this;
       ret = true;
@@ -169,7 +169,7 @@ struct RefCountedWaitObject {
     RefCountedCond *cond = c;
 
     cond->get();
-    if (nref.dec() == 0) {
+    if (--nref == 0) {
       cond->done();
       delete this;
     } else {

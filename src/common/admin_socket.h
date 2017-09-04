@@ -15,13 +15,6 @@
 #ifndef CEPH_COMMON_ADMIN_SOCKET_H
 #define CEPH_COMMON_ADMIN_SOCKET_H
 
-#include "common/Thread.h"
-#include "common/Mutex.h"
-
-#include <string>
-#include <map>
-#include "include/buffer_fwd.h"
-#include "common/cmdparse.h"
 #include "common/Cond.h"
 
 class AdminSocket;
@@ -78,6 +71,7 @@ public:
   bool init(const std::string &path);
 
   void chown(uid_t uid, gid_t gid);
+  void chmod(mode_t mode);
 
 private:
   AdminSocket(const AdminSocket& rhs);

@@ -22,38 +22,39 @@ BitMapAllocator::BitMapAllocator(CephContext* cct, int64_t device_size,
 				 int64_t block_size)
   : cct(cct)
 {
-  assert(ISP2(block_size));
   if (!ISP2(block_size)) {//如果块大小不是2的n次方，报错
     derr << __func__ << " block_size " << block_size
          << " not power of 2 aligned!"
          << dendl;
+    assert(ISP2(block_size));
     return;
   }
 
   int64_t zone_size_blks = cct->_conf->bluestore_bitmapallocator_blocks_per_zone;
-  assert(ISP2(zone_size_blks));
   if (!ISP2(zone_size_blks)) {//如果zone大小不是2的n次
     derr << __func__ << " zone_size " << zone_size_blks
          << " not power of 2 aligned!"
          << dendl;
+    assert(ISP2(zone_size_blks));
     return;
   }
 
   int64_t span_size = cct->_conf->bluestore_bitmapallocator_span_size;
-  assert(ISP2(span_size));
   if (!ISP2(span_size)) {//如果span大小不是2的n次方（仅检查配置）
     derr << __func__ << " span_size " << span_size
          << " not power of 2 aligned!"
          << dendl;
+    assert(ISP2(span_size));
     return;
   }
 
   m_block_size = block_size;
+  m_total_size = P2ALIGN(device_size, block_size);
   m_bit_alloc = new BitAllocator(cct, device_size / block_size,
 				 zone_size_blks, CONCURRENT, true);
-  assert(m_bit_alloc);
   if (!m_bit_alloc) {//没有申请成功
     derr << __func__ << " Unable to intialize Bit Allocator" << dendl;
+    assert(m_bit_alloc);
   }
   dout(10) << __func__ << " instance " << (uint64_t) this
            << " size 0x" << std::hex << device_size << std::dec
@@ -128,6 +129,7 @@ int64_t BitMapAllocator::allocate(
      << " hint " << hint
      << dendl;
 
+  hint = hint % m_total_size; // make hint error-tolerant
   //请求want_size字节，最小需要alloc_unit/m_block_size块，最大申请max_alloc_size，hint更新为块编号
   return allocate_dis(want_size, alloc_unit / m_block_size,
                       max_alloc_size, hint / m_block_size, extents);
@@ -156,7 +158,6 @@ int64_t BitMapAllocator::allocate_dis(
 void BitMapAllocator::release(
   uint64_t offset, uint64_t length)
 {
-  std::lock_guard<std::mutex> l(m_lock);
   dout(10) << __func__ << " 0x"
            << std::hex << offset << "~" << length << std::dec
            << dendl;
@@ -173,7 +174,6 @@ uint64_t BitMapAllocator::get_free()
 
 void BitMapAllocator::dump()
 {
-  std::lock_guard<std::mutex> l(m_lock);
   dout(0) << __func__ << " instance " << this << dendl;
   m_bit_alloc->dump();
 }

@@ -461,8 +461,7 @@ public:
     uint64_t offset,
     size_t len,
     bufferlist& bl,
-    uint32_t op_flags = 0,
-    bool allow_eio = false) override;
+    uint32_t op_flags = 0) override;
   int _do_read(
     OnodeRef o,
     uint64_t offset,
@@ -472,6 +471,7 @@ public:
 
   using ObjectStore::fiemap;
   int fiemap(const coll_t& cid, const ghobject_t& oid, uint64_t offset, size_t len, bufferlist& bl) override;
+  int fiemap(const coll_t& cid, const ghobject_t& oid, uint64_t offset, size_t len, map<uint64_t, uint64_t>& destmap) override;
   using ObjectStore::getattr;
   int getattr(const coll_t& cid, const ghobject_t& oid, const char *name, bufferptr& value) override;
   using ObjectStore::getattrs;
@@ -480,7 +480,7 @@ public:
   int list_collections(vector<coll_t>& ls) override;
   bool collection_exists(const coll_t& c) override;
   int collection_empty(const coll_t& c, bool *empty) override;
-
+  int collection_bits(const coll_t& c) override;
   int collection_list(
     const coll_t& cid, const ghobject_t& start, const ghobject_t& end,
     int max,
@@ -564,6 +564,11 @@ public:
     TrackedOpRef op = TrackedOpRef(),
     ThreadPool::TPHandle *handle = NULL) override;
 
+  void compact () override {
+    assert(db);
+    db->compact();
+  }
+  
 private:
   // --------------------------------------------------------
   // write ops

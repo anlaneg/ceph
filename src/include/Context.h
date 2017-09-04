@@ -223,7 +223,11 @@ public:
     : cct(cct_)
   {
   }
-
+  ~C_ContextsBase() override {
+    for (auto c : contexts) {
+      delete c;
+    }
+  }
   //再加入一个context
   void add(ContextType* c) {
     contexts.push_back(c);

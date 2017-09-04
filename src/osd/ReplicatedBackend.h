@@ -48,7 +48,7 @@ public:
     int priority) override;
 
   /// @see PGBackend::recover_object
-  void recover_object(
+  int recover_object(
     const hobject_t &hoid,
     eversion_t v,
     ObjectContextRef head,
@@ -62,7 +62,7 @@ public:
   bool can_handle_while_inactive(OpRequestRef op) override;
 
   /// @see PGBackend::handle_message
-  bool handle_message(
+  bool _handle_message(
     OpRequestRef op
     ) override;
 
@@ -223,10 +223,8 @@ private:
   void clear_pull(
     map<hobject_t, PullInfo>::iterator piter,
     bool clear_pull_from_peer = true);
-
-  void sub_op_push(OpRequestRef op);
-  void sub_op_push_reply(OpRequestRef op);
-  void sub_op_pull(OpRequestRef op);
+  void clear_pull_from(
+    map<hobject_t, PullInfo>::iterator piter);
 
   void _do_push(OpRequestRef op);
   void _do_pull_response(OpRequestRef op);
@@ -259,15 +257,10 @@ private:
 			       bufferlist data_received,
 			       interval_set<uint64_t> *intervals_usable,
 			       bufferlist *data_usable);
-  void _failed_push(pg_shard_t from, const hobject_t &soid);
+  void _failed_pull(pg_shard_t from, const hobject_t &soid);
 
   void send_pushes(int prio, map<pg_shard_t, vector<PushOp> > &pushes);
   void prep_push_op_blank(const hobject_t& soid, PushOp *op);
-  int send_push_op_legacy(int priority, pg_shard_t peer,
-			  PushOp &pop);
-  int send_pull_legacy(int priority, pg_shard_t peer,
-		       const ObjectRecoveryInfo& recovery_info,
-		       ObjectRecoveryProgress progress);
   void send_pulls(
     int priority,
     map<pg_shard_t, vector<PullOp> > &pulls);
@@ -306,15 +299,15 @@ private:
     const hobject_t &soid,
     ObjectContextRef obj,
     RPGHandle *h);
-  void prep_push_to_replica(
+  int prep_push_to_replica(
     ObjectContextRef obc, const hobject_t& soid, pg_shard_t peer,
     PushOp *pop, bool cache_dont_need = true);
-  void prep_push(
+  int prep_push(
     ObjectContextRef obc,
     const hobject_t& oid, pg_shard_t dest,
     PushOp *op,
     bool cache_dont_need);
-  void prep_push(
+  int prep_push(
     ObjectContextRef obc,
     const hobject_t& soid, pg_shard_t peer,
     eversion_t version,
@@ -415,8 +408,8 @@ private:
     ObjectStore::Transaction &op_t);
   void op_applied(InProgressOp *op);
   void op_commit(InProgressOp *op);
-  void sub_op_modify_reply(OpRequestRef op);
-  void sub_op_modify(OpRequestRef op);
+  void do_repop_reply(OpRequestRef op);
+  void do_repop(OpRequestRef op);
 
   struct RepModify {
     OpRequestRef op;
@@ -435,8 +428,8 @@ private:
   struct C_OSD_RepModifyApply;
   struct C_OSD_RepModifyCommit;
 
-  void sub_op_modify_applied(RepModifyRef rm);
-  void sub_op_modify_commit(RepModifyRef rm);
+  void repop_applied(RepModifyRef rm);
+  void repop_commit(RepModifyRef rm);
   bool scrub_supported() override { return true; }
   bool auto_repair_supported() const override { return false; }
 

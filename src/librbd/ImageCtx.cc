@@ -11,7 +11,6 @@
 #include "common/WorkQueue.h"
 #include "common/Timer.h"
 
-#include "librbd/AsyncOperation.h"
 #include "librbd/AsyncRequest.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/internal.h"
@@ -28,6 +27,7 @@
 #include "librbd/exclusive_lock/AutomaticPolicy.h"
 #include "librbd/exclusive_lock/StandardPolicy.h"
 #include "librbd/io/AioCompletion.h"
+#include "librbd/io/AsyncOperation.h"
 #include "librbd/io/ImageRequestWQ.h"
 #include "librbd/journal/StandardPolicy.h"
 
@@ -60,7 +60,7 @@ public:
     : ThreadPool(cct, "librbd::thread_pool", "tp_librbd", 1,
                  "rbd_op_threads"),
       op_work_queue(new ContextWQ("librbd::op_work_queue",
-                                  cct->_conf->rbd_op_thread_timeout,
+                                  cct->_conf->get_val<int64_t>("rbd_op_thread_timeout"),
                                   this)) {
     start();
   }
@@ -198,7 +198,8 @@ struct C_InvalidateCache : public Context {
       operations(new Operations<>(*this)),
       exclusive_lock(nullptr), object_map(nullptr),
       io_work_queue(nullptr), op_work_queue(nullptr),
-      asok_hook(nullptr)
+      asok_hook(nullptr),
+      trace_endpoint("librbd")
   {
     md_ctx.dup(p);
     data_ctx.dup(p);
@@ -209,11 +210,12 @@ struct C_InvalidateCache : public Context {
 
     ThreadPool *thread_pool;
     get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
-    io_work_queue = new io::ImageRequestWQ(
-      this, "librbd::io_work_queue", cct->_conf->rbd_op_thread_timeout,
+    io_work_queue = new io::ImageRequestWQ<>(
+      this, "librbd::io_work_queue",
+      cct->_conf->get_val<int64_t>("rbd_op_thread_timeout"),
       thread_pool);
 
-    if (cct->_conf->rbd_auto_exclusive_lock_until_manual_request) {
+    if (cct->_conf->get_val<bool>("rbd_auto_exclusive_lock_until_manual_request")) {
       exclusive_lock_policy = new exclusive_lock::AutomaticPolicy(this);
     } else {
       exclusive_lock_policy = new exclusive_lock::StandardPolicy(this);
@@ -269,6 +271,7 @@ struct C_InvalidateCache : public Context {
       pname += snap_name;
     }
 
+    trace_endpoint.copy_name(pname);
     perf_start(pname);
 
     if (cache) {
@@ -376,6 +379,9 @@ struct C_InvalidateCache : public Context {
     plb.add_u64_counter(l_librbd_ws, "ws", "WriteSames");
     plb.add_u64_counter(l_librbd_ws_bytes, "ws_bytes", "WriteSame data");
     plb.add_time_avg(l_librbd_ws_latency, "ws_latency", "WriteSame latency");
+    plb.add_u64_counter(l_librbd_cmp, "cmp", "CompareAndWrites");
+    plb.add_u64_counter(l_librbd_cmp_bytes, "cmp_bytes", "Data size in cmps");
+    plb.add_time_avg(l_librbd_cmp_latency, "cmp_latency", "Latency of cmps");
     plb.add_u64_counter(l_librbd_snap_create, "snap_create", "Snap creations");
     plb.add_u64_counter(l_librbd_snap_remove, "snap_remove", "Snap removals");
     plb.add_u64_counter(l_librbd_snap_rollback, "snap_rollback", "Snap rollbacks");
@@ -525,6 +531,11 @@ struct C_InvalidateCache : public Context {
     return stripe_count * (1ull << order);
   }
 
+  utime_t ImageCtx::get_create_timestamp() const
+  {
+    return create_timestamp;
+  }
+
   int ImageCtx::is_snap_protected(snap_t in_snap_id,
 				  bool *is_protected) const
   {
@@ -627,18 +638,23 @@ struct C_InvalidateCache : public Context {
     return -ENOENT;
   }
 
-  bool ImageCtx::test_flags(uint64_t flags) const
+  int ImageCtx::test_flags(uint64_t flags, bool *flags_set) const
   {
     RWLock::RLocker l(snap_lock);
-    return test_flags(flags, snap_lock);
+    return test_flags(flags, snap_lock, flags_set);
   }
 
-  bool ImageCtx::test_flags(uint64_t flags, const RWLock &in_snap_lock) const
+  int ImageCtx::test_flags(uint64_t flags, const RWLock &in_snap_lock,
+                           bool *flags_set) const
   {
     assert(snap_lock.is_locked());
     uint64_t snap_flags;
-    get_flags(snap_id, &snap_flags);
-    return ((snap_flags & flags) == flags);
+    int r = get_flags(snap_id, &snap_flags);
+    if (r < 0) {
+      return r;
+    }
+    *flags_set = ((snap_flags & flags) == flags);
+    return 0;
   }
 
   int ImageCtx::update_flags(snap_t in_snap_id, uint64_t flag, bool enabled)
@@ -713,7 +729,7 @@ struct C_InvalidateCache : public Context {
   void ImageCtx::aio_read_from_cache(object_t o, uint64_t object_no,
 				     bufferlist *bl, size_t len,
 				     uint64_t off, Context *onfinish,
-				     int fadvise_flags) {
+				     int fadvise_flags, ZTracer::Trace *trace) {
     snap_lock.get_read();
     ObjectCacher::OSDRead *rd = object_cacher->prepare_read(snap_id, bl, fadvise_flags);
     snap_lock.put_read();
@@ -722,7 +738,7 @@ struct C_InvalidateCache : public Context {
     extent.buffer_extents.push_back(make_pair(0, len));
     rd->extents.push_back(extent);
     cache_lock.Lock();
-    int r = object_cacher->readx(rd, object_set, onfinish);
+    int r = object_cacher->readx(rd, object_set, onfinish, trace);
     cache_lock.Unlock();
     if (r != 0)
       onfinish->complete(r);
@@ -730,7 +746,8 @@ struct C_InvalidateCache : public Context {
 
   void ImageCtx::write_to_cache(object_t o, const bufferlist& bl, size_t len,
 				uint64_t off, Context *onfinish,
-				int fadvise_flags, uint64_t journal_tid) {
+				int fadvise_flags, uint64_t journal_tid,
+				ZTracer::Trace *trace) {
     snap_lock.get_read();
     ObjectCacher::OSDWrite *wr = object_cacher->prepare_write(
       snapc, bl, ceph::real_time::min(), fadvise_flags, journal_tid);
@@ -743,7 +760,7 @@ struct C_InvalidateCache : public Context {
     wr->extents.push_back(extent);
     {
       Mutex::Locker l(cache_lock);
-      object_cacher->writex(wr, object_set, onfinish);
+      object_cacher->writex(wr, object_set, onfinish, trace);
     }
   }
 
@@ -997,50 +1014,51 @@ struct C_InvalidateCache : public Context {
       }
     }
 
-#define ASSIGN_OPTION(config)                                                  \
+#define ASSIGN_OPTION(config, type)                                            \
     do {                                                                       \
       string key = "rbd_";						       \
       key = key + #config;					      	       \
       if (configs[key])                                                        \
-        config = local_config_t.rbd_##config;                                  \
+        config = local_config_t.get_val<type>("rbd_"#config);                  \
       else                                                                     \
-        config = cct->_conf->rbd_##config;                                     \
+        config = cct->_conf->get_val<type>("rbd_"#config);                     \
     } while (0);
 
-    ASSIGN_OPTION(non_blocking_aio);
-    ASSIGN_OPTION(cache);
-    ASSIGN_OPTION(cache_writethrough_until_flush);
-    ASSIGN_OPTION(cache_size);
-    ASSIGN_OPTION(cache_max_dirty);
-    ASSIGN_OPTION(cache_target_dirty);
-    ASSIGN_OPTION(cache_max_dirty_age);
-    ASSIGN_OPTION(cache_max_dirty_object);
-    ASSIGN_OPTION(cache_block_writes_upfront);
-    ASSIGN_OPTION(concurrent_management_ops);
-    ASSIGN_OPTION(balance_snap_reads);
-    ASSIGN_OPTION(localize_snap_reads);
-    ASSIGN_OPTION(balance_parent_reads);
-    ASSIGN_OPTION(localize_parent_reads);
-    ASSIGN_OPTION(readahead_trigger_requests);
-    ASSIGN_OPTION(readahead_max_bytes);
-    ASSIGN_OPTION(readahead_disable_after_bytes);
-    ASSIGN_OPTION(clone_copy_on_read);
-    ASSIGN_OPTION(blacklist_on_break_lock);
-    ASSIGN_OPTION(blacklist_expire_seconds);
-    ASSIGN_OPTION(request_timed_out_seconds);
-    ASSIGN_OPTION(enable_alloc_hint);
-    ASSIGN_OPTION(journal_order);
-    ASSIGN_OPTION(journal_splay_width);
-    ASSIGN_OPTION(journal_commit_age);
-    ASSIGN_OPTION(journal_object_flush_interval);
-    ASSIGN_OPTION(journal_object_flush_bytes);
-    ASSIGN_OPTION(journal_object_flush_age);
-    ASSIGN_OPTION(journal_pool);
-    ASSIGN_OPTION(journal_max_payload_bytes);
-    ASSIGN_OPTION(journal_max_concurrent_object_sets);
-    ASSIGN_OPTION(mirroring_resync_after_disconnect);
-    ASSIGN_OPTION(mirroring_replay_delay);
-    ASSIGN_OPTION(skip_partial_discard);
+    ASSIGN_OPTION(non_blocking_aio, bool);
+    ASSIGN_OPTION(cache, bool);
+    ASSIGN_OPTION(cache_writethrough_until_flush, bool);
+    ASSIGN_OPTION(cache_size, int64_t);
+    ASSIGN_OPTION(cache_max_dirty, int64_t);
+    ASSIGN_OPTION(cache_target_dirty, int64_t);
+    ASSIGN_OPTION(cache_max_dirty_age, double);
+    ASSIGN_OPTION(cache_max_dirty_object, int64_t);
+    ASSIGN_OPTION(cache_block_writes_upfront, bool);
+    ASSIGN_OPTION(concurrent_management_ops, int64_t);
+    ASSIGN_OPTION(balance_snap_reads, bool);
+    ASSIGN_OPTION(localize_snap_reads, bool);
+    ASSIGN_OPTION(balance_parent_reads, bool);
+    ASSIGN_OPTION(localize_parent_reads, bool);
+    ASSIGN_OPTION(readahead_trigger_requests, int64_t);
+    ASSIGN_OPTION(readahead_max_bytes, int64_t);
+    ASSIGN_OPTION(readahead_disable_after_bytes, int64_t);
+    ASSIGN_OPTION(clone_copy_on_read, bool);
+    ASSIGN_OPTION(blacklist_on_break_lock, bool);
+    ASSIGN_OPTION(blacklist_expire_seconds, int64_t);
+    ASSIGN_OPTION(request_timed_out_seconds, int64_t);
+    ASSIGN_OPTION(enable_alloc_hint, bool);
+    ASSIGN_OPTION(journal_order, uint64_t);
+    ASSIGN_OPTION(journal_splay_width, uint64_t);
+    ASSIGN_OPTION(journal_commit_age, double);
+    ASSIGN_OPTION(journal_object_flush_interval, int64_t);
+    ASSIGN_OPTION(journal_object_flush_bytes, int64_t);
+    ASSIGN_OPTION(journal_object_flush_age, double);
+    ASSIGN_OPTION(journal_pool, std::string);
+    ASSIGN_OPTION(journal_max_payload_bytes, uint64_t);
+    ASSIGN_OPTION(journal_max_concurrent_object_sets, int64_t);
+    ASSIGN_OPTION(mirroring_resync_after_disconnect, bool);
+    ASSIGN_OPTION(mirroring_replay_delay, int64_t);
+    ASSIGN_OPTION(skip_partial_discard, bool);
+    ASSIGN_OPTION(blkin_trace_all, bool);
   }
 
   ExclusiveLock<ImageCtx> *ImageCtx::create_exclusive_lock() {

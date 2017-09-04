@@ -630,9 +630,13 @@ class MonitorDBStore
   int open(ostream &out) {
     string kv_type;
     int r = read_meta("kv_backend", &kv_type);
-    if (r < 0 || kv_type.length() == 0)
+    if (r < 0 || kv_type.empty()) {
+      // assume old monitors that did not mark the type were leveldb.
       kv_type = "leveldb";
-
+      r = write_meta("kv_backend", kv_type);
+      if (r < 0)
+	return r;
+    }
     _open(kv_type);
     r = db->open(out);
     if (r < 0)
@@ -647,11 +651,10 @@ class MonitorDBStore
     string kv_type;
     int r = read_meta("kv_backend", &kv_type);
     if (r < 0) {//如果读取失败，则假设其为leveldb,并写入
-      // assume old monitors that did not mark the type were leveldb.
-      kv_type = "leveldb";
+      kv_type = g_conf->mon_keyvaluedb;
       r = write_meta("kv_backend", kv_type);
       if (r < 0)
-	return r;//写失败，返回r
+          return r;//写失败，返回r
     }
     _open(kv_type);
     r = db->create_and_open(out);

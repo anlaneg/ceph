@@ -35,6 +35,7 @@
 #include "mds/mdstypes.h"
 
 class CephContext;
+class health_check_map_t;
 
 #define MDS_FEATURE_INCOMPAT_BASE CompatSet::Feature(1, "base v0.20")
 #define MDS_FEATURE_INCOMPAT_CLIENTRANGES CompatSet::Feature(2, "client writeable ranges")
@@ -434,6 +435,14 @@ public:
     }
     return nullptr;
   }
+  std::list<std::shared_ptr<const Filesystem> > get_filesystems(void) const
+    {
+      std::list<std::shared_ptr<const Filesystem> > ret;
+      for (const auto &i : filesystems) {
+	ret.push_back(std::const_pointer_cast<const Filesystem>(i.second));
+      }
+      return ret;
+    }
 
   int parse_filesystem(
       std::string const &ns_str,
@@ -460,13 +469,17 @@ public:
 
   mds_gid_t find_standby_for(mds_role_t mds, const std::string& name) const;
 
-  mds_gid_t find_unused(fs_cluster_id_t fscid, bool force_standby_active) const;
+  mds_gid_t find_unused_for(mds_role_t mds, bool force_standby_active) const;
 
   mds_gid_t find_replacement_for(mds_role_t mds, const std::string& name,
                                  bool force_standby_active) const;
 
   void get_health(list<pair<health_status_t,std::string> >& summary,
 		  list<pair<health_status_t,std::string> > *detail) const;
+
+  void get_health_checks(health_check_map_t *checks) const;
+
+  bool check_health(void);
 
   /**
    * Assert that the FSMap, Filesystem, MDSMap, mds_info_t relations are

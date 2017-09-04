@@ -1,10 +1,15 @@
-#include "include/ipaddr.h"
 
-#include <sys/socket.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#endif
 
+#include "include/ipaddr.h"
 
 static void netmask_ipv4(const struct in_addr *addr,
 			 unsigned int prefix_len,
@@ -22,7 +27,7 @@ static void netmask_ipv4(const struct in_addr *addr,
 }
 
 
-const struct sockaddr *find_ipv4_in_subnet(const struct ifaddrs *addrs,
+const struct ifaddrs *find_ipv4_in_subnet(const struct ifaddrs *addrs,
 					   const struct sockaddr_in *net,
 					   unsigned int prefix_len) {
   struct in_addr want, temp;
@@ -45,7 +50,7 @@ const struct sockaddr *find_ipv4_in_subnet(const struct ifaddrs *addrs,
     //这种处理方式比较不推荐，这个prefix_len是由上层传入的，并没有取此接口对应的prefix_len
 
     if (temp.s_addr == want.s_addr) {
-      return addrs->ifa_addr;//用第一个找到的地址
+      return addrs;
     }
   }
 
@@ -67,7 +72,7 @@ static void netmask_ipv6(const struct in6_addr *addr,
 }
 
 
-const struct sockaddr *find_ipv6_in_subnet(const struct ifaddrs *addrs,
+const struct ifaddrs *find_ipv6_in_subnet(const struct ifaddrs *addrs,
 					   const struct sockaddr_in6 *net,
 					   unsigned int prefix_len) {
   struct in6_addr want, temp;
@@ -89,14 +94,14 @@ const struct sockaddr *find_ipv6_in_subnet(const struct ifaddrs *addrs,
     netmask_ipv6(cur, prefix_len, &temp);
 
     if (IN6_ARE_ADDR_EQUAL(&temp, &want))
-      return addrs->ifa_addr;
+      return addrs;
   }
 
   return NULL;
 }
 
 //找一个地址
-const struct sockaddr *find_ip_in_subnet(const struct ifaddrs *addrs,
+const struct ifaddrs *find_ip_in_subnet(const struct ifaddrs *addrs,
 					 const struct sockaddr *net,
 					 unsigned int prefix_len) {
   switch (net->sa_family) {
@@ -112,7 +117,7 @@ const struct sockaddr *find_ip_in_subnet(const struct ifaddrs *addrs,
 
 
 //解释a.a.a.a/len格式，将解析结果放入netowrk,prefix_len中，解释失败返回false
-bool parse_network(const char *s, struct sockaddr *network, unsigned int *prefix_len) {
+bool parse_network(const char *s, struct sockaddr_storage *network, unsigned int *prefix_len) {
   char *slash = strchr((char*)s, '/');
   if (!slash) {
     // no slash
@@ -146,14 +151,14 @@ bool parse_network(const char *s, struct sockaddr *network, unsigned int *prefix
   int ok;
   ok = inet_pton(AF_INET, addr, &((struct sockaddr_in*)network)->sin_addr);
   if (ok) {
-    network->sa_family = AF_INET;
+    network->ss_family = AF_INET;
     return true;
   }
 
   // try parsing as ipv6
   ok = inet_pton(AF_INET6, addr, &((struct sockaddr_in6*)network)->sin6_addr);
   if (ok) {
-    network->sa_family = AF_INET6;
+    network->ss_family = AF_INET6;
     return true;
   }
 

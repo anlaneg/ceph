@@ -20,6 +20,9 @@
 #include "Python.h"
 
 #include "common/cmdparse.h"
+#include "common/LogEntry.h"
+#include "common/Mutex.h"
+#include "mon/health_check.h"
 
 #include <vector>
 #include <string>
@@ -42,22 +45,25 @@ class MgrPyModule
 {
 private:
   const std::string module_name;
-  PyObject *pModule;
-  PyObject *pClass;
   PyObject *pClassInstance;
+  PyThreadState *pMainThreadState;
+  PyThreadState *pMyThreadState = nullptr;
+
+  health_check_map_t health_checks;
 
   std::vector<ModuleCommand> commands;
 
   int load_commands();
 
 public:
-  MgrPyModule(const std::string &module_name);
+  MgrPyModule(const std::string &module_name, const std::string &sys_path, PyThreadState *main_ts);
   ~MgrPyModule();
 
   int load();
   int serve();
   void shutdown();
   void notify(const std::string &notify_type, const std::string &notify_id);
+  void notify_clog(const LogEntry &le);
 
   const std::vector<ModuleCommand> &get_commands() const
   {
@@ -71,9 +77,16 @@ public:
 
   int handle_command(
     const cmdmap_t &cmdmap,
-    std::stringstream *ss,
-    std::stringstream *ds);
+    std::stringstream *ds,
+    std::stringstream *ss);
+
+  void set_health_checks(health_check_map_t&& c) {
+    health_checks = std::move(c);
+  }
+  void get_health_checks(health_check_map_t *checks);
 };
+
+std::string handle_pyerror();
 
 #endif
 

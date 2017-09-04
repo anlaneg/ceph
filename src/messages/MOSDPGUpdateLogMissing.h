@@ -20,23 +20,27 @@
 
 class MOSDPGUpdateLogMissing : public MOSDFastDispatchOp {
 
-  static const int HEAD_VERSION = 1;
+  static const int HEAD_VERSION = 2;
   static const int COMPAT_VERSION = 1;
 
 
 public:
-  epoch_t map_epoch;
+  epoch_t map_epoch = 0, min_epoch = 0;
   spg_t pgid;
   shard_id_t from;
-  ceph_tid_t rep_tid;
-  mempool::osd::list<pg_log_entry_t> entries;
+  ceph_tid_t rep_tid = 0;
+  mempool::osd_pglog::list<pg_log_entry_t> entries;
 
   epoch_t get_epoch() const { return map_epoch; }
   spg_t get_pgid() const { return pgid; }
   epoch_t get_query_epoch() const { return map_epoch; }
   ceph_tid_t get_tid() const { return rep_tid; }
+
   epoch_t get_map_epoch() const override {
     return map_epoch;
+  }
+  epoch_t get_min_epoch() const override {
+    return min_epoch;
   }
   spg_t get_spg() const override {
     return pgid;
@@ -46,14 +50,16 @@ public:
     : MOSDFastDispatchOp(MSG_OSD_PG_UPDATE_LOG_MISSING, HEAD_VERSION,
 			 COMPAT_VERSION) { }
   MOSDPGUpdateLogMissing(
-    const mempool::osd::list<pg_log_entry_t> &entries,
+    const mempool::osd_pglog::list<pg_log_entry_t> &entries,
     spg_t pgid,
     shard_id_t from,
     epoch_t epoch,
+    epoch_t min_epoch,
     ceph_tid_t rep_tid)
     : MOSDFastDispatchOp(MSG_OSD_PG_UPDATE_LOG_MISSING, HEAD_VERSION,
 			 COMPAT_VERSION),
       map_epoch(epoch),
+      min_epoch(min_epoch),
       pgid(pgid),
       from(from),
       rep_tid(rep_tid),
@@ -66,6 +72,7 @@ public:
   const char *get_type_name() const override { return "PGUpdateLogMissing"; }
   void print(ostream& out) const override {
     out << "pg_update_log_missing(" << pgid << " epoch " << map_epoch
+	<< "/" << min_epoch
 	<< " rep_tid " << rep_tid
 	<< " entries " << entries << ")";
   }
@@ -76,6 +83,7 @@ public:
     ::encode(from, payload);
     ::encode(rep_tid, payload);
     ::encode(entries, payload);
+    ::encode(min_epoch, payload);
   }
   void decode_payload() override {
     bufferlist::iterator p = payload.begin();
@@ -84,6 +92,11 @@ public:
     ::decode(from, p);
     ::decode(rep_tid, p);
     ::decode(entries, p);
+    if (header.version >= 2) {
+      ::decode(min_epoch, p);
+    } else {
+      min_epoch = map_epoch;
+    }
   }
 };
 

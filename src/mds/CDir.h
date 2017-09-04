@@ -45,25 +45,6 @@ ostream& operator<<(ostream& out, const class CDir& dir);
 class CDir : public MDSCacheObject, public Counter<CDir> {
   friend ostream& operator<<(ostream& out, const class CDir& dir);
 
-  /*
-   * This class uses a boost::pool to handle allocation. This is *not*
-   * thread-safe, so don't do allocations from multiple threads!
-   *
-   * Alternatively, switch the pool to use a boost::singleton_pool.
-   */
-private:
-  static boost::pool<> pool;
-public:
-  static void *operator new(size_t num_bytes) { 
-    void *n = pool.malloc();
-    if (!n)
-      throw std::bad_alloc();
-    return n;
-  }
-  void operator delete(void *p) {
-    pool.free(p);
-  }
-
 public:
   // -- pins --
   static const int PIN_DNWAITER =     1;
@@ -111,6 +92,7 @@ public:
   static const unsigned STATE_ASSIMRSTAT =    (1<<17);  // assimilating inode->frag rstats
   static const unsigned STATE_DIRTYDFT =      (1<<18);  // dirty dirfragtree
   static const unsigned STATE_BADFRAG =       (1<<19);  // bad dirfrag
+  static const unsigned STATE_AUXSUBTREE =    (1<<20);  // no subtree merge
 
   // common states
   static const unsigned STATE_CLEAN =  0;
@@ -136,6 +118,7 @@ public:
   (STATE_DIRTY|
    STATE_EXPORTBOUND |
    STATE_IMPORTBOUND |
+   STATE_AUXSUBTREE |
    STATE_REJOINUNDEF);
 
   // -- rep spec --
@@ -467,7 +450,7 @@ protected:
   void link_remote_inode( CDentry *dn, inodeno_t ino, unsigned char d_type);
   void link_remote_inode( CDentry *dn, CInode *in );
   void link_primary_inode( CDentry *dn, CInode *in );
-  void unlink_inode( CDentry *dn );
+  void unlink_inode(CDentry *dn, bool adjust_lru=true);
   void try_remove_unlinked_dn(CDentry *dn);
 
   void add_to_bloom(CDentry *dn);
@@ -482,7 +465,6 @@ private:
   void remove_null_dentries();
   void purge_stale_snap_data(const std::set<snapid_t>& snaps);
 public:
-  void touch_dentries_bottom();
   void try_remove_dentries_for_stray();
   bool try_trim_snap_dentry(CDentry *dn, const std::set<snapid_t>& snaps);
 
@@ -501,7 +483,7 @@ public:
 
 private:
   void prepare_new_fragment(bool replay);
-  void prepare_old_fragment(bool replay);
+  void prepare_old_fragment(map<string_snap_t, std::list<MDSInternalContextBase*> >& dentry_waiters, bool replay);
   void steal_dentry(CDentry *dn);  // from another dir.  used by merge/split.
   void finish_old_fragment(list<MDSInternalContextBase*>& waiters, bool replay);
   void init_fragment_pins();

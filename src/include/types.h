@@ -90,6 +90,29 @@ typedef off_t loff_t;
 
 // -- io helpers --
 
+// Forward declare all the I/O helpers so strict ADL can find them in
+// the case of containers of containers. I'm tempted to abstract this
+// stuff using template templates like I did for denc.
+
+template<class A, class B>
+inline ostream& operator<<(ostream&out, const pair<A,B>& v);
+template<class A, class Alloc>
+inline ostream& operator<<(ostream& out, const vector<A,Alloc>& v);
+template<class A, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const deque<A,Alloc>& v);
+template<class A, class B, class C>
+inline ostream& operator<<(ostream&out, const boost::tuple<A, B, C> &t);
+template<class A, class Alloc>
+inline ostream& operator<<(ostream& out, const list<A,Alloc>& ilist);
+template<class A, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset);
+template<class A, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const multiset<A,Comp,Alloc>& iset);
+template<class A, class B, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const map<A,B,Comp,Alloc>& m);
+template<class A, class B, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const multimap<A,B,Comp,Alloc>& m);
+
 template<class A, class B>
 inline ostream& operator<<(ostream& out, const pair<A,B>& v) {
   return out << v.first << "," << v.second;
@@ -322,20 +345,40 @@ struct si_t {
 
 inline ostream& operator<<(ostream& out, const si_t& b)
 {
-  uint64_t bump_after = 100;
-  if (b.v > bump_after << 60)
-    return out << (b.v >> 60) << "E";
-  if (b.v > bump_after << 50)
-    return out << (b.v >> 50) << "P";
-  if (b.v > bump_after << 40)
-    return out << (b.v >> 40) << "T";
-  if (b.v > bump_after << 30)
-    return out << (b.v >> 30) << "G";
-  if (b.v > bump_after << 20)
-    return out << (b.v >> 20) << "M";
-  if (b.v > bump_after << 10)
-    return out << (b.v >> 10) << "k";
-  return out << b.v;
+  char buffer[32];
+  uint64_t n = b.v;
+  int index = 0;
+
+  while (n >= 1024 && index < 6) {
+    n /= 1024;
+    index++;
+  }
+
+  char u = " KMGTPE"[index];
+
+  if (index == 0) {
+    (void) snprintf(buffer, sizeof(buffer), "%" PRId64, n);
+  } else if ((b.v & ((1ULL << 10 * index) - 1)) == 0) {
+    // If this is an even multiple of the base, always display
+    // without any decimal fraction.
+    (void) snprintf(buffer, sizeof(buffer), "%" PRId64 "%c", n, u);
+  } else {
+    // We want to choose a precision that reflects the best choice
+    // for fitting in 5 characters.  This can get rather tricky when
+    // we have numbers that are very close to an order of magnitude.
+    // For example, when displaying 10239 (which is really 9.999K),
+    // we want only a single place of precision for 10.0K.  We could
+    // develop some complex heuristics for this, but it's much
+    // easier just to try each combination in turn.
+    int i;
+    for (i = 2; i >= 0; i--) {
+      if (snprintf(buffer, sizeof(buffer), "%.*f%c", i,
+        (double)b.v / (1ULL << 10 * index), u) <= 5)
+        break;
+    }
+  }
+
+  return out << buffer;
 }
 
 struct pretty_si_t {
@@ -388,29 +431,6 @@ inline ostream& operator<<(ostream& out, const ceph_mon_subscribe_item& i)
 	     << ((i.flags & CEPH_SUBSCRIBE_ONETIME) ? "" : "+");
 }
 
-enum health_status_t {
-  HEALTH_ERR = 0,
-  HEALTH_WARN = 1,
-  HEALTH_OK = 2,
-};
-
-#ifdef __cplusplus
-inline ostream& operator<<(ostream &oss, health_status_t status) {
-  switch (status) {
-    case HEALTH_ERR:
-      oss << "HEALTH_ERR";
-      break;
-    case HEALTH_WARN:
-      oss << "HEALTH_WARN";
-      break;
-    case HEALTH_OK:
-      oss << "HEALTH_OK";
-      break;
-  }
-  return oss;
-}
-#endif
-
 struct weightf_t {
   float v;
   // cppcheck-suppress noExplicitConstructor
@@ -451,10 +471,12 @@ WRITE_EQ_OPERATORS_1(shard_id_t, id)
 WRITE_CMP_OPERATORS_1(shard_id_t, id)
 ostream &operator<<(ostream &lhs, const shard_id_t &rhs);
 
-#if defined(__sun) || defined(_AIX) || defined(DARWIN)
-__s32  ceph_to_host_errno(__s32 e);
+#if defined(__sun) || defined(_AIX) || defined(DARWIN) || defined(__FreeBSD__)
+__s32  ceph_to_hostos_errno(__s32 e);
+__s32  hostos_to_ceph_errno(__s32 e);
 #else
-#define  ceph_to_host_errno(e) (e)
+#define  ceph_to_hostos_errno(e) (e)
+#define  hostos_to_ceph_errno(e) (e)
 #endif
 
 struct errorcode32_t {
@@ -464,17 +486,21 @@ struct errorcode32_t {
   // cppcheck-suppress noExplicitConstructor
   errorcode32_t(int32_t i) : code(i) {}
 
-  operator int() const { return code; }
-  int operator==(int i) {
-    return code==i;
-  }
+  operator int() const  { return code; }
+  int* operator&()      { return &code; }
+  int operator==(int i) { return code == i; }
+  int operator>(int i)  { return code > i; }
+  int operator>=(int i) { return code >= i; }
+  int operator<(int i)  { return code < i; }
+  int operator<=(int i) { return code <= i; }
 
   void encode(bufferlist &bl) const {
-    ::encode(code, bl);
+    __s32 newcode = hostos_to_ceph_errno(code);
+    ::encode(newcode, bl);
   }
   void decode(bufferlist::iterator &bl) {
     ::decode(code, bl);
-    code = ceph_to_host_errno(code);
+    code = ceph_to_hostos_errno(code);
   }
 };
 WRITE_CLASS_ENCODER(errorcode32_t)

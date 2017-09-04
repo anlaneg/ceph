@@ -19,7 +19,7 @@
 class MMonScrub : public Message
 {
   static const int HEAD_VERSION = 2;
-  static const int COMPAT_VERSION = 1;
+  static const int COMPAT_VERSION = 2;
 
 public:
   typedef enum {
@@ -35,8 +35,8 @@ public:
     }
   }
 
-  op_type_t op;
-  version_t version;
+  op_type_t op = OP_SCRUB;
+  version_t version = 0;
   ScrubResult result;
   int32_t num_keys;
   pair<string,string> key;
@@ -79,10 +79,8 @@ public:
     op = (op_type_t)o;
     ::decode(version, p);
     ::decode(result, p);
-    if (header.version >= 2) {
-      ::decode(num_keys, p);
-      ::decode(key, p);
-    }
+    ::decode(num_keys, p);
+    ::decode(key, p);
   }
 };
 

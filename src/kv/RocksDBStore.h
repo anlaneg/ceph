@@ -75,6 +75,10 @@ class RocksDBStore : public KeyValueDB {
   rocksdb::BlockBasedTableOptions bbt_opts;
   string options_str;//初始化选项
 
+  uint64_t cache_size = 0;
+  bool set_cache_flag = false;
+
+  int submit_common(rocksdb::WriteOptions& woptions, KeyValueDB::Transaction t);
   int do_open(ostream &out, bool create_if_missing);
 
   // manage async compactions
@@ -102,10 +106,11 @@ public:
   /// compact the underlying rocksdb store
   bool compact_on_mount;
   bool disableWAL;
+  bool enable_rmrange;
   void compact() override;
 
-  int tryInterpret(const string key, const string val, rocksdb::Options &opt);
-  int ParseOptionsFromString(const string opt_str, rocksdb::Options &opt);
+  int tryInterpret(const string& key, const string& val, rocksdb::Options &opt);
+  int ParseOptionsFromString(const string& opt_str, rocksdb::Options &opt);
   static int _test_init(const string& dir);
   int init(string options_str) override;
   /// compact rocksdb for all keys with a given prefix
@@ -135,7 +140,8 @@ public:
     compact_queue_stop(false),
     compact_thread(this),
     compact_on_mount(false),
-    disableWAL(false)
+    disableWAL(false),
+    enable_rmrange(cct->_conf->rocksdb_enable_rmrange)
   {}
 
   ~RocksDBStore() override;
@@ -273,6 +279,10 @@ public:
     void rmkeys_by_prefix(
       const string &prefix
       ) override;
+    void rm_range_keys(
+      const string &prefix,
+      const string &start,
+      const string &end) override;
     void merge(
       const string& prefix,
       const string& k,
@@ -429,6 +439,11 @@ err:
     return total_size;
   }
 
+  int set_cache_size(uint64_t s) override {
+    cache_size = s;
+    set_cache_flag = true;
+    return 0;
+  }
 
 protected:
   WholeSpaceIterator _get_iterator() override;

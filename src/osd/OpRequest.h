@@ -85,6 +85,7 @@ struct OpRequest : public TrackedOp {
 private:
   Message *request; /// the logical request we are tracking
   osd_reqid_t reqid;
+  entity_inst_t req_src_inst;
   uint8_t hit_flag_points;
   uint8_t latest_flag_point;
   utime_t dequeued_time;
@@ -102,6 +103,7 @@ private:
 protected:
   void _dump_op_descriptor_unlocked(ostream& stream) const override;
   void _unregistered() override;
+  bool filter_out(const set<string>& filters) override;
 
 public:
   ~OpRequest() override {
@@ -111,6 +113,7 @@ public:
   bool check_send_map = true; ///< true until we check if sender needs a map
   //客户端发送消息过来时，其osdmap版本号，自消息体中拿来的。
   epoch_t sent_epoch = 0;     ///< client's map epoch
+  epoch_t min_epoch = 0;      ///< min epoch needed to handle this msg
 
   bool hitset_inserted;
   const Message *get_req() const { return request; }

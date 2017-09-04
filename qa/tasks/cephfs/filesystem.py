@@ -291,9 +291,15 @@ class MDSCluster(CephCluster):
                                              '--yes-i-really-really-mean-it')
             for data_pool in mdsmap['data_pools']:
                 data_pool = pool_id_name[data_pool]
-                self.mon_manager.raw_cluster_cmd('osd', 'pool', 'delete',
-                                                 data_pool, data_pool,
-                                                 '--yes-i-really-really-mean-it')
+                try:
+                    self.mon_manager.raw_cluster_cmd('osd', 'pool', 'delete',
+                                                     data_pool, data_pool,
+                                                     '--yes-i-really-really-mean-it')
+                except CommandFailedError as e:
+                    if e.exitstatus == 16: # EBUSY, this data pool is used
+                        pass               # by two metadata pools, let the 2nd
+                    else:                  # pass delete it
+                        raise
 
     def get_standby_daemons(self):
         return set([s['name'] for s in self.status().get_standbys()])
@@ -419,9 +425,6 @@ class Filesystem(MDSCluster):
     def set_allow_dirfrags(self, yes):
         self.mon_manager.raw_cluster_cmd("fs", "set", self.name, "allow_dirfrags", str(yes).lower(), '--yes-i-really-mean-it')
 
-    def set_allow_multimds(self, yes):
-        self.mon_manager.raw_cluster_cmd("fs", "set", self.name, "allow_multimds", str(yes).lower(), '--yes-i-really-mean-it')
-
     def get_pgs_per_fs_pool(self):
         """
         Calculate how many PGs to use when creating a pool, in order to avoid raising any
@@ -450,8 +453,30 @@ class Filesystem(MDSCluster):
                                          data_pool_name, pgs_per_fs_pool.__str__())
         self.mon_manager.raw_cluster_cmd('fs', 'new',
                                          self.name, self.metadata_pool_name, data_pool_name)
+        self.check_pool_application(self.metadata_pool_name)
+        self.check_pool_application(data_pool_name)
+        # Turn off spurious standby count warnings from modifying max_mds in tests.
+        try:
+            self.mon_manager.raw_cluster_cmd('fs', 'set', self.name, 'standby_count_wanted', '0')
+        except CommandFailedError as e:
+            if e.exitstatus == 22:
+                # standby_count_wanted not available prior to luminous (upgrade tests would fail otherwise)
+                pass
+            else:
+                raise
 
         self.getinfo(refresh = True)
+
+        
+    def check_pool_application(self, pool_name):
+        osd_map = self.mon_manager.get_osd_dump_json()
+        for pool in osd_map['pools']:
+            if pool['pool_name'] == pool_name:
+                if "application_metadata" in pool:
+                    if not "cephfs" in pool['application_metadata']:
+                        raise RuntimeError("Pool %p does not name cephfs as application!".\
+                                           format(pool_name))
+        
 
     def __del__(self):
         if getattr(self._ctx, "filesystem", None) == self:
@@ -782,7 +807,7 @@ class Filesystem(MDSCluster):
 
         return result
 
-    def wait_for_state(self, goal_state, reject=None, timeout=None, mds_id=None):
+    def wait_for_state(self, goal_state, reject=None, timeout=None, mds_id=None, rank=None):
         """
         Block until the MDS reaches a particular state, or a failure condition
         is met.
@@ -799,7 +824,11 @@ class Filesystem(MDSCluster):
         started_at = time.time()
         while True:
             status = self.status()
-            if mds_id is not None:
+            if rank is not None:
+                mds_info = status.get_rank(self.id, rank)
+                current_state = mds_info['state'] if mds_info else None
+                log.info("Looked up MDS state for mds.{0}: {1}".format(rank, current_state))
+            elif mds_id is not None:
                 # mds_info is None if no daemon with this ID exists in the map
                 mds_info = status.get_mds(mds_id)
                 current_state = mds_info['state'] if mds_info else None

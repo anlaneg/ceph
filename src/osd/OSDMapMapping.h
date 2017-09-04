@@ -243,7 +243,7 @@ private:
   mempool::osdmap_mapping::vector<
     mempool::osdmap_mapping::vector<pg_t>> acting_rmap;  // osd -> pg
   //unused: mempool::osdmap_mapping::vector<std::vector<pg_t>> up_rmap;  // osd -> pg
-  epoch_t epoch;
+  epoch_t epoch = 0;
   uint64_t num_pgs = 0;
 
   void _init_mappings(const OSDMap& osdmap);
@@ -285,6 +285,7 @@ public:
 	   int *acting_primary) const {
     auto p = pools.find(pgid.pool());
     assert(p != pools.end());
+    assert(pgid.ps() < p->second.pg_num);
     p->second.get(pgid.ps(), up, up_primary, acting, acting_primary);
   }
 

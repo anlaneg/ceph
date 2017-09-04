@@ -129,27 +129,6 @@ WRITE_CLASS_ENCODER_FEATURES(InodeStore)
 
 // cached inode wrapper
 class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CInode> {
-  /*
-   * This class uses a boost::pool to handle allocation. This is *not*
-   * thread-safe, so don't do allocations from multiple threads!
-   *
-   * Alternatively, switch the pool to use a boost::singleton_pool.
-   */
-
-private:
-  static boost::pool<> pool;
-public:
-  static void *operator new(size_t num_bytes) { 
-    void *n = pool.malloc();
-    if (!n)
-      throw std::bad_alloc();
-    return n;
-  }
-  void operator delete(void *p) {
-    pool.free(p);
-  }
-
-
  public:
   // -- pins --
   static const int PIN_DIRFRAG =         -1; 
@@ -221,6 +200,7 @@ public:
   static const int STATE_REPAIRSTATS = (1<<19);
   static const int STATE_MISSINGOBJS = (1<<20);
   static const int STATE_EVALSTALECAPS = (1<<21);
+  static const int STATE_QUEUEDEXPORTPIN = (1<<22);
   // orphan inode needs notification of releasing reference
   static const int STATE_ORPHAN =	STATE_NOTIFYREF;
 
@@ -703,6 +683,7 @@ public:
   bool is_mdsdir() const { return MDS_INO_IS_MDSDIR(inode.ino); }
   bool is_base() const { return is_root() || is_mdsdir(); }
   bool is_system() const { return inode.ino < MDS_INO_SYSTEM_BASE; }
+  bool is_normal() const { return !(is_base() || is_system() || is_stray()); }
 
   bool is_head() const { return last == CEPH_NOSNAP; }
 
@@ -1086,6 +1067,12 @@ public:
     parent = projected_parent.front();
     projected_parent.pop_front();
   }
+
+public:
+  void maybe_export_pin(bool update=false);
+  void set_export_pin(mds_rank_t rank);
+  mds_rank_t get_export_pin(bool inherit=true) const;
+  bool is_exportable(mds_rank_t dest) const;
 
   void print(ostream& out) override;
   void dump(Formatter *f) const;

@@ -15,21 +15,22 @@
 #ifndef CEPH_SIMPLEMESSENGER_H
 #define CEPH_SIMPLEMESSENGER_H
 
-#include "include/types.h"
-#include "include/xlist.h"
-
 #include <list>
 #include <map>
 using namespace std;
+
+#include "include/types.h"
+#include "include/xlist.h"
+
 #include "include/unordered_map.h"
 #include "include/unordered_set.h"
 
 #include "common/Mutex.h"
-#include "include/atomic.h"
-#include "include/Spinlock.h"
 #include "common/Cond.h"
 #include "common/Thread.h"
 #include "common/Throttle.h"
+
+#include "include/spinlock.h"
 
 #include "msg/SimplePolicyMessenger.h"
 #include "msg/Message.h"
@@ -94,6 +95,7 @@ public:
    * @{
    */
   void set_addr_unknowns(const entity_addr_t& addr) override;
+  void set_addr(const entity_addr_t &addr) override;
 
   int get_dispatch_queue_len() override {
     return dispatch_queue.get_queue_len();
@@ -283,7 +285,7 @@ private:
   /// counter for the global seq our connection protocol uses
   __u32 global_seq;
   /// lock to protect the global_seq
-  ceph_spinlock_t global_seq_lock;
+  ceph::spinlock global_seq_lock;
 
   /**
    * hash map of addresses to Pipes
@@ -322,7 +324,7 @@ private:
     if (p == rank_pipe.end())
       return NULL;
     // see lock cribbing in Pipe::fault()
-    if (p->second->state_closed.read())
+    if (p->second->state_closed)
       return NULL;
     return p->second;
   }
@@ -356,11 +358,12 @@ public:
    * @return a global sequence ID that nobody else has seen.
    */
   __u32 get_global_seq(__u32 old=0) {
-    ceph_spin_lock(&global_seq_lock);
+    std::lock_guard<decltype(global_seq_lock)> lg(global_seq_lock);
+
     if (old > global_seq)
       global_seq = old;
     __u32 ret = ++global_seq;
-    ceph_spin_unlock(&global_seq_lock);
+
     return ret;
   }
   /**

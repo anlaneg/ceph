@@ -28,7 +28,7 @@ class MOSDMap : public Message {
   uuid_d fsid;
   map<epoch_t, bufferlist> maps;//map是按epoch_t排序的
   map<epoch_t, bufferlist> incremental_maps;//存储增量
-  epoch_t oldest_map, newest_map;//monitor上最旧的版本和最新的版本
+  epoch_t oldest_map =0, newest_map = 0;//monitor上最旧的版本和最新的版本
 
   //找最小的epoch
   epoch_t get_first() const {
@@ -136,7 +136,7 @@ public:
     }
   }
 
-  const char *get_type_name() const override { return "omap"; }
+  const char *get_type_name() const override { return "osdmap"; }
   void print(ostream& out) const override {
     out << "osd_map(" << get_first() << ".." << get_last();
     if (oldest_map || newest_map)

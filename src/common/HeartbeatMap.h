@@ -15,13 +15,11 @@
 #ifndef CEPH_HEARTBEATMAP_H
 #define CEPH_HEARTBEATMAP_H
 
-#include <pthread.h>
-
-#include <string>
 #include <list>
-#include <time.h>
+#include <atomic>
+#include <string>
 
-#include "include/atomic.h"
+#include <pthread.h>
 
 #include "RWLock.h"
 
@@ -46,7 +44,7 @@ struct heartbeat_handle_d {
   //线程id号
   pthread_t thread_id;
   //超时极限时间，自杀极限时间
-  atomic_t timeout, suicide_timeout;
+  std::atomic<unsigned> timeout = { 0 }, suicide_timeout = { 0 };
   //timeout检查间隙，自杀检查间隙
   time_t grace, suicide_grace;
   //指向自已（这个成员存在的意义是？删除handle时，不需要在容器内遍历）
@@ -90,9 +88,9 @@ class HeartbeatMap {
   //worker队列（存储各线程pthread_id,名称)
   std::list<heartbeat_handle_d*> m_workers;
   //不健康的worker数
-  atomic_t m_unhealthy_workers;
+  std::atomic<unsigned> m_unhealthy_workers = { 0 };
   //总worker数
-  atomic_t m_total_workers;
+  std::atomic<unsigned> m_total_workers = { 0 };
 
   bool _check(const heartbeat_handle_d *h, const char *who, time_t now);
 };

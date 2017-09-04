@@ -29,6 +29,9 @@
 
 #include "common/ceph_context.h"
 
+// reinclude our assert to clobber the system one
+# include "include/assert.h"
+
 class PerfCounters;
 
 enum {
@@ -197,6 +200,11 @@ public:
     void rmkeys_by_prefix(
       const string &prefix
       ) override;
+    virtual void rm_range_keys(
+        const string &prefix,
+        const string &start,
+        const string &end) override;
+
     using KeyValueDB::TransactionImpl::rmkey;
   };
 

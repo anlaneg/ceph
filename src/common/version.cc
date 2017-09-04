@@ -12,12 +12,13 @@
  *
  */
 
-#include "acconfig.h" //估计为动态生成的文件
+#include <string.h>
+
 #include "ceph_ver.h"
 #include "common/version.h"
+#include "include/rados.h"
 
 #include <sstream>
-#include <string>
 
 #define _STR(x) #x
 #define STRINGIFY(x) _STR(x)
@@ -38,7 +39,19 @@ const char *git_version_to_str(void)
 std::string const pretty_version_to_str(void)
 {
   std::ostringstream oss;
-  oss << "ceph version " << CEPH_GIT_NICE_VER << " ("
-      << STRINGIFY(CEPH_GIT_VER) << ")";
+  oss << "ceph version " << CEPH_GIT_NICE_VER
+      << " (" << STRINGIFY(CEPH_GIT_VER) << ") "
+      << ceph_release_name(CEPH_RELEASE)
+      << " (" << CEPH_RELEASE_TYPE << ")";
   return oss.str();
+}
+
+unsigned ceph_release(void)
+{
+  return CEPH_RELEASE;
+}
+
+const char *ceph_release_type(void)
+{
+  return CEPH_RELEASE_TYPE;
 }

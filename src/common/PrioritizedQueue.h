@@ -18,9 +18,6 @@
 #include "common/Formatter.h"
 #include "common/OpQueue.h"
 
-#include <map>
-#include <list>
-
 /**
  * Manages queue for normal and strict priority items
  * 支持普通和严格优先级队列
@@ -60,27 +57,6 @@ class PrioritizedQueue : public OpQueue <T, K> {
   int64_t min_cost;//最小花费
 
   typedef std::list<std::pair<unsigned, T> > ListPairs;
-  //在l中移除被f匹配的项，返回移除的项总数目
-  static unsigned filter_list_pairs(
-    ListPairs *l,
-    std::function<bool (T)> f) {
-    unsigned ret = 0;
-    //逆序遍历并移除
-    for (typename ListPairs::iterator i = l->end();
-	 i != l->begin();
-      ) {
-      auto next = i;
-      --next;
-      if (f(next->second)) {
-    	  //被匹配，增加计数，移除next
-	++ret;
-	l->erase(next);
-      } else {
-	i = next;
-      }
-    }
-    return ret;
-  }
 
   struct SubQueue {
   private:
@@ -176,28 +152,6 @@ class PrioritizedQueue : public OpQueue <T, K> {
     bool empty() const {
       return q.empty();
     }
-
-    //满足函数f的，移除
-    void remove_by_filter(
-      std::function<bool (T)> f) {
-      for (typename Classes::iterator i = q.begin();
-	   i != q.end();
-	   ) {
-    	  //在list中执行f函数进行过滤，减少总size
-	size -= filter_list_pairs(&(i->second), f);
-	if (i->second.empty()) {
-	  if (cur == i) {
-	    ++cur;
-	  }
-	  q.erase(i++);
-	} else {
-	  ++i;
-	}
-      }
-      if (cur == q.end())
-	cur = q.begin();
-    }
-
     //移除指定分类
     void remove_by_class(K k, std::list<T> *out) {
       typename Classes::iterator i = q.find(k);
@@ -306,39 +260,6 @@ public:
     return total;
   }
 
-  //移除被f函数匹配的项
-  void remove_by_filter(
-      std::function<bool (T)> f) final {
-	//枚举queue,针对每个分队列，按函数f要求移除
-    for (typename SubQueues::iterator i = queue.begin();
-	 i != queue.end();
-	 ) {
-      unsigned priority = i->first;
-      
-      i->second.remove_by_filter(f);
-      if (i->second.empty()) {
-    	  //如果分队列已为空，则跳过此队列，并将其移除
-	++i;
-	remove_queue(priority);
-      } else {
-	++i;//由于上一句if，导致++i没法放在for语句里
-      }
-    }
-
-    //枚举high_queue队列，进行filter
-    for (typename SubQueues::iterator i = high_queue.begin();
-	 i != high_queue.end();
-	 ) {
-      i->second.remove_by_filter(f);
-      if (i->second.empty()) {
-	high_queue.erase(i++);
-      } else {
-	++i;
-      }
-    }
-  }
-
-  //移除k指定的队列，将其中所有元素加入到out中
   void remove_by_class(K k, std::list<T> *out = 0) final {
 
 	//处理queue队列

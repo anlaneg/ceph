@@ -16,14 +16,8 @@
 #ifndef CEPH_COND_H
 #define CEPH_COND_H
 
-#include <time.h>
-#include <pthread.h>
-
 #include "include/Context.h"
 
-#include "common/ceph_time.h"
-#include "common/Mutex.h"
-#include "common/Clock.h"
 
 //实现对pthread_cond_t的封装,未提供多余的功能
 //封装的不怎么好,接口存在重复,功能不单一.

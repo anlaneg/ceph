@@ -15,10 +15,12 @@
 #ifndef CEPH_LIBRADOS_IOCTXIMPL_H
 #define CEPH_LIBRADOS_IOCTXIMPL_H
 
+#include <atomic>
+
 #include "common/Cond.h"
 #include "common/Mutex.h"
 #include "common/snap_types.h"
-#include "include/atomic.h"
+#include "common/zipkin_trace.h"
 #include "include/types.h"
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
@@ -29,7 +31,7 @@
 class RadosClient;
 
 struct librados::IoCtxImpl {
-  atomic_t ref_cnt;
+  std::atomic<uint64_t> ref_cnt = { 0 };
   RadosClient *client;
   int64_t poolid;
   snapid_t snap_seq;
@@ -68,11 +70,11 @@ struct librados::IoCtxImpl {
   int set_snap_write_context(snapid_t seq, vector<snapid_t>& snaps);
 
   void get() {
-    ref_cnt.inc();
+    ref_cnt++;
   }
 
   void put() {
-    if (ref_cnt.dec() == 0)
+    if (--ref_cnt == 0)
       delete this;
   }
 
@@ -131,11 +133,14 @@ struct librados::IoCtxImpl {
 	     std::map<uint64_t,uint64_t>& m);
   int sparse_read(const object_t& oid, std::map<uint64_t,uint64_t>& m,
 		  bufferlist& bl, size_t len, uint64_t off);
+  int checksum(const object_t& oid, uint8_t type, const bufferlist &init_value,
+	       size_t len, uint64_t off, size_t chunk_size, bufferlist *pbl);
   int remove(const object_t& oid);
   int remove(const object_t& oid, int flags);
   int stat(const object_t& oid, uint64_t *psize, time_t *pmtime);
   int stat2(const object_t& oid, uint64_t *psize, struct timespec *pts);
   int trunc(const object_t& oid, uint64_t size);
+  int cmpext(const object_t& oid, uint64_t off, bufferlist& cmp_bl);
 
   int tmap_update(const object_t& oid, bufferlist& cmdbl);
   int tmap_put(const object_t& oid, bufferlist& bl);
@@ -153,9 +158,9 @@ struct librados::IoCtxImpl {
   int operate_read(const object_t& oid, ::ObjectOperation *o, bufferlist *pbl, int flags=0);
   int aio_operate(const object_t& oid, ::ObjectOperation *o,
 		  AioCompletionImpl *c, const SnapContext& snap_context,
-		  int flags);
+		  int flags, const blkin_trace_info *trace_info = nullptr);
   int aio_operate_read(const object_t& oid, ::ObjectOperation *o,
-		       AioCompletionImpl *c, int flags, bufferlist *pbl);
+		       AioCompletionImpl *c, int flags, bufferlist *pbl, const blkin_trace_info *trace_info = nullptr);
 
   struct C_aio_stat_Ack : public Context {
     librados::AioCompletionImpl *c;
@@ -183,14 +188,21 @@ struct librados::IoCtxImpl {
   };
 
   int aio_read(const object_t oid, AioCompletionImpl *c,
-	       bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid);
+	       bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid,
+	       const blkin_trace_info *info = nullptr);
   int aio_read(object_t oid, AioCompletionImpl *c,
-	       char *buf, size_t len, uint64_t off, uint64_t snapid);
+	       char *buf, size_t len, uint64_t off, uint64_t snapid,
+	       const blkin_trace_info *info = nullptr);
   int aio_sparse_read(const object_t oid, AioCompletionImpl *c,
 		      std::map<uint64_t,uint64_t> *m, bufferlist *data_bl,
 		      size_t len, uint64_t off, uint64_t snapid);
+  int aio_cmpext(const object_t& oid, AioCompletionImpl *c, uint64_t off,
+		      bufferlist& cmp_bl);
+  int aio_cmpext(const object_t& oid, AioCompletionImpl *c,
+		      const char *cmp_buf, size_t cmp_len, uint64_t off);
   int aio_write(const object_t &oid, AioCompletionImpl *c,
-		const bufferlist& bl, size_t len, uint64_t off);
+		const bufferlist& bl, size_t len, uint64_t off,
+		const blkin_trace_info *info = nullptr);
   int aio_append(const object_t &oid, AioCompletionImpl *c,
 		 const bufferlist& bl, size_t len);
   int aio_write_full(const object_t &oid, AioCompletionImpl *c,
@@ -269,6 +281,21 @@ struct librados::IoCtxImpl {
 
   int cache_pin(const object_t& oid);
   int cache_unpin(const object_t& oid);
+
+  int application_enable(const std::string& app_name, bool force);
+  void application_enable_async(const std::string& app_name, bool force,
+                                PoolAsyncCompletionImpl *c);
+  int application_list(std::set<std::string> *app_names);
+  int application_metadata_get(const std::string& app_name,
+                               const std::string &key,
+                               std::string* value);
+  int application_metadata_set(const std::string& app_name,
+                               const std::string &key,
+                               const std::string& value);
+  int application_metadata_remove(const std::string& app_name,
+                                  const std::string &key);
+  int application_metadata_list(const std::string& app_name,
+                                std::map<std::string, std::string> *values);
 
 };
 

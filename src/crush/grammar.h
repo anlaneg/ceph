@@ -56,6 +56,11 @@ struct crush_grammar : public grammar<crush_grammar>
     _step_emit,
     _step,
     _crushrule,
+    _weight_set_weights,
+    _weight_set,
+    _choose_arg_ids,
+    _choose_arg,
+    _choose_args,
     _crushmap,
     _tunable,
   };
@@ -92,6 +97,11 @@ struct crush_grammar : public grammar<crush_grammar>
     rule<ScannerT, parser_context<>, parser_tag<_step_emit> >      step_emit;
     rule<ScannerT, parser_context<>, parser_tag<_step> >      step;
     rule<ScannerT, parser_context<>, parser_tag<_crushrule> >      crushrule;
+    rule<ScannerT, parser_context<>, parser_tag<_weight_set_weights> >     weight_set_weights;
+    rule<ScannerT, parser_context<>, parser_tag<_weight_set> >     weight_set;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_arg_ids> >     choose_arg_ids;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_arg> >     choose_arg;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_args> >     choose_args;
 
     rule<ScannerT, parser_context<>, parser_tag<_crushmap> >      crushmap;
 
@@ -152,15 +162,26 @@ struct crush_grammar : public grammar<crush_grammar>
 				step_chooseleaf |
 				step_emit );
       crushrule = str_p("rule") >> !name >> '{'
-			   >> str_p("ruleset") >> posint
+				>> (str_p("id") | str_p("ruleset")) >> posint
 			   >> str_p("type") >> ( str_p("replicated") | str_p("erasure") )
 			   >> str_p("min_size") >> posint
 			   >> str_p("max_size") >> posint
 			   >> +step
 			   >> '}';
 
+      weight_set_weights = str_p("[") >> *real_p >> str_p("]");
+      weight_set = str_p("weight_set") >> str_p("[")
+				       >> *weight_set_weights
+				       >> str_p("]");
+      choose_arg_ids = str_p("ids") >> str_p("[") >> *integer >> str_p("]");
+      choose_arg = str_p("{") >> str_p("bucket_id") >> negint
+			      >> !weight_set
+			      >> !choose_arg_ids
+			      >> str_p("}");
+      choose_args = str_p("choose_args") >> posint >> str_p("{") >> *choose_arg >> str_p("}");
+
       // the whole crush map
-      crushmap = *(tunable | device | bucket_type) >> *(bucket | crushrule);
+      crushmap = *(tunable | device | bucket_type) >> *(bucket | crushrule) >> *choose_args;
     }
 
     rule<ScannerT, parser_context<>, parser_tag<_crushmap> > const&

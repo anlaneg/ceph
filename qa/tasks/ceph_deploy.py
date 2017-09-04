@@ -241,7 +241,10 @@ def build_ceph_cluster(ctx, config):
         mds_nodes = " ".join(mds_nodes)
         mon_node = get_nodes_using_role(ctx, 'mon')
         mon_nodes = " ".join(mon_node)
+        mgr_nodes = get_nodes_using_role(ctx, 'mgr')
+        mgr_nodes = " ".join(mgr_nodes)
         new_mon = './ceph-deploy new' + " " + mon_nodes
+        mgr_create = './ceph-deploy mgr create' + " " + mgr_nodes
         mon_hostname = mon_nodes.split(' ')[0]
         mon_hostname = str(mon_hostname)
         gather_keys = './ceph-deploy gatherkeys' + " " + mon_hostname
@@ -303,6 +306,9 @@ def build_ceph_cluster(ctx, config):
                              '--id', remote.shortname])
 
         estatus_gather = execute_ceph_deploy(gather_keys)
+
+        execute_ceph_deploy(mgr_create)
+
         if mds_nodes:
             estatus_mds = execute_ceph_deploy(deploy_mds)
             if estatus_mds != 0:
@@ -325,6 +331,11 @@ def build_ceph_cluster(ctx, config):
                 if estatus != 0:
                     raise RuntimeError("ceph-deploy: Failed to zap osds")
             osd_create_cmd = './ceph-deploy osd create '
+            # first check for filestore, default is bluestore with ceph-deploy
+            if config.get('filestore') is not None:
+                osd_create_cmd += '--filestore '
+            else:
+                osd_create_cmd += '--bluestore '
             if config.get('dmcrypt') is not None:
                 osd_create_cmd += '--dmcrypt '
             osd_create_cmd += ":".join(d)
@@ -567,14 +578,20 @@ def cli_test(ctx, config):
                                                 sudo=True)
     new_mon_install = 'install {branch} --mon '.format(
         branch=test_branch) + nodename
+    new_mgr_install = 'install {branch} --mgr '.format(
+        branch=test_branch) + nodename
     new_osd_install = 'install {branch} --osd '.format(
         branch=test_branch) + nodename
     new_admin = 'install {branch} --cli '.format(branch=test_branch) + nodename
     create_initial = 'mon create-initial '
+    # either use create-keys or push command
+    push_keys = 'admin ' + nodename
     execute_cdeploy(admin, new_mon_install, path)
+    execute_cdeploy(admin, new_mgr_install, path)
     execute_cdeploy(admin, new_osd_install, path)
     execute_cdeploy(admin, new_admin, path)
     execute_cdeploy(admin, create_initial, path)
+    execute_cdeploy(admin, push_keys, path)
 
     for i in range(3):
         zap_disk = 'disk zap ' + "{n}:{d}".format(n=nodename, d=devs[i])
@@ -679,6 +696,10 @@ def task(ctx, config):
              mon_initial_members: 1
              only_mon: true
              keep_running: true
+             # either choose bluestore or filestore, default is bluestore
+             bluestore: True
+             # or
+             filestore: True
 
         tasks:
         - install:

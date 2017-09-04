@@ -13,17 +13,9 @@
  */
 
 #include <algorithm>
-#include <errno.h>
-#include <list>
 #include <map>
 #include <sstream>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <string>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <iostream>
 
 #include "include/buffer.h"
@@ -31,7 +23,6 @@
 #include "common/utf8.h"
 #include "common/ConfUtils.h"
 
-using std::cerr;
 using std::ostringstream;
 using std::pair;
 using std::string;
@@ -102,6 +93,9 @@ parse_file(const std::string &fname, std::deque<std::string> *errors,
   char *buf = NULL;
   FILE *fp = fopen(fname.c_str(), "r");
   if (!fp) {
+    ostringstream oss;
+    oss << __func__ << ": cannot open " << fname << ": " << cpp_strerror(errno);
+    errors->push_back(oss.str());
     ret = -errno;
     return ret;
   }
@@ -110,14 +104,14 @@ parse_file(const std::string &fname, std::deque<std::string> *errors,
   if (fstat(fileno(fp), &st_buf)) {
     ret = -errno;
     ostringstream oss;
-    oss << "read_conf: failed to fstat '" << fname << "': " << cpp_strerror(ret);
+    oss << __func__ << ": failed to fstat '" << fname << "': " << cpp_strerror(ret);
     errors->push_back(oss.str());
     goto done;
   }
 
   if (st_buf.st_size > MAX_CONFIG_FILE_SZ) {
     ostringstream oss;
-    oss << "read_conf: config file '" << fname << "' is " << st_buf.st_size
+    oss << __func__ << ": config file '" << fname << "' is " << st_buf.st_size
 	<< " bytes, but the maximum is " << MAX_CONFIG_FILE_SZ;
     errors->push_back(oss.str());
     ret = -EINVAL;
@@ -135,14 +129,14 @@ parse_file(const std::string &fname, std::deque<std::string> *errors,
     if (ferror(fp)) {
       ret = -errno;
       ostringstream oss;
-      oss << "read_conf: fread error while reading '" << fname << "': "
+      oss << __func__ << ": fread error while reading '" << fname << "': "
 	  << cpp_strerror(ret);
       errors->push_back(oss.str());
       goto done;
     }
     else {
       ostringstream oss;
-      oss << "read_conf: unexpected EOF while reading '" << fname << "': "
+      oss << __func__ << ": unexpected EOF while reading '" << fname << "': "
 	  << "possible concurrent modification?";
       errors->push_back(oss.str());
       ret = -EIO;

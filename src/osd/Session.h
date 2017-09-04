@@ -17,7 +17,7 @@
 
 #include "common/RefCountedObj.h"
 #include "common/Mutex.h"
-#include "include/Spinlock.h"
+#include "include/spinlock.h"
 #include "OSDCap.h"
 #include "Watch.h"
 #include "OSDMap.h"
@@ -27,7 +27,12 @@ typedef boost::intrusive_ptr<Session> SessionRef;
 struct Backoff;
 typedef boost::intrusive_ptr<Backoff> BackoffRef;
 class PG;
+#ifdef PG_DEBUG_REFS
+#include "common/tracked_int_ptr.hpp"
+typedef TrackedIntPtr<PG> PGRef;
+#else
 typedef boost::intrusive_ptr<PG> PGRef;
+#endif
 
 /*
  * A Backoff represents one instance of either a PG or an OID
@@ -130,9 +135,9 @@ struct Session : public RefCountedObject {
   Mutex session_dispatch_lock;
   boost::intrusive::list<OpRequest> waiting_on_map;
 
-  Spinlock sent_epoch_lock;
+  ceph::spinlock sent_epoch_lock;
   epoch_t last_sent_epoch;
-  Spinlock received_map_lock;
+  ceph::spinlock received_map_lock;
   epoch_t received_map_epoch; // largest epoch seen in MOSDMap from here
 
   /// protects backoffs; orders inside Backoff::lock *and* PG::backoff_lock

@@ -185,6 +185,7 @@ void BitmapFreelistManager::enumerate_reset()
   enumerate_offset = 0;
   enumerate_bl_pos = 0;
   enumerate_bl.clear();
+  enumerate_p.reset();
 }
 
 int get_next_clear_bit(bufferlist& bl, int start)
@@ -192,10 +193,10 @@ int get_next_clear_bit(bufferlist& bl, int start)
   const char *p = bl.c_str();
   int bits = bl.length() << 3;
   while (start < bits) {
-    int which_byte = start / 8;
-    int which_bit = start % 8;
-    unsigned char byte_mask = 1 << which_bit;
-    if ((p[which_byte] & byte_mask) == 0) {
+    // byte = start / 8 (or start >> 3)
+    // bit = start % 8 (or start & 7)
+    unsigned char byte_mask = 1 << (start & 7);
+    if ((p[start >> 3] & byte_mask) == 0) {
       return start;
     }
     ++start;

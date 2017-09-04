@@ -60,6 +60,8 @@ public:
   void break_lock(const managed_lock::Locker &locker, bool force_break_lock,
                   Context *on_finish);
 
+  int assert_header_locked();
+
   bool is_shutdown() const {
     Mutex::Locker l(m_lock);
     return is_state_shutdown();
@@ -132,6 +134,7 @@ protected:
                                         Context *on_finish);
   virtual void post_release_lock_handler(bool shutting_down, int r,
                                           Context *on_finish);
+  virtual void post_reacquire_lock_handler(int r, Context *on_finish);
 
   void execute_next_action();
 

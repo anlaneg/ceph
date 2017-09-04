@@ -185,6 +185,7 @@ int FS::zero(int fd, uint64_t offset, uint64_t length)
 
 // ---------------
 
+<<<<<<< HEAD
 #if defined(HAVE_LIBAIO)
 int FS::aio_queue_t::submit(aio_t &aio, int *retries)//简单提交aio
 {
@@ -232,3 +233,5 @@ int FS::aio_queue_t::get_next_completed(int timeout_ms, aio_t **paio, int max)//
   return r;
 }
 #endif
+=======
+>>>>>>> upstream/master

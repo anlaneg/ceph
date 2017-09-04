@@ -20,6 +20,7 @@ overrides:
     conf:
       mon:
         mon debug unsafe allow tier with nonempty snaps: true
+        mon warn on pool no app: false
       osd:
         osd map max advance: 1000
 roles:
@@ -28,6 +29,7 @@ roles:
   - osd.0
   - osd.1
   - osd.2
+  - mgr.x
 - - mon.b
   - mon.c
   - osd.3
@@ -47,6 +49,8 @@ tasks:
 - print: "**** done v10.2.0 install"
 - ceph:
    fs: xfs
+   skip_mgr_daemons: true
+   add_osds_to_crush: true
 - print: "**** done ceph xfs"
 - sequential:
    - workload
@@ -77,6 +81,9 @@ tasks:
    - workload_x
    - upgrade-sequence_x
 - print: "**** done parallel -x branch"
+- exec:
+    osd.0:
+      - ceph osd set-require-min-compat-client luminous
 # Run librados tests on the -x upgraded cluster
 - install.upgrade:
     client.1:
@@ -112,6 +119,7 @@ workload_jewel:
          client.0:
            force-branch: ceph-jewel
            rgw_server: client.0
+           scan_for_encryption_keys: false
      - print: "**** done s3tests workload_jewel"
 upgrade-sequence_jewel:
    sequential:
@@ -171,6 +179,7 @@ workload_x:
        client.1:
          force-branch: ceph-jewel
          rgw_server: client.1
+         scan_for_encryption_keys: false
    - print: "**** done s3tests workload_x"
 upgrade-sequence_x:
    sequential:
@@ -205,4 +214,16 @@ upgrade-sequence_x:
        daemons: [osd.5]
        wait-for-healthy: false
        wait-for-up-osds: true
+   - exec:
+      mgr.x:
+        - mkdir -p /var/lib/ceph/mgr/ceph-x
+        - ceph auth get-or-create-key mgr.x mon 'allow profile mgr'
+        - ceph auth export mgr.x > /var/lib/ceph/mgr/ceph-x/keyring
+   - ceph.restart:
+       daemons: [mgr.x]
+       wait-for-healthy: false
+   - exec:
+       osd.0:
+         - ceph osd require-osd-release luminous
+   - ceph.healthy:
    - print: "**** done ceph.restart all -x branch mds/osd/mon"

@@ -14,15 +14,23 @@
 
 #include <unistd.h>
 
-#include "global/signal_handler.h"
-
+#include "include/compat.h"
 #include "include/types.h"
 #include "include/str_list.h"
-#include "common/entity_name.h"
+
 #include "common/Clock.h"
-#include "common/signal.h"
+#include "common/HeartbeatMap.h"
+#include "common/Timer.h"
+#include "common/backport14.h"
 #include "common/ceph_argparse.h"
+#include "common/config.h"
+#include "common/entity_name.h"
 #include "common/errno.h"
+#include "common/perf_counters.h"
+#include "common/signal.h"
+#include "common/version.h"
+
+#include "global/signal_handler.h"
 
 #include "msg/Messenger.h"
 #include "mon/MonClient.h"
@@ -37,12 +45,6 @@
 
 #include "SnapServer.h"
 #include "SnapClient.h"
-
-#include "common/HeartbeatMap.h"
-
-#include "common/perf_counters.h"
-
-#include "common/Timer.h"
 
 #include "events/ESession.h"
 #include "events/ESubtreeMap.h"
@@ -59,8 +61,6 @@
 #include "auth/RotatingKeyRing.h"
 #include "auth/KeyRing.h"
 
-#include "common/config.h"
-
 #include "perfglue/cpu_profiler.h"
 #include "perfglue/heap_profiler.h"
 
@@ -68,20 +68,6 @@
 #define dout_subsys ceph_subsys_mds
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << name << ' '
-
-
-class MDSDaemon::C_MDS_Tick : public Context {
-  protected:
-    MDSDaemon *mds_daemon;
-public:
-  explicit C_MDS_Tick(MDSDaemon *m) : mds_daemon(m) {}
-  void finish(int r) override {
-    assert(mds_daemon->mds_lock.is_locked_by_me());
-
-    mds_daemon->tick_event = 0;
-    mds_daemon->tick();
-  }
-};
 
 // cons/des
 MDSDaemon::MDSDaemon(const std::string &n, Messenger *m, MonClient *mc) :
@@ -104,7 +90,6 @@ MDSDaemon::MDSDaemon(const std::string &n, Messenger *m, MonClient *mc) :
   mgrc(m->cct, m),
   log_client(m->cct, messenger, &mc->monmap, LogClient::NO_FLAGS),
   mds_rank(NULL),
-  tick_event(0),
   asok_hook(NULL)
 {
   orig_argc = 0;
@@ -541,14 +526,16 @@ void MDSDaemon::reset_tick()
   if (tick_event) timer.cancel_event(tick_event);
 
   // schedule
-  tick_event = new C_MDS_Tick(this);
-  timer.add_event_after(g_conf->mds_tick_interval, tick_event);
+  tick_event = timer.add_event_after(
+    g_conf->mds_tick_interval,
+    new FunctionContext([this](int) {
+	assert(mds_lock.is_locked_by_me());
+	tick();
+      }));
 }
 
 void MDSDaemon::tick()
 {
-  tick_event = 0;
-
   // reschedule
   reset_tick();
 
@@ -644,6 +631,10 @@ COMMAND("injectargs " \
 	"name=injected_args,type=CephString,n=N",
 	"inject configuration arguments into running MDS",
 	"mds", "*", "cli,rest")
+COMMAND("config set " \
+	"name=key,type=CephString name=value,type=CephString",
+	"Set a configuration option at runtime (not persistent)",
+	"mds", "*", "cli,rest")
 COMMAND("exit",
 	"Terminate this MDS",
 	"mds", "*", "cli,rest")
@@ -660,29 +651,26 @@ COMMAND("cpu_profiler " \
 COMMAND("session ls " \
 	"name=filters,type=CephString,n=N,req=false",
 	"List client sessions", "mds", "r", "cli,rest")
+COMMAND("client ls " \
+	"name=filters,type=CephString,n=N,req=false",
+	"List client sessions", "mds", "r", "cli,rest")
 COMMAND("session evict " \
+	"name=filters,type=CephString,n=N,req=false",
+	"Evict client session(s)", "mds", "rw", "cli,rest")
+COMMAND("client evict " \
 	"name=filters,type=CephString,n=N,req=false",
 	"Evict client session(s)", "mds", "rw", "cli,rest")
 COMMAND("damage ls",
 	"List detected metadata damage", "mds", "r", "cli,rest")
 COMMAND("damage rm name=damage_id,type=CephInt",
 	"Remove a damage table entry", "mds", "rw", "cli,rest")
+COMMAND("version", "report version of MDS", "mds", "r", "cli,rest")
 COMMAND("heap " \
 	"name=heapcmd,type=CephChoices,strings=dump|start_profiler|stop_profiler|release|stats", \
 	"show heap usage info (available only if compiled with tcmalloc)", \
 	"mds", "*", "cli,rest")
 };
 
-// FIXME: reinstate issue_caps, try_eval,
-//  *if* it makes sense to do so (or should these be admin socket things?)
-
-/* This function DOES put the passed message before returning*/
-void MDSDaemon::handle_command(MMonCommand *m)
-{
-  bufferlist outbl;
-  _handle_command_legacy(m->cmd);
-  m->put();
-}
 
 int MDSDaemon::_handle_command(
     const cmdmap_t &cmdmap,
@@ -730,27 +718,41 @@ int MDSDaemon::_handle_command(
   std::stringstream ds;
   std::stringstream ss;
   std::string prefix;
+  std::string format;
+  std::unique_ptr<Formatter> f(Formatter::create(format));
   cmd_getval(cct, cmdmap, "prefix", prefix);
 
   int r = 0;
 
   if (prefix == "get_command_descriptions") {
     int cmdnum = 0;
-    JSONFormatter *f = new JSONFormatter();
+    std::unique_ptr<JSONFormatter> f(ceph::make_unique<JSONFormatter>());
     f->open_object_section("command_descriptions");
     for (MDSCommand *cp = mds_commands;
 	 cp < &mds_commands[ARRAY_SIZE(mds_commands)]; cp++) {
 
       ostringstream secname;
       secname << "cmd" << setfill('0') << std::setw(3) << cmdnum;
-      dump_cmddesc_to_json(f, secname.str(), cp->cmdstring, cp->helpstring,
+      dump_cmddesc_to_json(f.get(), secname.str(), cp->cmdstring, cp->helpstring,
 			   cp->module, cp->perm, cp->availability, 0);
       cmdnum++;
     }
     f->close_section();	// command_descriptions
 
     f->flush(ds);
-    delete f;
+    goto out; 
+  }
+
+  cmd_getval(cct, cmdmap, "format", format);
+  if (prefix == "version") {
+    if (f) {
+      f->open_object_section("version");
+      f->dump_string("version", pretty_version_to_str());
+      f->close_section();
+      f->flush(ds);
+    } else {
+      ds << pretty_version_to_str();
+    }
   } else if (prefix == "injectargs") {
     vector<string> argsvec;
     cmd_getval(cct, cmdmap, "injected_args", argsvec);
@@ -764,12 +766,20 @@ int MDSDaemon::_handle_command(
     for (vector<string>::iterator a = ++argsvec.begin(); a != argsvec.end(); ++a)
       args += " " + *a;
     r = cct->_conf->injectargs(args, &ss);
+  } else if (prefix == "config set") {
+    std::string key;
+    cmd_getval(cct, cmdmap, "key", key);
+    std::string val;
+    cmd_getval(cct, cmdmap, "value", val);
+    r = cct->_conf->set_val(key, val, true, &ss);
+    if (r == 0) {
+      cct->_conf->apply_changes(nullptr);
+    }
   } else if (prefix == "exit") {
     // We will send response before executing
     ss << "Exiting...";
     *run_later = new SuicideLater(this);
-  }
-  else if (prefix == "respawn") {
+  } else if (prefix == "respawn") {
     // We will send response before executing
     ss << "Respawning...";
     *run_later = new RespawnLater(this);
@@ -783,7 +793,9 @@ int MDSDaemon::_handle_command(
     int64_t session_id = 0;
     bool got = cmd_getval(cct, cmdmap, "session_id", session_id);
     assert(got);
-    bool killed = mds_rank->kill_session(session_id, false, ss);
+    bool killed = mds_rank->evict_client(session_id, false,
+                                         g_conf->mds_session_blacklist_on_evict,
+                                         ss);
     if (!killed)
       r = -ENOENT;
   } else if (prefix == "heap") {
@@ -823,55 +835,6 @@ out:
   *outs = ss.str();
   outbl->append(ds);
   return r;
-}
-
-/**
- * Legacy "mds tell", takes a simple array of args
- */
-int MDSDaemon::_handle_command_legacy(std::vector<std::string> args)
-{
-  dout(10) << "handle_command args: " << args << dendl;
-  if (args[0] == "injectargs") {
-    if (args.size() < 2) {
-      derr << "Ignoring empty injectargs!" << dendl;
-    }
-    else {
-      std::ostringstream oss;
-      mds_lock.Unlock();
-      g_conf->injectargs(args[1], &oss);
-      mds_lock.Lock();
-      derr << "injectargs:" << dendl;
-      derr << oss.str() << dendl;
-    }
-  }
-  else if (args[0] == "exit") {
-    suicide();
-  }
-  else if (args[0] == "respawn") {
-    respawn();
-  }
-  else if (args[0] == "cpu_profiler") {
-    ostringstream ss;
-    cpu_profiler_handle_command(args, ss);
-    clog->info() << ss.str();
-  }
-  else if (args[0] == "heap") {
-    if (!ceph_using_tcmalloc())
-      clog->info() << "tcmalloc not enabled, can't use heap profiler commands";
-    else {
-      ostringstream ss;
-      vector<std::string> cmdargs;
-      cmdargs.insert(cmdargs.begin(), args.begin()+1, args.end());
-      ceph_heap_profiler_handle_command(cmdargs, ss);
-      clog->info() << ss.str();
-    }
-  } else {
-    if (!(mds_rank && mds_rank->handle_command_legacy(args))) {
-      dout(0) << "unrecognized command! " << args << dendl;
-    }
-  }
-
-  return 0;
 }
 
 /* This function deletes the passed message before returning. */
@@ -935,20 +898,21 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
 
   // see who i am
   addr = messenger->get_myaddr();
-  dout(10) << "map says i am " << addr << " mds." << whoami << "." << incarnation
+  dout(10) << "map says I am " << addr << " mds." << whoami << "." << incarnation
 	   << " state " << ceph_mds_state_name(new_state) << dendl;
 
   if (whoami == MDS_RANK_NONE) {
     if (mds_rank != NULL) {
+      const auto myid = monc->get_global_id();
       // We have entered a rank-holding state, we shouldn't be back
       // here!
       if (g_conf->mds_enforce_unique_name) {
         if (mds_gid_t existing = mdsmap->find_mds_gid_by_name(name)) {
           const MDSMap::mds_info_t& i = mdsmap->get_info_gid(existing);
-          if (i.global_id > monc->get_global_id()) {
-            dout(1) << "handle_mds_map i (" << addr
-                    << ") dne in the mdsmap, new instance has larger gid " << i.global_id
-                    << ", suicide" << dendl;
+          if (i.global_id > myid) {
+            dout(1) << "map replaced me with another mds." << whoami
+                    << " with gid (" << i.global_id << ") larger than myself ("
+                    << myid << "); quitting!" << dendl;
             // Call suicide() rather than respawn() because if someone else
             // has taken our ID, we don't want to keep restarting and
             // fighting them for the ID.
@@ -959,8 +923,8 @@ void MDSDaemon::handle_mds_map(MMDSMap *m)
         }
       }
 
-      dout(1) << "handle_mds_map i (" << addr
-          << ") dne in the mdsmap, respawning myself" << dendl;
+      dout(1) << "map removed me (mds." << whoami << " gid:"
+              << myid << ") from cluster due to lost contact; respawning" << dendl;
       respawn();
     }
     // MDSRank not active: process the map here to see if we have
@@ -1072,12 +1036,13 @@ void MDSDaemon::suicide()
   }
   beacon.shutdown();
 
+  mgrc.shutdown();
+
   if (mds_rank) {
     mds_rank->shutdown();
   } else {
     timer.shutdown();
 
-    mgrc.shutdown();
     monc->shutdown();
     messenger->shutdown();
   }
@@ -1100,7 +1065,7 @@ void MDSDaemon::respawn()
    * unlinked.
    */
   char exe_path[PATH_MAX] = "";
-  if (readlink("/proc/self/exe", exe_path, PATH_MAX-1) == -1) {
+  if (readlink(PROCPREFIX "/proc/self/exe", exe_path, PATH_MAX-1) == -1) {
     /* Print CWD for the user's interest */
     char buf[PATH_MAX];
     char *cwd = getcwd(buf, sizeof(buf));
@@ -1111,7 +1076,7 @@ void MDSDaemon::respawn()
     strncpy(exe_path, orig_argv[0], PATH_MAX-1);
   } else {
     dout(1) << "respawning with exe " << exe_path << dendl;
-    strcpy(exe_path, "/proc/self/exe");
+    strcpy(exe_path, PROCPREFIX "/proc/self/exe");
   }
 
   dout(1) << " exe_path " << exe_path << dendl;
@@ -1159,7 +1124,8 @@ bool MDSDaemon::ms_dispatch(Message *m)
 
 bool MDSDaemon::ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bool force_new)
 {
-  dout(10) << "MDSDaemon::ms_get_authorizer type=" << ceph_entity_type_name(dest_type) << dendl;
+  dout(10) << "MDSDaemon::ms_get_authorizer type="
+           << ceph_entity_type_name(dest_type) << dendl;
 
   /* monitor authorization is being handled on different layer */
   if (dest_type == CEPH_ENTITY_TYPE_MON)
@@ -1192,12 +1158,6 @@ bool MDSDaemon::handle_core_message(Message *m)
     handle_mds_map(static_cast<MMDSMap*>(m));
     break;
 
-    // misc
-  case MSG_MON_COMMAND:
-    ALLOW_MESSAGES_FROM(CEPH_ENTITY_TYPE_MON);
-    handle_command(static_cast<MMonCommand*>(m));
-    break;
-
     // OSD
   case MSG_COMMAND:
     handle_command(static_cast<MCommand*>(m));
@@ -1208,6 +1168,12 @@ bool MDSDaemon::handle_core_message(Message *m)
     if (mds_rank) {
       mds_rank->handle_osd_map();
     }
+    m->put();
+    break;
+
+  case MSG_MON_COMMAND:
+    ALLOW_MESSAGES_FROM(CEPH_ENTITY_TYPE_MON);
+    clog->warn() << "dropping `mds tell` command from legacy monitor";
     m->put();
     break;
 
@@ -1309,9 +1275,16 @@ bool MDSDaemon::ms_verify_authorizer(Connection *con, int peer_type,
   EntityName name;
   uint64_t global_id;
 
-  is_valid = authorize_handler->verify_authorizer(
-    cct, monc->rotating_secrets.get(),
-    authorizer_data, authorizer_reply, name, global_id, caps_info, session_key);
+  RotatingKeyRing *keys = monc->rotating_secrets.get();
+  if (keys) {
+    is_valid = authorize_handler->verify_authorizer(
+      cct, keys,
+      authorizer_data, authorizer_reply, name, global_id, caps_info,
+      session_key);
+  } else {
+    dout(10) << __func__ << " no rotating_keys (yet), denied" << dendl;
+    is_valid = false;
+  }
 
   if (is_valid) {
     entity_name_t n(con->get_peer_type(), global_id);
@@ -1361,26 +1334,28 @@ bool MDSDaemon::ms_verify_authorizer(Connection *con, int peer_type,
     if (caps_info.allow_all) {
       // Flag for auth providers that don't provide cap strings
       s->auth_caps.set_allow_all();
-    }
+    } else {
+      bufferlist::iterator p = caps_info.caps.begin();
+      string auth_cap_str;
+      try {
+        ::decode(auth_cap_str, p);
 
-    bufferlist::iterator p = caps_info.caps.begin();
-    string auth_cap_str;
-    try {
-      ::decode(auth_cap_str, p);
-
-      dout(10) << __func__ << ": parsing auth_cap_str='" << auth_cap_str << "'" << dendl;
-      std::ostringstream errstr;
-      if (!s->auth_caps.parse(g_ceph_context, auth_cap_str, &errstr)) {
-        dout(1) << __func__ << ": auth cap parse error: " << errstr.str()
-		<< " parsing '" << auth_cap_str << "'" << dendl;
-	clog->warn() << name << " mds cap '" << auth_cap_str
-		     << "' does not parse: " << errstr.str();
+        dout(10) << __func__ << ": parsing auth_cap_str='" << auth_cap_str << "'" << dendl;
+        std::ostringstream errstr;
+        if (!s->auth_caps.parse(g_ceph_context, auth_cap_str, &errstr)) {
+          dout(1) << __func__ << ": auth cap parse error: " << errstr.str()
+		  << " parsing '" << auth_cap_str << "'" << dendl;
+	  clog->warn() << name << " mds cap '" << auth_cap_str
+		       << "' does not parse: " << errstr.str();
+          is_valid = false;
+        }
+      } catch (buffer::error& e) {
+        // Assume legacy auth, defaults to:
+        //  * permit all filesystem ops
+        //  * permit no `tell` ops
+        dout(1) << __func__ << ": cannot decode auth caps bl of length " << caps_info.caps.length() << dendl;
+        is_valid = false;
       }
-    } catch (buffer::error& e) {
-      // Assume legacy auth, defaults to:
-      //  * permit all filesystem ops
-      //  * permit no `tell` ops
-      dout(1) << __func__ << ": cannot decode auth caps bl of length " << caps_info.caps.length() << dendl;
     }
   }
 

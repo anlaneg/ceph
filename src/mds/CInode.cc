@@ -66,9 +66,6 @@ public:
 };
 
 
-boost::pool<> CInode::pool(sizeof(CInode));
-boost::pool<> Capability::pool(sizeof(Capability));
-
 LockType CInode::versionlock_type(CEPH_LOCK_IVERSION);
 LockType CInode::authlock_type(CEPH_LOCK_IAUTH);
 LockType CInode::linklock_type(CEPH_LOCK_ILINK);
@@ -247,6 +244,10 @@ ostream& operator<<(ostream& out, const CInode& in)
     in.print_pin_set(out);
   }
 
+  if (in.inode.export_pin != MDS_RANK_NONE) {
+    out << " export_pin=" << in.inode.export_pin;
+  }
+
   out << " " << &in;
   out << "]";
   return out;
@@ -338,11 +339,16 @@ void CInode::mark_dirty_rstat()
     dout(10) << "mark_dirty_rstat" << dendl;
     state_set(STATE_DIRTYRSTAT);
     get(PIN_DIRTYRSTAT);
-    CDentry *dn = get_projected_parent_dn();
-    CDir *pdir = dn->dir;
-    pdir->dirty_rstat_inodes.push_back(&dirty_rstat_item);
-
-    mdcache->mds->locker->mark_updated_scatterlock(&pdir->inode->nestlock);
+    CDentry *pdn = get_projected_parent_dn();
+    if (pdn->is_auth()) {
+      CDir *pdir = pdn->dir;
+      pdir->dirty_rstat_inodes.push_back(&dirty_rstat_item);
+      mdcache->mds->locker->mark_updated_scatterlock(&pdir->inode->nestlock);
+    } else {
+      // under cross-MDS rename.
+      // DIRTYRSTAT flag will get cleared when rename finishes
+      assert(state_test(STATE_AMBIGUOUSAUTH));
+    }
   }
 }
 void CInode::clear_dirty_rstat()
@@ -650,6 +656,8 @@ CDir *CInode::add_dirfrag(CDir *dir)
     dir->state_set(CDir::STATE_STICKY);
     dir->get(CDir::PIN_STICKY);
   }
+
+  maybe_export_pin();
 
   return dir;
 }
@@ -989,8 +997,8 @@ void CInode::_stored(int r, version_t v, Context *fin)
 {
   if (r < 0) {
     dout(1) << "store error " << r << " v " << v << " on " << *this << dendl;
-    mdcache->mds->clog->error() << "failed to store ino " << ino() << " object,"
-				<< " errno " << r;
+    mdcache->mds->clog->error() << "failed to store inode " << ino()
+                                << " object: " << cpp_strerror(r);
     mdcache->mds->handle_write_error(r);
     fin->complete(r);
     return;
@@ -1070,8 +1078,7 @@ void CInode::_fetched(bufferlist& bl, bufferlist& bl2, Context *fin)
   } else if (bl.length()) {
     p = bl.begin();
   } else {
-    derr << "No data while reading inode 0x" << std::hex << ino()
-      << std::dec << dendl;
+    derr << "No data while reading inode " << ino() << dendl;
     fin->complete(-ENOENT);
     return;
   }
@@ -1092,8 +1099,7 @@ void CInode::_fetched(bufferlist& bl, bufferlist& bl2, Context *fin)
       fin->complete(0);
     }
   } catch (buffer::error &err) {
-    derr << "Corrupt inode 0x" << std::hex << ino() << std::dec
-      << ": " << err << dendl;
+    derr << "Corrupt inode " << ino() << ": " << err << dendl;
     fin->complete(-EINVAL);
     return;
   }
@@ -1202,6 +1208,23 @@ void CInode::store_backtrace(MDSInternalContextBase *fin, int op_prio)
 
 void CInode::_stored_backtrace(int r, version_t v, Context *fin)
 {
+  if (r == -ENOENT) {
+    const int64_t pool = get_backtrace_pool();
+    bool exists = mdcache->mds->objecter->with_osdmap(
+        [pool](const OSDMap &osd_map) {
+          return osd_map.have_pg_pool(pool);
+        });
+
+    // This ENOENT is because the pool doesn't exist (the user deleted it
+    // out from under us), so the backtrace can never be written, so pretend
+    // to succeed so that the user can proceed to e.g. delete the file.
+    if (!exists) {
+      dout(4) << "store_backtrace got ENOENT: a data pool was deleted "
+                 "beneath us!" << dendl;
+      r = 0;
+    }
+  }
+
   if (r < 0) {
     dout(1) << "store backtrace error " << r << " v " << v << dendl;
     mdcache->mds->clog->error() << "failed to store backtrace on ino "
@@ -1272,7 +1295,7 @@ void CInode::verify_diri_backtrace(bufferlist &bl, int err)
 
   if (err) {
     MDSRank *mds = mdcache->mds;
-    mds->clog->error() << "bad backtrace on dir ino " << ino();
+    mds->clog->error() << "bad backtrace on directory inode " << ino();
     assert(!"bad backtrace" == (g_conf->mds_verify_backtrace > 1));
 
     _mark_dirty_parent(mds->mdlog->get_current_segment(), false);
@@ -1526,6 +1549,7 @@ void CInode::encode_lock_state(int type, bufferlist& bl)
       ::encode(inode.ctime, bl);
       ::encode(inode.layout, bl, mdcache->mds->mdsmap->get_up_features());
       ::encode(inode.quota, bl);
+      ::encode(inode.export_pin, bl);
     }
     break;
   
@@ -1788,6 +1812,9 @@ void CInode::decode_lock_state(int type, bufferlist& bl)
       if (inode.ctime < tm) inode.ctime = tm;
       ::decode(inode.layout, p);
       ::decode(inode.quota, p);
+      mds_rank_t old_pin = inode.export_pin;
+      ::decode(inode.export_pin, p);
+      maybe_export_pin(old_pin != inode.export_pin);
     }
     break;
 
@@ -1907,7 +1934,6 @@ void CInode::finish_scatter_update(ScatterLock *lock, CDir *dir,
 
       inode_t *pi = get_projected_inode();
       fnode_t *pf = dir->project_fnode();
-      pf->version = dir->pre_dirty();
 
       const char *ename = 0;
       switch (lock->get_type()) {
@@ -1920,11 +1946,19 @@ void CInode::finish_scatter_update(ScatterLock *lock, CDir *dir,
 	pf->rstat.version = pi->rstat.version;
 	pf->accounted_rstat = pf->rstat;
 	ename = "lock inest accounted scatter stat update";
+
+	if (!is_auth() && lock->get_state() == LOCK_MIX) {
+	  dout(10) << "finish_scatter_update try to assimilate dirty rstat on " 
+	    << *dir << dendl; 
+	  dir->assimilate_dirty_rstat_inodes();
+       }
+
 	break;
       default:
 	ceph_abort();
       }
 	
+      pf->version = dir->pre_dirty();
       mut->add_projected_fnode(dir);
 
       EUpdate *le = new EUpdate(mdlog, ename);
@@ -1934,6 +1968,22 @@ void CInode::finish_scatter_update(ScatterLock *lock, CDir *dir,
       
       assert(!dir->is_frozen());
       mut->auth_pin(dir);
+
+      if (lock->get_type() == CEPH_LOCK_INEST && 
+	  !is_auth() && lock->get_state() == LOCK_MIX) {
+        dout(10) << "finish_scatter_update finish assimilating dirty rstat on " 
+          << *dir << dendl; 
+        dir->assimilate_dirty_rstat_inodes_finish(mut, &le->metablob);
+
+        if (!(pf->rstat == pf->accounted_rstat)) {
+          if (mut->wrlocks.count(&nestlock) == 0) {
+            mdcache->mds->locker->wrlock_force(&nestlock, mut);
+          }
+
+          mdcache->mds->locker->mark_updated_scatterlock(&nestlock);
+          mut->ls->dirty_dirfrag_nest.push_back(&item_dirty_dirfrag_nest);
+        }
+      }
       
       mdlog->submit_entry(le, new C_Inode_FragUpdate(this, dir, mut));
     } else {
@@ -1947,6 +1997,7 @@ void CInode::_finish_frag_update(CDir *dir, MutationRef& mut)
 {
   dout(10) << "_finish_frag_update on " << *dir << dendl;
   mut->apply();
+  mdcache->mds->locker->drop_locks(mut.get());
   mut->cleanup();
 }
 
@@ -2071,10 +2122,12 @@ void CInode::finish_scatter_gather_update(int type)
 	}
       }
 
-      if (pi->dirstat.nfiles < 0 ||
-	  pi->dirstat.nsubdirs < 0) {
-	clog->error() << "bad/negative fragstat on " << ino()
-	    << ", inode has " << pi->dirstat;
+      if (pi->dirstat.nfiles < 0 || pi->dirstat.nsubdirs < 0)
+      {
+        std::string path;
+        make_path_string(path);
+	clog->error() << "Inconsistent statistics detected: fragstat on inode "
+                      << ino() << " (" << path << "), inode has " << pi->dirstat;
 	assert(!"bad/negative fragstat" == g_conf->mds_verify_scatter);
 
 	if (pi->dirstat.nfiles < 0)
@@ -2163,8 +2216,9 @@ void CInode::finish_scatter_gather_update(int type)
 	  if (state_test(CInode::STATE_REPAIRSTATS)) {
 	    dout(20) << " rstat mismatch, fixing" << dendl;
 	  } else {
-	    clog->error() << "unmatched rstat on " << ino() << ", inode has "
-			  << pi->rstat << ", dirfrags have " << rstat;
+	    clog->error() << "inconsistent rstat on inode " << ino()
+                          << ", inode has " << pi->rstat
+                          << ", directory fragments have " << rstat;
 	    assert(!"unmatched rstat" == g_conf->mds_verify_scatter);
 	  }
 	  // trust the dirfrag for now
@@ -3056,7 +3110,7 @@ int CInode::encode_inodestat(bufferlist& bl, Session *session,
 			     unsigned max_bytes,
 			     int getattr_caps)
 {
-  int client = session->info.inst.name.num();
+  client_t client = session->info.inst.name.num();
   assert(snapid);
   assert(session->connection);
   
@@ -3870,8 +3924,8 @@ next:
       if (!results->backtrace.passed && in->scrub_infop->header->get_repair()) {
         std::string path;
         in->make_path_string(path);
-        in->mdcache->mds->clog->warn() << "bad backtrace on inode " << *in
-                           << ", rewriting it at " << path;
+        in->mdcache->mds->clog->warn() << "bad backtrace on inode " << in->ino()
+                                       << "(" << path << "), rewriting it";
         in->_mark_dirty_parent(in->mdcache->mds->mdlog->get_current_segment(),
                            false);
       }
@@ -3881,7 +3935,7 @@ next:
       {
         InoTable *inotable = mdcache->mds->inotable;
 
-        dout(10) << "scrub: inotable ino = 0x" << std::hex << inode.ino << dendl;
+        dout(10) << "scrub: inotable ino = " << inode.ino << dendl;
         dout(10) << "scrub: inotable free says "
           << inotable->is_marked_free(inode.ino) << dendl;
 
@@ -4381,5 +4435,83 @@ int64_t CInode::get_backtrace_pool() const
     // a pool
     assert(inode.layout.pool_id != -1);
     return inode.layout.pool_id;
+  }
+}
+
+void CInode::maybe_export_pin(bool update)
+{
+  if (!g_conf->mds_bal_export_pin)
+    return;
+  if (!is_dir() || !is_normal())
+    return;
+
+  mds_rank_t export_pin = get_export_pin(false);
+  if (export_pin == MDS_RANK_NONE && !update)
+    return;
+
+  if (state_test(CInode::STATE_QUEUEDEXPORTPIN))
+    return;
+
+  bool queue = false;
+  for (auto p = dirfrags.begin(); p != dirfrags.end(); p++) {
+    CDir *dir = p->second;
+    if (!dir->is_auth())
+      continue;
+    if (export_pin != MDS_RANK_NONE) {
+      if (dir->is_subtree_root()) {
+	// set auxsubtree bit or export it
+	if (!dir->state_test(CDir::STATE_AUXSUBTREE) ||
+	    export_pin != dir->get_dir_auth().first)
+	  queue = true;
+      } else {
+	// create aux subtree or export it
+	queue = true;
+      }
+    } else {
+      // clear aux subtrees ?
+      queue = dir->state_test(CDir::STATE_AUXSUBTREE);
+    }
+    if (queue) {
+      state_set(CInode::STATE_QUEUEDEXPORTPIN);
+      mdcache->export_pin_queue.insert(this);
+      break;
+    }
+  }
+}
+
+void CInode::set_export_pin(mds_rank_t rank)
+{
+  assert(is_dir());
+  assert(is_projected());
+  get_projected_inode()->export_pin = rank;
+  maybe_export_pin(true);
+}
+
+mds_rank_t CInode::get_export_pin(bool inherit) const
+{
+  /* An inode that is export pinned may not necessarily be a subtree root, we
+   * need to traverse the parents. A base or system inode cannot be pinned.
+   * N.B. inodes not yet linked into a dir (i.e. anonymous inodes) will not
+   * have a parent yet.
+   */
+  for (const CInode *in = this; !in->is_base() && !in->is_system() && in->get_projected_parent_dn(); in = in->get_projected_parent_dn()->dir->inode) {
+    mds_rank_t pin = in->get_projected_inode()->export_pin;
+    if (pin >= 0) {
+      return pin;
+    }
+    if (!inherit) break;
+  }
+  return MDS_RANK_NONE;
+}
+
+bool CInode::is_exportable(mds_rank_t dest) const
+{
+  mds_rank_t pin = get_export_pin();
+  if (pin == dest) {
+    return true;
+  } else if (pin >= 0) {
+    return false;
+  } else {
+    return true;
   }
 }

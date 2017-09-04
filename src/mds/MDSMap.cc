@@ -18,6 +18,8 @@
 #include <sstream>
 using std::stringstream;
 
+#include "mon/health_check.h"
+
 
 // features
 CompatSet get_mdsmap_compat_set_all() {
@@ -178,20 +180,21 @@ void MDSMap::dump(Formatter *f) const
   }
   f->close_section();
   f->open_array_section("data_pools");
-  for (set<int64_t>::const_iterator p = data_pools.begin(); p != data_pools.end(); ++p)
-    f->dump_int("pool", *p);
+  for (const auto p: data_pools)
+    f->dump_int("pool", p);
   f->close_section();
   f->dump_int("metadata_pool", metadata_pool);
   f->dump_bool("enabled", enabled);
   f->dump_string("fs_name", fs_name);
   f->dump_string("balancer", balancer);
+  f->dump_int("standby_count_wanted", std::max(0, standby_count_wanted));
 }
 
 void MDSMap::generate_test_instances(list<MDSMap*>& ls)
 {
   MDSMap *m = new MDSMap();
   m->max_mds = 1;
-  m->data_pools.insert(0);
+  m->data_pools.push_back(0);
   m->metadata_pool = 1;
   m->cas_pool = 2;
   m->compat = get_mdsmap_compat_set_all();
@@ -228,6 +231,7 @@ void MDSMap::print(ostream& out) const
   out << "metadata_pool\t" << metadata_pool << "\n";
   out << "inline_data\t" << (inline_data_enabled ? "enabled" : "disabled") << "\n";
   out << "balancer\t" << balancer << "\n";
+  out << "standby_count_wanted\t" << std::max(0, standby_count_wanted) << "\n";
 
   multimap< pair<mds_rank_t, unsigned>, mds_gid_t > foo;
   for (const auto &p : mds_info) {
@@ -374,14 +378,12 @@ void MDSMap::get_health(list<pair<health_status_t,string> >& summary,
     }
   }
 
-  map<mds_rank_t, mds_gid_t>::const_iterator u = up.begin();
-  map<mds_rank_t, mds_gid_t>::const_iterator u_end = up.end();
   map<mds_gid_t, mds_info_t>::const_iterator m_end = mds_info.end();
   set<string> laggy;
-  for (; u != u_end; ++u) {
-    map<mds_gid_t, mds_info_t>::const_iterator m = mds_info.find(u->second);
+  for (const auto &u : up) {
+    map<mds_gid_t, mds_info_t>::const_iterator m = mds_info.find(u.second);
     if (m == m_end) {
-      std::cerr << "Up rank " << u->first << " GID " << u->second << " not found!" << std::endl;
+      std::cerr << "Up rank " << u.first << " GID " << u.second << " not found!" << std::endl;
     }
     assert(m != m_end);
     const mds_info_t &mds_info(m->second);
@@ -401,6 +403,51 @@ void MDSMap::get_health(list<pair<health_status_t,string> >& summary,
 	<< ((laggy.size() > 1) ? " are":" is")
 	<< " laggy";
     summary.push_back(make_pair(HEALTH_WARN, oss.str()));
+  }
+}
+
+void MDSMap::get_health_checks(health_check_map_t *checks) const
+{
+  // MDS_DAMAGE
+  if (!damaged.empty()) {
+    health_check_t& check = checks->get_or_add("MDS_DAMAGE", HEALTH_ERR,
+					"%num% mds daemon%plurals% damaged");
+    for (auto p : damaged) {
+      std::ostringstream oss;
+      oss << "fs " << fs_name << " mds." << p << " is damaged";
+      check.detail.push_back(oss.str());
+    }
+  }
+
+  // FS_DEGRADED
+  if (is_degraded()) {
+    health_check_t& fscheck = checks->get_or_add(
+      "FS_DEGRADED", HEALTH_WARN,
+      "%num% filesystem%plurals% %isorare% degraded");
+    ostringstream ss;
+    ss << "fs " << fs_name << " is degraded";
+    fscheck.detail.push_back(ss.str());
+
+    list<string> detail;
+    for (mds_rank_t i = mds_rank_t(0); i< get_max_mds(); i++) {
+      if (!is_up(i))
+	continue;
+      mds_gid_t gid = up.find(i)->second;
+      map<mds_gid_t,mds_info_t>::const_iterator info = mds_info.find(gid);
+      stringstream ss;
+      ss << "fs " << fs_name << " mds." << info->second.name << " at "
+	 << info->second.addr << " rank " << i;
+      if (is_resolve(i))
+	ss << " is resolving";
+      if (is_replay(i))
+	ss << " is replaying journal";
+      if (is_rejoin(i))
+	ss << " is rejoining";
+      if (is_reconnect(i))
+	ss << " is reconnecting to clients";
+      if (ss.str().length())
+	detail.push_back(ss.str());
+    }
   }
 }
 
@@ -467,7 +514,13 @@ void MDSMap::mds_info_t::decode(bufferlist::iterator& bl)
   DECODE_FINISH(bl);
 }
 
-
+std::string MDSMap::mds_info_t::human_name() const
+{
+  // Like "daemon mds.myhost restarted", "Activating daemon mds.myhost"
+  std::ostringstream out;
+  out << "daemon mds." << name;
+  return out.str();
+}
 
 void MDSMap::encode(bufferlist& bl, uint64_t features) const
 {
@@ -498,8 +551,8 @@ void MDSMap::encode(bufferlist& bl, uint64_t features) const
     }
     n = data_pools.size();
     ::encode(n, bl);
-    for (set<int64_t>::const_iterator p = data_pools.begin(); p != data_pools.end(); ++p) {
-      n = *p;
+    for (const auto p: data_pools) {
+      n = p;
       ::encode(n, bl);
     }
 
@@ -558,7 +611,7 @@ void MDSMap::encode(bufferlist& bl, uint64_t features) const
   ::encode(cas_pool, bl);
 
   // kclient ignores everything from here
-  __u16 ev = 11;
+  __u16 ev = 12;
   ::encode(ev, bl);
   ::encode(compat, bl);
   ::encode(metadata_pool, bl);
@@ -578,6 +631,7 @@ void MDSMap::encode(bufferlist& bl, uint64_t features) const
   ::encode(fs_name, bl);
   ::encode(damaged, bl);
   ::encode(balancer, bl);
+  ::encode(standby_count_wanted, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -602,7 +656,7 @@ void MDSMap::decode(bufferlist::iterator& p)
     while (n--) {
       __u32 m;
       ::decode(m, p);
-      data_pools.insert(m);
+      data_pools.push_back(m);
     }
     __s32 s;
     ::decode(s, p);
@@ -684,8 +738,13 @@ void MDSMap::decode(bufferlist::iterator& p)
   }
 
   if (ev >= 11) {
-  ::decode(balancer, p);
+    ::decode(balancer, p);
   }
+
+  if (ev >= 12) {
+    ::decode(standby_count_wanted, p);
+  }
+
   DECODE_FINISH(p);
 }
 
@@ -759,4 +818,25 @@ bool MDSMap::state_transition_valid(DaemonState prev, DaemonState next)
   }
 
   return state_valid;
+}
+
+bool MDSMap::check_health(mds_rank_t standby_daemon_count)
+{
+  std::set<mds_rank_t> standbys;
+  get_standby_replay_mds_set(standbys);
+  std::set<mds_rank_t> actives;
+  get_active_mds_set(actives);
+  mds_rank_t standbys_avail = (mds_rank_t)standbys.size()+standby_daemon_count;
+
+  /* If there are standby daemons available/replaying and
+   * standby_count_wanted is unset (default), then we set it to 1. This will
+   * happen during health checks by the mons. Also, during initial creation
+   * of the FS we will have no actives so we don't want to change the default
+   * yet.
+   */
+  if (standby_count_wanted == -1 && actives.size() > 0 && standbys_avail > 0) {
+    set_standby_count_wanted(1);
+    return true;
+  }
+  return false;
 }

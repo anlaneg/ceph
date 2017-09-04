@@ -37,9 +37,17 @@ static ostream& _prefix(std::ostream *_dout, Monitor *mon) {
 
 void MonmapMonitor::create_initial()
 {
-  dout(10) << "create_initial using current monmap" << dendl;
+  dout(10) << __func__ << " using current monmap" << dendl;
   pending_map = *mon->monmap;
   pending_map.epoch = 1;//设为版本１
+
+  if (g_conf->mon_debug_no_initial_persistent_features) {
+    derr << __func__ << " mon_debug_no_initial_persistent_features=true"
+	 << dendl;
+  } else {
+    // initialize with default persistent features for new clusters
+    pending_map.persistent_features = ceph::features::mon::get_persistent();
+  }
 }
 
 void MonmapMonitor::update_from_paxos(bool *need_bootstrap)
@@ -62,7 +70,7 @@ void MonmapMonitor::update_from_paxos(bool *need_bootstrap)
   assert(ret == 0);
   assert(monmap_bl.length());
 
-  dout(10) << "update_from_paxos got " << version << dendl;
+  dout(10) << __func__ << " got " << version << dendl;
   mon->monmap->decode(monmap_bl);
 
   if (mon->store->exists("mkfs", "monmap")) {
@@ -79,12 +87,12 @@ void MonmapMonitor::create_pending()
   pending_map = *mon->monmap;
   pending_map.epoch++;
   pending_map.last_changed = ceph_clock_now();
-  dout(10) << "create_pending monmap epoch " << pending_map.epoch << dendl;
+  dout(10) << __func__ << " monmap epoch " << pending_map.epoch << dendl;
 }
 
 void MonmapMonitor::encode_pending(MonitorDBStore::TransactionRef t)
 {
-  dout(10) << "encode_pending epoch " << pending_map.epoch << dendl;
+  dout(10) << __func__ << " epoch " << pending_map.epoch << dendl;
 
   assert(mon->monmap->epoch + 1 == pending_map.epoch ||
 	 pending_map.epoch == 1);  // special case mkfs!
@@ -243,8 +251,9 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
 
   if (prefix == "mon stat") {
     mon->monmap->print_summary(ss);
-    ss << ", election epoch " << mon->get_epoch() << ", quorum " << mon->get_quorum()
-       << " " << mon->get_quorum_names();
+    ss << ", election epoch " << mon->get_epoch() << ", leader "
+       << mon->get_leader() << " " << mon->get_leader_name()
+       << ", quorum " << mon->get_quorum() << " " << mon->get_quorum_names();
     rdata.append(ss);
     ss.str("");
     r = 0;
@@ -301,7 +310,7 @@ bool MonmapMonitor::preprocess_command(MonOpRequestRef op)
     if (p != mon->monmap)
        delete p;
 
-  } else if (prefix == "mon feature list") {
+  } else if (prefix == "mon feature ls") {
    
     bool list_with_value = false;
     string with_value;
@@ -389,7 +398,7 @@ reply:
 bool MonmapMonitor::prepare_update(MonOpRequestRef op)
 {
   PaxosServiceMessage *m = static_cast<PaxosServiceMessage*>(op->get_req());
-  dout(7) << "prepare_update " << *m << " from " << m->get_orig_source_inst() << dendl;
+  dout(7) << __func__ << " " << *m << " from " << m->get_orig_source_inst() << dendl;
   
   switch (m->get_type()) {
   case MSG_MON_COMMAND:
@@ -680,7 +689,7 @@ reply:
 bool MonmapMonitor::preprocess_join(MonOpRequestRef op)
 {
   MMonJoin *join = static_cast<MMonJoin*>(op->get_req());
-  dout(10) << "preprocess_join " << join->name << " at " << join->addr << dendl;
+  dout(10) << __func__ << " " << join->name << " at " << join->addr << dendl;
 
   MonSession *session = join->get_session();
   if (!session ||
@@ -716,10 +725,6 @@ bool MonmapMonitor::should_propose(double& delay)
 {
   delay = 0.0;
   return true;
-}
-
-void MonmapMonitor::tick()
-{
 }
 
 void MonmapMonitor::get_health(list<pair<health_status_t, string> >& summary,
@@ -767,12 +772,14 @@ int MonmapMonitor::get_monmap(bufferlist &bl)
 void MonmapMonitor::check_subs()
 {
   const string type = "monmap";
-  auto subs = mon->session_map.subs.find(type);
-  if (subs == mon->session_map.subs.end())
-    return;
-  for (auto sub : *subs->second) {
-    check_sub(sub);
-  }
+  mon->with_session_map([this, &type](const MonSessionMap& session_map) {
+      auto subs = session_map.subs.find(type);
+      if (subs == session_map.subs.end())
+	return;
+      for (auto sub : *subs->second) {
+	check_sub(sub);
+      }
+    });
 }
 
 void MonmapMonitor::check_sub(Subscription *sub)
@@ -783,9 +790,12 @@ void MonmapMonitor::check_sub(Subscription *sub)
 	   << " have " << epoch << dendl;
   if (sub->next <= epoch) {
     mon->send_latest_monmap(sub->session->con.get());
-    if (sub->onetime)
-      mon->session_map.remove_sub(sub);
-    else
+    if (sub->onetime) {
+      mon->with_session_map([this, sub](MonSessionMap& session_map) {
+	  session_map.remove_sub(sub);
+	});
+    } else {
       sub->next = epoch + 1;
+    }
   }
 }

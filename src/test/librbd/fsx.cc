@@ -23,7 +23,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#if defined(__linux__)
 #include <linux/fs.h>
+#endif
 #include <sys/ioctl.h>
 #ifdef HAVE_ERR_H
 #include <err.h>
@@ -41,8 +43,11 @@
 #include <fcntl.h>
 #include <random>
 
+#include "include/compat.h"
 #include "include/intarith.h"
+#if defined(WITH_KRBD)
 #include "include/krbd.h"
+#endif
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
 #include "include/rbd/librbd.h"
@@ -89,6 +94,7 @@ int			logcount = 0;	/* total ops */
  * FALLOCATE:	-	5
  * PUNCH HOLE:	-	6
  * WRITESAME:	-	7
+ * COMPAREANDWRITE:	-	8
  *
  * When mapped read/writes are disabled, they are simply converted to normal
  * reads and writes. When fallocate/fpunch calls are disabled, they are
@@ -113,10 +119,11 @@ int			logcount = 0;	/* total ops */
 #define OP_FALLOCATE	5
 #define OP_PUNCH_HOLE	6
 #define OP_WRITESAME	7
+#define OP_COMPARE_AND_WRITE	8
 /* rbd-specific operations */
-#define OP_CLONE        8
-#define OP_FLATTEN	9
-#define OP_MAX_FULL	10
+#define OP_CLONE        9
+#define OP_FLATTEN	10
+#define OP_MAX_FULL	11
 
 /* operation modifiers */
 #define OP_CLOSEOPEN	100
@@ -172,23 +179,12 @@ int	randomize_parent_overlap = 1;
 int 	mapped_reads = 0;		/* -R flag disables it */
 int	fsxgoodfd = 0;
 int	o_direct = 0;			/* -Z flag */
-int	aio = 0;
 
 int num_clones = 0;
 
 int page_size;
 int page_mask;
 int mmap_mask;
-#ifdef AIO
-int aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset);
-#define READ 0
-#define WRITE 1
-#define fsxread(a,b,c,d)	aio_rw(READ, a,b,c,d)
-#define fsxwrite(a,b,c,d)	aio_rw(WRITE, a,b,c,d)
-#else
-#define fsxread(a,b,c,d)	read(a,b,c)
-#define fsxwrite(a,b,c,d)	write(a,b,c)
-#endif
 
 FILE *	fsxlogf = NULL;
 int badoff = -1;
@@ -522,13 +518,17 @@ struct rbd_operations {
 	int (*flatten)(struct rbd_ctx *ctx);
 	ssize_t (*writesame)(struct rbd_ctx *ctx, uint64_t off, size_t len,
 			     const char *buf, size_t data_len);
+        ssize_t (*compare_and_write)(struct rbd_ctx *ctx, uint64_t off, size_t len,
+                                     const char *cmp_buf, const char *buf);
 };
 
 char *pool;			/* name of the pool our test image is in */
 char *iname;			/* name of our test image */
 rados_t cluster;		/* handle for our test cluster */
 rados_ioctx_t ioctx;		/* handle for our test pool */
+#if defined(WITH_KRBD)
 struct krbd_ctx *krbd;		/* handle for libkrbd */
+#endif
 bool skip_partial_discard;	/* rbd_skip_partial_discard config value*/
 
 /*
@@ -689,6 +689,31 @@ librbd_writesame(struct rbd_ctx *ctx, uint64_t off, size_t len,
 	return n;
 }
 
+ssize_t
+librbd_compare_and_write(struct rbd_ctx *ctx, uint64_t off, size_t len,
+                         const char *cmp_buf, const char *buf)
+{
+        ssize_t n;
+        int ret;
+        uint64_t mismatch_off = 0;
+
+        n = rbd_compare_and_write(ctx->image, off, len, cmp_buf, buf, &mismatch_off, 0);
+        if (n == -EINVAL) {
+                return n;
+        } else if (n < 0) {
+                prt("rbd_compare_and_write mismatch(%llu, %zu, %llu) failed\n",
+                    off, len, mismatch_off);
+                return n;
+        }
+
+        ret = librbd_verify_object_map(ctx);
+        if (ret < 0) {
+                return ret;
+        }
+        return n;
+
+}
+
 int
 librbd_get_size(struct rbd_ctx *ctx, uint64_t *size)
 {
@@ -807,8 +832,10 @@ const struct rbd_operations librbd_operations = {
 	librbd_clone,
 	librbd_flatten,
 	librbd_writesame,
+	librbd_compare_and_write,
 };
 
+#if defined(WITH_KRBD)
 int
 krbd_open(const char *name, struct rbd_ctx *ctx)
 {
@@ -865,7 +892,9 @@ krbd_close(struct rbd_ctx *ctx)
 
 	return __librbd_close(ctx);
 }
+#endif // WITH_KRBD
 
+#if defined(__linux__)
 ssize_t
 krbd_read(struct rbd_ctx *ctx, uint64_t off, size_t len, char *buf)
 {
@@ -1047,7 +1076,9 @@ krbd_flatten(struct rbd_ctx *ctx)
 
 	return __librbd_flatten(ctx);
 }
+#endif // __linux__
 
+#if defined(WITH_KRBD)
 const struct rbd_operations krbd_operations = {
 	krbd_open,
 	krbd_close,
@@ -1061,7 +1092,9 @@ const struct rbd_operations krbd_operations = {
 	krbd_flatten,
 	NULL,
 };
+#endif // WITH_KRBD
 
+#if defined(__linux__)
 int
 nbd_open(const char *name, struct rbd_ctx *ctx)
 {
@@ -1184,6 +1217,7 @@ const struct rbd_operations nbd_operations = {
 	krbd_flatten,
 	NULL,
 };
+#endif // __linux__
 
 struct rbd_ctx ctx = RBD_CTX_INIT;
 const struct rbd_operations *ops = &librbd_operations;
@@ -1317,6 +1351,18 @@ logdump(void)
 				badoff < lp->args[0] + lp->args[1])
 				prt("\t***WSWSWSWS");
 			break;
+		case OP_COMPARE_AND_WRITE:
+                        prt("COMPARE_AND_WRITE    0x%x thru 0x%x\t(0x%x bytes)",
+                            lp->args[0], lp->args[0] + lp->args[1] - 1,
+                            lp->args[1]);
+                        if (lp->args[0] > lp->args[2])
+                            prt(" HOLE");
+                        else if (lp->args[0] + lp->args[1] > lp->args[2])
+                            prt(" EXTEND");
+                        if ((badoff >= lp->args[0] || badoff >=lp->args[2]) &&
+                                badoff < lp->args[0] + lp->args[1])
+                                prt("\t***WWWW");
+                        break;
 		case OP_CLONE:
 			prt("CLONE");
 			break;
@@ -1517,11 +1563,13 @@ create_image()
 		simple_err("Error connecting to cluster", r);
 		goto failed_shutdown;
 	}
+#if defined(WITH_KRBD)
 	r = krbd_create_from_context(rados_cct(cluster), &krbd);
 	if (r < 0) {
 		simple_err("Could not create libkrbd handle", r);
 		goto failed_shutdown;
 	}
+#endif
 
 	r = rados_pool_create(cluster, pool);
 	if (r < 0 && r != -EEXIST) {
@@ -1533,6 +1581,8 @@ create_image()
 		simple_err("Error creating ioctx", r);
 		goto failed_krbd;
 	}
+        rados_application_enable(ioctx, "rbd", 1);
+
 	if (clone_calls || journal_replay) {
                 uint64_t features = 0;
                 if (clone_calls) {
@@ -1571,7 +1621,9 @@ create_image()
  failed_open:
 	rados_ioctx_destroy(ioctx);
  failed_krbd:
+#if defined(WITH_KRBD)
 	krbd_destroy(krbd);
+#endif
  failed_shutdown:
 	rados_shutdown(cluster);
 	return r;
@@ -1922,6 +1974,65 @@ dowritesame(unsigned offset, unsigned size)
 
 	if (flush_enabled)
 		doflush(offset, size);
+}
+
+void
+docompareandwrite(unsigned offset, unsigned size)
+{
+        int ret;
+
+        offset -= offset % writebdy;
+        if (o_direct)
+                size -= size % writebdy;
+
+        if (size == 0) {
+                if (!quiet && testcalls > simulatedopcount && !o_direct)
+                        prt("skipping zero size read\n");
+                log4(OP_SKIPPED, OP_READ, offset, size);
+                return;
+        }
+
+        if (size + offset > file_size) {
+                if (!quiet && testcalls > simulatedopcount)
+                        prt("skipping seek/compare past end of file\n");
+                log4(OP_SKIPPED, OP_COMPARE_AND_WRITE, offset, size);
+                return;
+        }
+
+        memcpy(temp_buf + offset, good_buf + offset, size);
+	gendata(original_buf, good_buf, offset, size);
+        log4(OP_COMPARE_AND_WRITE, offset, size, 0);
+
+        if (testcalls <= simulatedopcount)
+                return;
+
+        if (!quiet &&
+		((progressinterval && testcalls % progressinterval == 0) ||
+		       (debug &&
+		       (monitorstart == -1 ||
+			(static_cast<long>(offset + size) > monitorstart &&
+			 (monitorend == -1 ||
+			  static_cast<long>(offset) <= monitorend))))))
+		prt("%lu compareandwrite\t0x%x thru\t0x%x\t(0x%x bytes)\n", testcalls,
+		    offset, offset + size - 1, size);
+
+        ret = ops->compare_and_write(&ctx, offset, size, temp_buf + offset,
+                                     good_buf + offset);
+        if (ret != (ssize_t)size) {
+                if (ret == -EINVAL) {
+                        memcpy(good_buf + offset, temp_buf + offset, size);
+                        return;
+                }
+                if (ret < 0)
+                        prterrcode("docompareandwrite: ops->compare_and_write", ret);
+                else
+                        prt("short write: 0x%x bytes instead of 0x%x\n", ret, size);
+                report_failure(151);
+                return;
+        }
+
+        if (flush_enabled)
+                doflush(offset, size);
 }
 
 void clone_filename(char *buf, size_t len, int clones)
@@ -2301,6 +2412,14 @@ test(void)
 			log4(OP_SKIPPED, OP_WRITESAME, offset, size);
 			goto out;
 		}
+		break;
+        case OP_COMPARE_AND_WRITE:
+                /* compare_and_write not implemented */
+                if (!ops->compare_and_write) {
+                        log4(OP_SKIPPED, OP_COMPARE_AND_WRITE, offset, size);
+                        goto out;
+                }
+		break;
 	}
 
 	switch (op) {
@@ -2339,6 +2458,10 @@ test(void)
 		TRIM_OFF_LEN(offset, size, maxfilelen);
 		dowritesame(offset, size);
 		break;
+        case OP_COMPARE_AND_WRITE:
+                TRIM_OFF_LEN(offset, size, file_size);
+                docompareandwrite(offset, size);
+                break;
 
 	case OP_CLONE:
 		do_clone();
@@ -2397,18 +2520,19 @@ usage(void)
 	-x: preallocate file space before starting, XFS only (default 0)\n\
 	-y: synchronize changes to a file\n"
 
-#ifdef AIO
-"	-A: Use the AIO system calls\n"
-#endif
 "	-C: do not use clone calls\n\
 	-D startingop: debug output starting at specified operation\n"
 #ifdef FALLOCATE
 "	-F: Do not use fallocate (preallocation) calls\n"
 #endif
-"	-H: do not use punch hole calls\n\
-	-K: enable krbd mode (use -t and -h too)\n\
-	-M: enable rbd-nbd mode (use -t and -h too)\n\
-	-L: fsxLite - no file creations & no file size changes\n\
+"	-H: do not use punch hole calls\n"
+#if defined(WITH_KRBD)
+"	-K: enable krbd mode (use -t and -h too)\n"
+#endif
+#if defined(__linux__)
+"	-M: enable rbd-nbd mode (use -t and -h too)\n"
+#endif
+"	-L: fsxLite - no file creations & no file size changes\n\
 	-N numops: total # operations to do (default infinity)\n\
 	-O: use oplen (see -o flag) for every op (default random)\n\
 	-P dirpath: save .fsxlog and .fsxgood files in dirpath (default ./)\n\
@@ -2455,108 +2579,6 @@ getnum(char *s, char **e)
 		}
 	return (ret);
 }
-
-#ifdef AIO
-
-#define QSZ     1024
-io_context_t	io_ctx;
-struct iocb 	iocb;
-
-int aio_setup()
-{
-	int ret;
-	ret = io_queue_init(QSZ, &io_ctx);
-	if (ret != 0) {
-		fprintf(stderr, "aio_setup: io_queue_init failed: %s\n",
-                        strerror(ret));
-                return(-1);
-        }
-        return(0);
-}
-
-int
-__aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
-{
-	struct io_event event;
-	static struct timespec ts;
-	struct iocb *iocbs[] = { &iocb };
-	int ret;
-	long res;
-
-	if (rw == READ) {
-		io_prep_pread(&iocb, fd, buf, len, offset);
-	} else {
-		io_prep_pwrite(&iocb, fd, buf, len, offset);
-	}
-
-	ts.tv_sec = 30;
-	ts.tv_nsec = 0;
-	ret = io_submit(io_ctx, 1, iocbs);
-	if (ret != 1) {
-		fprintf(stderr, "errcode=%d\n", ret);
-		fprintf(stderr, "aio_rw: io_submit failed: %s\n",
-				strerror(ret));
-		goto out_error;
-	}
-
-	ret = io_getevents(io_ctx, 1, 1, &event, &ts);
-	if (ret != 1) {
-		if (ret == 0)
-			fprintf(stderr, "aio_rw: no events available\n");
-		else {
-			fprintf(stderr, "errcode=%d\n", -ret);
-			fprintf(stderr, "aio_rw: io_getevents failed: %s\n",
-				 	strerror(-ret));
-		}
-		goto out_error;
-	}
-	if (len != event.res) {
-		/*
-		 * The b0rked libaio defines event.res as unsigned.
-		 * However the kernel strucuture has it signed,
-		 * and it's used to pass negated error value.
-		 * Till the library is fixed use the temp var.
-		 */
-		res = (long)event.res;
-		if (res >= 0)
-			fprintf(stderr, "bad io length: %lu instead of %u\n",
-					res, len);
-		else {
-			fprintf(stderr, "errcode=%ld\n", -res);
-			fprintf(stderr, "aio_rw: async io failed: %s\n",
-					strerror(-res));
-			ret = res;
-			goto out_error;
-		}
-
-	}
-	return event.res;
-
-out_error:
-	/*
-	 * The caller expects error return in traditional libc
-	 * convention, i.e. -1 and the errno set to error.
-	 */
-	errno = -ret;
-	return -1;
-}
-
-int aio_rw(int rw, int fd, char *buf, unsigned len, unsigned offset)
-{
-	int ret;
-
-	if (aio) {
-		ret = __aio_rw(rw, fd, buf, len, offset);
-	} else {
-		if (rw == READ)
-			ret = read(fd, buf, len);
-		else
-			ret = write(fd, buf, len);
-	}
-	return ret;
-}
-
-#endif
 
 void
 test_fallocate()
@@ -2637,7 +2659,7 @@ main(int argc, char **argv)
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
-	while ((ch = getopt(argc, argv, "b:c:dfh:jkl:m:no:p:qr:s:t:w:xyACD:FHKMLN:OP:RS:UWZ"))
+	while ((ch = getopt(argc, argv, "b:c:dfh:jkl:m:no:p:qr:s:t:w:xyCD:FHKMLN:OP:RS:UWZ"))
 	       != EOF)
 		switch (ch) {
 		case 'b':
@@ -2738,9 +2760,6 @@ main(int argc, char **argv)
 		case 'y':
 			do_fsync = 1;
 			break;
-		case 'A':
-		        aio = 1;
-			break;
 		case 'C':
 			clone_calls = 0;
 			break;
@@ -2755,14 +2774,18 @@ main(int argc, char **argv)
 		case 'H':
 			punch_hole_calls = 0;
 			break;
+#if defined(WITH_KRBD)
 		case 'K':
 			prt("krbd mode enabled\n");
 			ops = &krbd_operations;
 			break;
+#endif
+#if defined(__linux__)
 		case 'M':
 			prt("rbd-nbd mode enabled\n");
 			ops = &nbd_operations;
 			break;
+#endif
 		case 'L':
 			prt("lite mode not supported for rbd\n");
 			exit(1);
@@ -2871,11 +2894,6 @@ main(int argc, char **argv)
 		exit(93);
 	}
 
-#ifdef AIO
-	if (aio) 
-		aio_setup();
-#endif
-
 	original_buf = (char *) malloc(maxfilelen);
 	for (i = 0; i < (int)maxfilelen; i++)
 		original_buf[i] = get_random() % 256;
@@ -2975,7 +2993,9 @@ main(int argc, char **argv)
 	fclose(fsxlogf);
 
 	rados_ioctx_destroy(ioctx);
+#if defined(WITH_KRBD)
 	krbd_destroy(krbd);
+#endif
 	rados_shutdown(cluster);
 
 	free(original_buf);

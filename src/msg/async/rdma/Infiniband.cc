@@ -15,36 +15,156 @@
  */
 
 #include "Infiniband.h"
-#include "RDMAStack.h"
-#include "Device.h"
-
 #include "common/errno.h"
 #include "common/debug.h"
+#include "RDMAStack.h"
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix *_dout << "Infiniband "
 
+static const uint32_t MAX_SHARED_RX_SGE_COUNT = 1;
 static const uint32_t MAX_INLINE_DATA = 0;
 static const uint32_t TCP_MSG_LEN = sizeof("0000:00000000:00000000:00000000:00000000000000000000000000000000");
+static const uint32_t CQ_DEPTH = 30000;
+
+Port::Port(CephContext *cct, struct ibv_context* ictxt, uint8_t ipn): ctxt(ictxt), port_num(ipn), port_attr(new ibv_port_attr)
+{
+#ifdef HAVE_IBV_EXP
+  union ibv_gid cgid;
+  struct ibv_exp_gid_attr gid_attr;
+  bool malformed = false;
+
+  ldout(cct,1) << __func__ << " using experimental verbs for gid" << dendl;
+  int r = ibv_query_port(ctxt, port_num, port_attr);
+  if (r == -1) {
+    lderr(cct) << __func__  << " query port failed  " << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+
+  lid = port_attr->lid;
+
+  // search for requested GID in GIDs table
+  ldout(cct, 1) << __func__ << " looking for local GID " << (cct->_conf->ms_async_rdma_local_gid)
+    << " of type " << (cct->_conf->ms_async_rdma_roce_ver) << dendl;
+  r = sscanf(cct->_conf->ms_async_rdma_local_gid.c_str(),
+	     "%02hhx%02hhx:%02hhx%02hhx:%02hhx%02hhx:%02hhx%02hhx"
+	     ":%02hhx%02hhx:%02hhx%02hhx:%02hhx%02hhx:%02hhx%02hhx",
+	     &cgid.raw[ 0], &cgid.raw[ 1],
+	     &cgid.raw[ 2], &cgid.raw[ 3],
+	     &cgid.raw[ 4], &cgid.raw[ 5],
+	     &cgid.raw[ 6], &cgid.raw[ 7],
+	     &cgid.raw[ 8], &cgid.raw[ 9],
+	     &cgid.raw[10], &cgid.raw[11],
+	     &cgid.raw[12], &cgid.raw[13],
+	     &cgid.raw[14], &cgid.raw[15]);
+
+  if (r != 16) {
+    ldout(cct, 1) << __func__ << " malformed or no GID supplied, using GID index 0" << dendl;
+    malformed = true;
+  }
+
+  gid_attr.comp_mask = IBV_EXP_QUERY_GID_ATTR_TYPE;
+
+  for (gid_idx = 0; gid_idx < port_attr->gid_tbl_len; gid_idx++) {
+    r = ibv_query_gid(ctxt, port_num, gid_idx, &gid);
+    if (r) {
+      lderr(cct) << __func__  << " query gid of port " << port_num << " index " << gid_idx << " failed  " << cpp_strerror(errno) << dendl;
+      ceph_abort();
+    }
+    r = ibv_exp_query_gid_attr(ctxt, port_num, gid_idx, &gid_attr);
+    if (r) {
+      lderr(cct) << __func__  << " query gid attributes of port " << port_num << " index " << gid_idx << " failed  " << cpp_strerror(errno) << dendl;
+      ceph_abort();
+    }
+
+    if (malformed) break; // stay with gid_idx=0
+    if ( (gid_attr.type == cct->_conf->ms_async_rdma_roce_ver) &&
+	 (memcmp(&gid, &cgid, 16) == 0) ) {
+      ldout(cct, 1) << __func__ << " found at index " << gid_idx << dendl;
+      break;
+    }
+  }
+
+  if (gid_idx == port_attr->gid_tbl_len) {
+    lderr(cct) << __func__ << " Requested local GID was not found in GID table" << dendl;
+    ceph_abort();
+  }
+#else
+  int r = ibv_query_port(ctxt, port_num, port_attr);
+  if (r == -1) {
+    lderr(cct) << __func__  << " query port failed  " << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+
+  lid = port_attr->lid;
+  r = ibv_query_gid(ctxt, port_num, 0, &gid);
+  if (r) {
+    lderr(cct) << __func__  << " query gid failed  " << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+#endif
+}
+
+
+Device::Device(CephContext *cct, ibv_device* d): device(d), device_attr(new ibv_device_attr), active_port(nullptr)
+{
+  if (device == NULL) {
+    lderr(cct) << __func__ << " device == NULL" << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+  name = ibv_get_device_name(device);
+  ctxt = ibv_open_device(device);
+  if (ctxt == NULL) {
+    lderr(cct) << __func__ << " open rdma device failed. " << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+  int r = ibv_query_device(ctxt, device_attr);
+  if (r == -1) {
+    lderr(cct) << __func__ << " failed to query rdma device. " << cpp_strerror(errno) << dendl;
+    ceph_abort();
+  }
+}
+
+void Device::binding_port(CephContext *cct, int port_num) {
+  port_cnt = device_attr->phys_port_cnt;
+  for (uint8_t i = 0; i < port_cnt; ++i) {
+    Port *port = new Port(cct, ctxt, i+1);
+    if (i + 1 == port_num && port->get_port_attr()->state == IBV_PORT_ACTIVE) {
+      active_port = port;
+      ldout(cct, 1) << __func__ << " found active port " << i+1 << dendl;
+      break;
+    } else {
+      ldout(cct, 10) << __func__ << " port " << i+1 << " is not what we want. state: " << port->get_port_attr()->state << ")"<< dendl;
+    }
+    delete port;
+  }
+  if (nullptr == active_port) {
+    lderr(cct) << __func__ << "  port not found" << dendl;
+    assert(active_port);
+  }
+}
+
 
 Infiniband::QueuePair::QueuePair(
-    CephContext *c, Device &device, ibv_qp_type type,
+    CephContext *c, Infiniband& infiniband, ibv_qp_type type,
     int port, ibv_srq *srq,
     Infiniband::CompletionQueue* txcq, Infiniband::CompletionQueue* rxcq,
-    uint32_t max_send_wr, uint32_t max_recv_wr, uint32_t q_key)
-: cct(c), ibdev(device),
+    uint32_t tx_queue_len, uint32_t rx_queue_len, uint32_t q_key)
+: cct(c), infiniband(infiniband),
   type(type),
-  ctxt(ibdev.ctxt),
+  ctxt(infiniband.device->ctxt),
   ib_physical_port(port),
-  pd(ibdev.pd->pd),
+  pd(infiniband.pd->pd),
   srq(srq),
   qp(NULL),
   txcq(txcq),
   rxcq(rxcq),
   initial_psn(0),
-  max_send_wr(max_send_wr),
-  max_recv_wr(max_recv_wr),
+  max_send_wr(tx_queue_len),
+  max_recv_wr(rx_queue_len),
   q_key(q_key),
   dead(false)
 {
@@ -53,6 +173,7 @@ Infiniband::QueuePair::QueuePair(
     lderr(cct) << __func__ << " invalid queue pair type" << cpp_strerror(errno) << dendl;
     ceph_abort();
   }
+  pd = infiniband.pd->pd;
 }
 
 int Infiniband::QueuePair::init()
@@ -73,7 +194,7 @@ int Infiniband::QueuePair::init()
   if (qp == NULL) {
     lderr(cct) << __func__ << " failed to create queue pair" << cpp_strerror(errno) << dendl;
     if (errno == ENOMEM) {
-      lderr(cct) << __func__ << " try reducing ms_async_rdma_receive_buffers, "
+      lderr(cct) << __func__ << " try reducing ms_async_rdma_receive_queue_length, "
 				" ms_async_rdma_send_buffers or"
 				" ms_async_rdma_buffer_size" << dendl;
     }
@@ -227,8 +348,8 @@ bool Infiniband::QueuePair::is_error() const
 }
 
 
-Infiniband::CompletionChannel::CompletionChannel(CephContext *c, Device &ibdev)
-  : cct(c), ibdev(ibdev), channel(NULL), cq(NULL), cq_events_that_need_ack(0)
+Infiniband::CompletionChannel::CompletionChannel(CephContext *c, Infiniband &ib)
+  : cct(c), infiniband(ib), channel(NULL), cq(NULL), cq_events_that_need_ack(0)
 {
 }
 
@@ -245,7 +366,7 @@ Infiniband::CompletionChannel::~CompletionChannel()
 int Infiniband::CompletionChannel::init()
 {
   ldout(cct, 20) << __func__ << " started." << dendl;
-  channel = ibv_create_comp_channel(ibdev.ctxt);
+  channel = ibv_create_comp_channel(infiniband.device->ctxt);
   if (!channel) {
     lderr(cct) << __func__ << " failed to create receive completion channel: "
                           << cpp_strerror(errno) << dendl;
@@ -301,7 +422,7 @@ Infiniband::CompletionQueue::~CompletionQueue()
 
 int Infiniband::CompletionQueue::init()
 {
-  cq = ibv_create_cq(ibdev.ctxt, queue_depth, this, channel->get_channel(), 0);
+  cq = ibv_create_cq(infiniband.device->ctxt, queue_depth, this, channel->get_channel(), 0);
   if (!cq) {
     lderr(cct) << __func__ << " failed to create receive completion queue: "
       << cpp_strerror(errno) << dendl;
@@ -351,8 +472,7 @@ Infiniband::ProtectionDomain::ProtectionDomain(CephContext *cct, Device *device)
 
 Infiniband::ProtectionDomain::~ProtectionDomain()
 {
-  int rc = ibv_dealloc_pd(pd);
-  assert(rc == 0);
+  ibv_dealloc_pd(pd);
 }
 
 
@@ -363,7 +483,6 @@ Infiniband::MemoryManager::Chunk::Chunk(ibv_mr* m, uint32_t len, char* b)
 
 Infiniband::MemoryManager::Chunk::~Chunk()
 {
-  assert(ibv_dereg_mr(mr) == 0);
 }
 
 void Infiniband::MemoryManager::Chunk::set_offset(uint32_t o)
@@ -437,11 +556,6 @@ void Infiniband::MemoryManager::Chunk::clear()
   bound = 0;
 }
 
-void Infiniband::MemoryManager::Chunk::post_srq(Infiniband *ib)
-{
-  ib->device->post_chunk(this);
-}
-
 Infiniband::MemoryManager::Cluster::Cluster(MemoryManager& m, uint32_t s)
   : manager(m), buffer_size(s), lock("cluster_lock")
 {
@@ -449,18 +563,15 @@ Infiniband::MemoryManager::Cluster::Cluster(MemoryManager& m, uint32_t s)
 
 Infiniband::MemoryManager::Cluster::~Cluster()
 {
-  char *p = chunk_base;
-  for (uint32_t i = 0; i < num_chunk; i++){
-    Chunk *chunk = reinterpret_cast<Chunk*>(p);
+  int r = ibv_dereg_mr(chunk_base->mr);
+  assert(r == 0);
+  const auto chunk_end = chunk_base + num_chunk;
+  for (auto chunk = chunk_base; chunk != chunk_end; chunk++) {
     chunk->~Chunk();
-    p += sizeof(Chunk);
   }
 
   ::free(chunk_base);
-  if (manager.enabled_huge_page)
-    manager.free_huge_pages(base);
-  else
-    ::free(base);
+  manager.free(base);
 }
 
 int Infiniband::MemoryManager::Cluster::fill(uint32_t num)
@@ -468,24 +579,20 @@ int Infiniband::MemoryManager::Cluster::fill(uint32_t num)
   assert(!base);
   num_chunk = num;
   uint32_t bytes = buffer_size * num;
-  if (manager.enabled_huge_page) {
-    base = (char*)manager.malloc_huge_pages(bytes);
-  } else {
-    base = (char*)memalign(CEPH_PAGE_SIZE, bytes);
-  }
+
+  base = (char*)manager.malloc(bytes);
   end = base + bytes;
   assert(base);
-  chunk_base = (char*)::malloc(sizeof(Chunk) * num);
+  chunk_base = static_cast<Chunk*>(::malloc(sizeof(Chunk) * num));
   memset(chunk_base, 0, sizeof(Chunk) * num);
   free_chunks.reserve(num);
-  char *ptr = chunk_base;
+  ibv_mr* m = ibv_reg_mr(manager.pd->pd, base, bytes, IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
+  assert(m);
+  Chunk* chunk = chunk_base;
   for (uint32_t offset = 0; offset < bytes; offset += buffer_size){
-    Chunk *chunk = reinterpret_cast<Chunk*>(ptr);
-    ibv_mr* m = ibv_reg_mr(manager.pd->pd, base+offset, buffer_size, IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
-    assert(m);
     new(chunk) Chunk(m, buffer_size, base+offset);
     free_chunks.push_back(chunk);
-    ptr += sizeof(Chunk);
+    chunk++;
   }
   return 0;
 }
@@ -526,27 +633,96 @@ int Infiniband::MemoryManager::Cluster::get_buffers(std::vector<Chunk*> &chunks,
   return r;
 }
 
+Infiniband::MemoryManager* Infiniband::MemoryManager::RxAllocator::manager = nullptr;
+PerfCounters *Infiniband::MemoryManager::RxAllocator::perf_logger = nullptr;
 
-Infiniband::MemoryManager::MemoryManager(Device *d, ProtectionDomain *p, bool hugepage)
-  : device(d), pd(p)
+unsigned Infiniband::MemoryManager::RxAllocator::n_bufs_allocated = 0;
+unsigned Infiniband::MemoryManager::RxAllocator::max_bufs         = 0;
+
+
+char *Infiniband::MemoryManager::RxAllocator::malloc(const size_type bytes)
 {
-  enabled_huge_page = hugepage;
+  mem_info *m;
+  Chunk *ch;
+  size_t rx_buf_size;
+  unsigned nbufs;
+
+  rx_buf_size = sizeof(Chunk) + manager->cct->_conf->ms_async_rdma_buffer_size;
+  nbufs       = bytes/rx_buf_size;
+
+  if (max_bufs > 0 && n_bufs_allocated + nbufs > max_bufs) {
+    return NULL;
+  }
+
+  m = static_cast<mem_info *>(manager->malloc(bytes + sizeof(*m)));
+  if (!m) 
+    return NULL;
+
+  m->mr    = ibv_reg_mr(manager->pd->pd, m->chunks, bytes, IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
+  assert(m->mr);
+  m->nbufs = nbufs;
+
+  n_bufs_allocated += nbufs;
+  // note that the memory can be allocated before perf logger is set
+  if (perf_logger)
+    perf_logger->inc(l_msgr_rdma_rx_bufs_total, nbufs);
+
+  /* initialize chunks */
+  ch = m->chunks;
+  for (unsigned i = 0; i < nbufs; i++) {
+    ch->lkey   = m->mr->lkey;
+    ch->bytes  = manager->cct->_conf->ms_async_rdma_buffer_size;
+    ch->offset = 0;
+    ch->buffer = ch->data; // TODO: refactor tx and remove buffer
+    ch = reinterpret_cast<Chunk *>(reinterpret_cast<char *>(ch) + rx_buf_size);
+  }
+
+  return reinterpret_cast<char *>(m->chunks);
+}
+
+
+void Infiniband::MemoryManager::RxAllocator::free(char * const block)
+{
+  mem_info *m;
+    
+  m = reinterpret_cast<mem_info *>(block) - 1;
+  n_bufs_allocated -= m->nbufs;
+  if (perf_logger)
+    perf_logger->dec(l_msgr_rdma_rx_bufs_total, m->nbufs);
+  ibv_dereg_mr(m->mr);
+  manager->free(m);
+}
+
+Infiniband::MemoryManager::MemoryManager(CephContext *c, Device *d, ProtectionDomain *p)
+  : cct(c), device(d), pd(p),
+    rxbuf_pool(sizeof(Chunk) + c->_conf->ms_async_rdma_buffer_size, 
+               c->_conf->ms_async_rdma_receive_buffers > 0 ?
+                  // if possible make initial pool size 2 * receive_queue_len
+                  // that way there will be no pool expansion upon receive of the
+                  // first packet.
+                  (c->_conf->ms_async_rdma_receive_buffers < 2 * c->_conf->ms_async_rdma_receive_queue_len ?
+                   c->_conf->ms_async_rdma_receive_buffers :  2 * c->_conf->ms_async_rdma_receive_queue_len) :
+                  // rx pool is infinite, we can set any initial size that we want
+                   2 * c->_conf->ms_async_rdma_receive_queue_len)
+{
+  RxAllocator::set_memory_manager(this);
+  // remember the setting because cct may not be available when
+  // global infiniband is destroyed
+  hp_enabled = cct->_conf->ms_async_rdma_enable_hugepage;
 }
 
 Infiniband::MemoryManager::~MemoryManager()
 {
-  if (channel)
-    delete channel;
   if (send)
     delete send;
 }
 
-void* Infiniband::MemoryManager::malloc_huge_pages(size_t size)
+void* Infiniband::MemoryManager::huge_pages_malloc(size_t size)
 {
   size_t real_size = ALIGN_TO_PAGE_SIZE(size + HUGE_PAGE_SIZE);
   char *ptr = (char *)mmap(NULL, real_size, PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS |MAP_POPULATE | MAP_HUGETLB,-1, 0);
   if (ptr == MAP_FAILED) {
-    ptr = (char *)malloc(real_size);
+    ptr = (char *)std::malloc(real_size);
     if (ptr == NULL) return NULL;
     real_size = 0;
   }
@@ -554,7 +730,7 @@ void* Infiniband::MemoryManager::malloc_huge_pages(size_t size)
   return ptr + HUGE_PAGE_SIZE;
 }
 
-void Infiniband::MemoryManager::free_huge_pages(void *ptr)
+void Infiniband::MemoryManager::huge_pages_free(void *ptr)
 {
   if (ptr == NULL) return;
   void *real_ptr = (char *)ptr -HUGE_PAGE_SIZE;
@@ -563,15 +739,30 @@ void Infiniband::MemoryManager::free_huge_pages(void *ptr)
   if (real_size != 0)
     munmap(real_ptr, real_size);
   else
-    free(real_ptr);
+    std::free(real_ptr);
 }
 
-void Infiniband::MemoryManager::register_rx_tx(uint32_t size, uint32_t rx_num, uint32_t tx_num)
+
+void* Infiniband::MemoryManager::malloc(size_t size)
+{
+  if (hp_enabled)
+    return huge_pages_malloc(size);
+  else
+    return std::malloc(size);
+}
+
+void Infiniband::MemoryManager::free(void *ptr)
+{
+  if (hp_enabled)
+    huge_pages_free(ptr);
+  else
+    std::free(ptr);
+}
+
+void Infiniband::MemoryManager::create_tx_pool(uint32_t size, uint32_t tx_num)
 {
   assert(device);
   assert(pd);
-  channel = new Cluster(*this, size);
-  channel->fill(rx_num);
 
   send = new Cluster(*this, size);
   send->fill(tx_num);
@@ -587,37 +778,212 @@ int Infiniband::MemoryManager::get_send_buffers(std::vector<Chunk*> &c, size_t b
   return send->get_buffers(c, bytes);
 }
 
-int Infiniband::MemoryManager::get_channel_buffers(std::vector<Chunk*> &chunks, size_t bytes)
-{
-  return channel->get_buffers(chunks, bytes);
+static std::atomic<bool> init_prereq = {false};
+
+void Infiniband::verify_prereq(CephContext *cct) {
+
+  //On RDMA MUST be called before fork
+   int rc = ibv_fork_init();
+   if (rc) {
+      lderr(cct) << __func__ << " failed to call ibv_for_init(). On RDMA must be called before fork. Application aborts." << dendl;
+      ceph_abort();
+   }
+
+   ldout(cct, 20) << __func__ << " ms_async_rdma_enable_hugepage value is: " << cct->_conf->ms_async_rdma_enable_hugepage <<  dendl;
+   if (cct->_conf->ms_async_rdma_enable_hugepage){
+     rc =  setenv("RDMAV_HUGEPAGES_SAFE","1",1);
+     ldout(cct, 0) << __func__ << " RDMAV_HUGEPAGES_SAFE is set as: " << getenv("RDMAV_HUGEPAGES_SAFE") <<  dendl;
+     if (rc) {
+       lderr(cct) << __func__ << " failed to export RDMA_HUGEPAGES_SAFE. On RDMA must be exported before using huge pages. Application aborts." << dendl;
+       ceph_abort();
+     }
+   }
+
+   //Check ulimit
+   struct rlimit limit;
+   getrlimit(RLIMIT_MEMLOCK, &limit);
+   if (limit.rlim_cur != RLIM_INFINITY || limit.rlim_max != RLIM_INFINITY) {
+      lderr(cct) << __func__ << "!!! WARNING !!! For RDMA to work properly user memlock (ulimit -l) must be big enough to allow large amount of registered memory."
+				  " We recommend setting this parameter to infinity" << dendl;
+   }
+   init_prereq = true;
 }
 
-
-Infiniband::Infiniband(CephContext *cct, const std::string &device_name, uint8_t port_num)
-  : device_list(new DeviceList(cct, this))
+Infiniband::Infiniband(CephContext *cct)
+  : cct(cct), lock("IB lock"),
+    device_name(cct->_conf->ms_async_rdma_device_name),
+    port_num( cct->_conf->ms_async_rdma_port_num)
 {
+  if (!init_prereq)
+    verify_prereq(cct);
+  ldout(cct, 20) << __func__ << " constructing Infiniband..." << dendl;
+}
+
+void Infiniband::init()
+{
+  Mutex::Locker l(lock);
+
+  if (initialized)
+    return;
+
+  device_list = new DeviceList(cct);
+  initialized = true;
+
   device = device_list->get_device(device_name.c_str());
-
-  device->init();
-
   device->binding_port(cct, port_num);
   assert(device);
   ib_physical_port = device->active_port->get_port_num();
+  pd = new ProtectionDomain(cct, device);
+  assert(NetHandler(cct).set_nonblock(device->ctxt->async_fd) == 0);
+
+  rx_queue_len = device->device_attr->max_srq_wr;
+  if (rx_queue_len > cct->_conf->ms_async_rdma_receive_queue_len) {
+    rx_queue_len = cct->_conf->ms_async_rdma_receive_queue_len;
+    ldout(cct, 1) << __func__ << " receive queue length is " << rx_queue_len << " receive buffers" << dendl;
+  } else {
+    ldout(cct, 0) << __func__ << " requested receive queue length " <<
+                  cct->_conf->ms_async_rdma_receive_queue_len <<
+                  " is too big. Setting " << rx_queue_len << dendl;
+  }
+
+  // check for the misconfiguration
+  if (cct->_conf->ms_async_rdma_receive_buffers > 0 &&
+      rx_queue_len > (unsigned)cct->_conf->ms_async_rdma_receive_buffers) {
+    lderr(cct) << __func__ << " rdma_receive_queue_len (" <<
+                  rx_queue_len << ") > ms_async_rdma_receive_buffers(" <<
+                  cct->_conf->ms_async_rdma_receive_buffers << ")." << dendl;
+    ceph_abort();
+  }
+
+  MemoryManager::RxAllocator::set_max_bufs(cct->_conf->ms_async_rdma_receive_buffers);
+
+  tx_queue_len = device->device_attr->max_qp_wr;
+  if (tx_queue_len > cct->_conf->ms_async_rdma_send_buffers) {
+    tx_queue_len = cct->_conf->ms_async_rdma_send_buffers;
+    ldout(cct, 1) << __func__ << " assigning: " << tx_queue_len << " send buffers"  << dendl;
+  } else {
+    ldout(cct, 0) << __func__ << " using the max allowed send buffers: " << tx_queue_len << dendl;
+  }
+
+  ldout(cct, 1) << __func__ << " device allow " << device->device_attr->max_cqe
+                << " completion entries" << dendl;
+
+  memory_manager = new MemoryManager(cct, device, pd);
+  memory_manager->create_tx_pool(cct->_conf->ms_async_rdma_buffer_size, tx_queue_len);
+
+  srq = create_shared_receive_queue(rx_queue_len, MAX_SHARED_RX_SGE_COUNT);
+
+  post_chunks_to_srq(rx_queue_len); //add to srq
 }
 
 Infiniband::~Infiniband()
 {
-  if (dispatcher)
-    dispatcher->polling_stop();
+  if (!initialized)
+    return;
 
-  delete device_list;
+  ibv_destroy_srq(srq);
+  delete memory_manager;
+  delete pd;
 }
 
-void Infiniband::set_dispatcher(RDMADispatcher *d)
+/**
+ * Create a shared receive queue. This basically wraps the verbs call. 
+ *
+ * \param[in] max_wr
+ *      The max number of outstanding work requests in the SRQ.
+ * \param[in] max_sge
+ *      The max number of scatter elements per WR.
+ * \return
+ *      A valid ibv_srq pointer, or NULL on error.
+ */
+ibv_srq* Infiniband::create_shared_receive_queue(uint32_t max_wr, uint32_t max_sge)
 {
-  assert(!d ^ !dispatcher);
+  ibv_srq_init_attr sia;
+  memset(&sia, 0, sizeof(sia));
+  sia.srq_context = device->ctxt;
+  sia.attr.max_wr = max_wr;
+  sia.attr.max_sge = max_sge;
+  return ibv_create_srq(pd->pd, &sia);
+}
 
-  dispatcher = d;
+int Infiniband::get_tx_buffers(std::vector<Chunk*> &c, size_t bytes)
+{
+  return memory_manager->get_send_buffers(c, bytes);
+}
+
+/**
+ * Create a new QueuePair. This factory should be used in preference to
+ * the QueuePair constructor directly, since this lets derivatives of
+ * Infiniband, e.g. MockInfiniband (if it existed),
+ * return mocked out QueuePair derivatives.
+ *
+ * \return
+ *      QueuePair on success or NULL if init fails
+ * See QueuePair::QueuePair for parameter documentation.
+ */
+Infiniband::QueuePair* Infiniband::create_queue_pair(CephContext *cct, CompletionQueue *tx, CompletionQueue* rx, ibv_qp_type type)
+{
+  Infiniband::QueuePair *qp = new QueuePair(
+      cct, *this, type, ib_physical_port, srq, tx, rx, tx_queue_len, rx_queue_len);
+  if (qp->init()) {
+    delete qp;
+    return NULL;
+  }
+  return qp;
+}
+
+void Infiniband::post_chunks_to_srq(int num)
+{
+  int ret, i = 0;
+  ibv_sge isge[num];
+  Chunk *chunk;
+  ibv_recv_wr rx_work_request[num];
+
+  while (i < num) {
+    chunk = get_memory_manager()->get_rx_buffer();
+
+    assert (chunk != NULL);
+
+    isge[i].addr = reinterpret_cast<uint64_t>(chunk->data);
+    isge[i].length = chunk->bytes;
+    isge[i].lkey = chunk->lkey;
+
+    memset(&rx_work_request[i], 0, sizeof(rx_work_request[i]));
+    rx_work_request[i].wr_id = reinterpret_cast<uint64_t>(chunk);// stash descriptor ptr
+    if (i == num - 1) {
+      rx_work_request[i].next = 0;
+    } else {
+      rx_work_request[i].next = &rx_work_request[i+1];
+    }
+    rx_work_request[i].sg_list = &isge[i];
+    rx_work_request[i].num_sge = 1;
+    i++;
+  }
+  ibv_recv_wr *badworkrequest;
+  ret = ibv_post_srq_recv(srq, &rx_work_request[0], &badworkrequest);
+  assert(ret == 0);
+}
+
+Infiniband::CompletionChannel* Infiniband::create_comp_channel(CephContext *c)
+{
+  Infiniband::CompletionChannel *cc = new Infiniband::CompletionChannel(c, *this);
+  if (cc->init()) {
+    delete cc;
+    return NULL;
+  }
+  return cc;
+}
+
+Infiniband::CompletionQueue* Infiniband::create_comp_queue(
+    CephContext *cct, CompletionChannel *cc)
+{
+  Infiniband::CompletionQueue *cq = new Infiniband::CompletionQueue(
+      cct, *this, CQ_DEPTH, cc);
+  if (cq->init()) {
+    delete cq;
+    return NULL;
+  }
+  return cq;
 }
 
 // 1 means no valid buffer read, 0 means got enough buffer
@@ -767,44 +1133,4 @@ const char* Infiniband::qp_state_string(int status) {
     case IBV_QPS_ERR   : return "IBV_QPS_ERR";
     default: return " out of range.";
   }
-}
-
-void Infiniband::handle_pre_fork()
-{
-  device->uninit();
-}
-
-void Infiniband::handle_post_fork()
-{
-  device->init();
-}
-
-int Infiniband::poll_tx(int n, Device **d, ibv_wc *wc)
-{
-  return device_list->poll_tx(n, d, wc);
-}
-
-int Infiniband::poll_rx(int n, Device **d, ibv_wc *wc)
-{
-  return device_list->poll_rx(n, d, wc);
-}
-
-int Infiniband::poll_blocking(bool &done)
-{
-  return device_list->poll_blocking(done);
-}
-
-void Infiniband::rearm_notify()
-{
-  device_list->rearm_notify();
-}
-
-void Infiniband::handle_async_event()
-{
-  device_list->handle_async_event();
-}
-
-void Infiniband::process_async_event(ibv_async_event &async_event)
-{
-  dispatcher->process_async_event(async_event);
 }

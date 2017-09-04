@@ -24,8 +24,6 @@
 #include <boost/intrusive_ptr.hpp>
 
 #include "include/encoding.h"
-#include "include/Spinlock.h"
-
 
 struct Page {
   char *const data;
@@ -58,7 +56,7 @@ struct Page {
     ::encode(offset, bl);
   }
   void decode(bufferlist::iterator &p, size_t page_size) {
-    ::decode_array_nohead(data, page_size, p);
+    p.copy(page_size, data);
     ::decode(offset, p);
   }
 
@@ -103,7 +101,7 @@ class PageSet {
   page_set pages;
   uint64_t page_size;
 
-  typedef Spinlock lock_type;
+  typedef std::mutex lock_type;
   lock_type mutex;
 
   void free_pages(iterator cur, iterator end) {

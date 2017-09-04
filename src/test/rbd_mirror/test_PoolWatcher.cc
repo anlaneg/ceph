@@ -75,8 +75,9 @@ public:
     PoolWatcherListener(TestPoolWatcher *test) : test(test) {
     }
 
-    void handle_update(const ImageIds &added_image_ids,
-                       const ImageIds &removed_image_ids) override {
+    void handle_update(const std::string &mirror_uuid,
+                       ImageIds &&added_image_ids,
+                       ImageIds &&removed_image_ids) override {
       Mutex::Locker locker(test->m_lock);
       for (auto &image_id : removed_image_ids) {
         image_ids.erase(image_id);
@@ -96,6 +97,7 @@ public:
 
     librados::IoCtx ioctx;
     ASSERT_EQ(0, m_cluster->ioctx_create2(pool_id, ioctx));
+    ioctx.application_enable("rbd", true);
 
     m_pool_watcher.reset(new PoolWatcher<>(m_threads, ioctx,
                                            m_pool_watcher_listener));
@@ -147,7 +149,7 @@ public:
       image.close();
 
       m_mirrored_images.insert(ImageId(
-        mirror_image_info.global_id, get_image_id(&ioctx, name), name));
+        mirror_image_info.global_id, get_image_id(&ioctx, name)));
     }
     if (image_name != nullptr)
       *image_name = name;
@@ -194,7 +196,7 @@ public:
       image.close();
 
       m_mirrored_images.insert(ImageId(
-        mirror_image_info.global_id, get_image_id(&cioctx, name), name));
+        mirror_image_info.global_id, get_image_id(&cioctx, name)));
     }
     if (image_name != nullptr)
       *image_name = name;

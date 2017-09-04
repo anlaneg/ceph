@@ -53,8 +53,8 @@ TEST(LibRGW, INIT) {
 }
 
 TEST(LibRGW, MOUNT) {
-  int ret = rgw_mount(rgw, uid.c_str(), access_key.c_str(), secret_key.c_str(),
-		      &fs, RGW_MOUNT_FLAG_NONE);
+  int ret = rgw_mount2(rgw, uid.c_str(), access_key.c_str(), secret_key.c_str(),
+                       "/", &fs, RGW_MOUNT_FLAG_NONE);
   ASSERT_EQ(ret, 0);
   ASSERT_NE(fs, nullptr);
 }
@@ -73,7 +73,8 @@ TEST(LibRGW, GETATTR_ROOT) {
 }
 
 extern "C" {
-  static bool r1_cb(const char* name, void *arg, uint64_t offset) {
+  static bool r1_cb(const char* name, void *arg, uint64_t offset,
+		    uint32_t flags) {
     // don't need arg--it would point to fids1
     fids1.push_back(fid_type(name, offset, nullptr /* handle */));
     return true; /* XXX ? */
@@ -135,7 +136,8 @@ TEST(LibRGW, GETATTR_BUCKETS) {
 }
 
 extern "C" {
-  static bool r2_cb(const char* name, void *arg, uint64_t offset) {
+  static bool r2_cb(const char* name, void *arg, uint64_t offset,
+		    uint32_t flags) {
     std::vector<fid_type>& obj_vector = *(static_cast<std::vector<fid_type>*>(arg));
     obj_vector.push_back(fid_type(name, offset, nullptr));
     return true; /* XXX ? */

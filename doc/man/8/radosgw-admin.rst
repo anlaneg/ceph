@@ -382,6 +382,10 @@ Options
 
 	List of caps (e.g., "usage=read, write; user=read".
 
+.. option:: --compression=<compression-algorithm>
+
+    Placement target compression algorithm (lz4|snappy|zlib|zstd)
+
 .. option:: --yes-i-really-mean-it
 
 	Required for certain operations.
@@ -457,7 +461,15 @@ Remove a user and all associated buckets with their contents::
 
 Remove a bucket::
 
-        $ radosgw-admin bucket unlink --bucket=foo
+	$ radosgw-admin bucket rm --bucket=foo
+
+Link bucket to specified user::
+	
+	$ radosgw-admin bucket link --bucket=foo --bucket_id=<bucket id> --uid=johnny
+
+Unlink bucket from specified user::
+
+        $ radosgw-admin bucket unlink --bucket=foo --uid=johnny
 
 Show the logs of a bucket from April 1st, 2012::
 

@@ -17,19 +17,16 @@
 #ifndef CEPH_COMMON_PERF_COUNTERS_H
 #define CEPH_COMMON_PERF_COUNTERS_H
 
-#include "common/config_obs.h"
-#include "common/perf_histogram.h"
-#include "common/Mutex.h"
-#include "include/utime.h"
-
-#include "common/config_obs.h"
-#include "common/Mutex.h"
-#include "common/ceph_time.h"
-
-#include <stdint.h>
 #include <string>
 #include <vector>
 #include <memory>
+#include <atomic>
+#include <cstdint>
+
+#include "common/perf_histogram.h"
+#include "include/utime.h"
+#include "common/Mutex.h"
+#include "common/ceph_time.h"
 
 class CephContext;
 class PerfCountersBuilder;
@@ -37,11 +34,11 @@ class PerfCountersBuilder;
 enum perfcounter_type_d : uint8_t
 {
   PERFCOUNTER_NONE = 0,
-  PERFCOUNTER_TIME = 0x1,
-  PERFCOUNTER_U64 = 0x2,
-  PERFCOUNTER_LONGRUNAVG = 0x4,
-  PERFCOUNTER_COUNTER = 0x8,
-  PERFCOUNTER_HISTOGRAM = 0x10,
+  PERFCOUNTER_TIME = 0x1,       // float (measuring seconds)
+  PERFCOUNTER_U64 = 0x2,        // integer (note: either TIME or U64 *must* be set)
+  PERFCOUNTER_LONGRUNAVG = 0x4, // paired counter + sum (time)
+  PERFCOUNTER_COUNTER = 0x8,    // counter (vs guage)
+  PERFCOUNTER_HISTOGRAM = 0x10, // histogram (vector) of values
 };
 
 
@@ -79,21 +76,18 @@ public:
       : name(NULL),
         description(NULL),
         nick(NULL),
-	type(PERFCOUNTER_NONE),
-	u64(0),
-	avgcount(0),
-	avgcount2(0)
+	    type(PERFCOUNTER_NONE)
     {}
     perf_counter_data_any_d(const perf_counter_data_any_d& other)
       : name(other.name),
         description(other.description),
         nick(other.nick),
 	type(other.type),
-	u64(other.u64.read()) {
+	u64(other.u64.load()) {
       pair<uint64_t,uint64_t> a = other.read_avg();
-      u64.set(a.first);
-      avgcount.set(a.second);
-      avgcount2.set(a.second);
+      u64 = a.first;
+      avgcount = a.second;
+      avgcount2 = a.second;
       if (other.histogram) {
         histogram.reset(new PerfHistogram<>(*other.histogram));
       }
@@ -102,31 +96,34 @@ public:
     const char *name;
     const char *description;
     const char *nick;
+    int prio = 0;
     enum perfcounter_type_d type;
-    atomic64_t u64;
-    atomic64_t avgcount;
-    atomic64_t avgcount2;
+    std::atomic<uint64_t> u64 = { 0 };
+    std::atomic<uint64_t> avgcount = { 0 };
+    std::atomic<uint64_t> avgcount2 = { 0 };
     std::unique_ptr<PerfHistogram<>> histogram;
 
     void reset()
     {
       if (type != PERFCOUNTER_U64) {
-	u64.set(0);
-	avgcount.set(0);
-	avgcount2.set(0);
+	    u64 = 0;
+	    avgcount = 0;
+	    avgcount2 = 0;
       }
       if (histogram) {
         histogram->reset();
       }
     }
 
-    /// read <sum, count> safely
+    // read <sum, count> safely by making sure the post- and pre-count
+    // are identical; in other words the whole loop needs to be run
+    // without any intervening calls to inc, set, or tinc.
     pair<uint64_t,uint64_t> read_avg() const {
       uint64_t sum, count;
       do {
-	count = avgcount.read();
-	sum = u64.read();
-      } while (avgcount2.read() != count);
+	count = avgcount;
+	sum = u64;
+      } while (avgcount2 != count);
       return make_pair(sum, count);
     }
   };
@@ -136,11 +133,9 @@ public:
     pair<uint64_t, T> last;
     pair<uint64_t, T> cur;
     avg_tracker() : last(0, 0), cur(0, 0) {}
-    T avg() const {
+    T current_avg() const {
       if (cur.first == last.first)
-	return cur.first ?
-	  cur.second / cur.first :
-	  0; // no change, report avg over all time
+        return 0;
       return (cur.second - last.second) / (cur.first - last.first);
     }
     void consume_next(const pair<uint64_t, T> &next) {
@@ -157,8 +152,8 @@ public:
   uint64_t get(int idx) const;
 
   void tset(int idx, utime_t v);
-  void tinc(int idx, utime_t v);
-  void tinc(int idx, ceph::timespan v);
+  void tinc(int idx, utime_t v, uint32_t avgcount = 1);
+  void tinc(int idx, ceph::timespan v, uint32_t avgcount = 1);
   utime_t tget(int idx) const;
 
   void hinc(int idx, int64_t x, int64_t y);
@@ -179,8 +174,9 @@ public:
     m_name = s;
   }
 
-  void set_suppress_nicks(bool b) {
-    suppress_nicks = b;
+  /// adjust priority values by some value
+  void set_prio_adjust(int p) {
+    prio_adjust = p;
   }
 
 private:
@@ -199,7 +195,7 @@ private:
   std::string m_name;
   const std::string m_lock_name;
 
-  bool suppress_nicks = false;
+  int prio_adjust = 0;
 
   /** Protects m_data */
   mutable Mutex m_lock;
@@ -280,29 +276,67 @@ public:
   PerfCountersBuilder(CephContext *cct, const std::string &name,
 		    int first, int last);
   ~PerfCountersBuilder();
+
+  // prio values: higher is better, and higher values get included in
+  // 'ceph daemonperf' (and similar) results.
+  enum {
+    PRIO_CRITICAL = 10,
+    PRIO_INTERESTING = 8,
+    PRIO_USEFUL = 5,
+    PRIO_UNINTERESTING = 2,
+    PRIO_DEBUGONLY = 0,
+  };
   void add_u64(int key, const char *name,
-      const char *description=NULL, const char *nick = NULL);
+	       const char *description=NULL, const char *nick = NULL,
+	       int prio=0);
   void add_u64_counter(int key, const char *name,
-      const char *description=NULL, const char *nick = NULL);
+		       const char *description=NULL,
+		       const char *nick = NULL,
+		       int prio=0);
   void add_u64_avg(int key, const char *name,
-      const char *description=NULL, const char *nick = NULL);
+		   const char *description=NULL,
+		   const char *nick = NULL,
+		   int prio=0);
   void add_time(int key, const char *name,
-      const char *description=NULL, const char *nick = NULL);
+		const char *description=NULL,
+		const char *nick = NULL,
+		int prio=0);
   void add_time_avg(int key, const char *name,
-      const char *description=NULL, const char *nick = NULL);
-  void add_histogram(int key, const char* name,
-      PerfHistogramCommon::axis_config_d x_axis_config,
-      PerfHistogramCommon::axis_config_d y_axis_config,
-      const char *description=NULL, const char* nick = NULL);
+		    const char *description=NULL,
+		    const char *nick = NULL,
+		    int prio=0);
+  void add_u64_counter_histogram(
+    int key, const char* name,
+    PerfHistogramCommon::axis_config_d x_axis_config,
+    PerfHistogramCommon::axis_config_d y_axis_config,
+    const char *description=NULL,
+    const char* nick = NULL,
+    int prio=0);
+
   PerfCounters* create_perf_counters();
 private:
   PerfCountersBuilder(const PerfCountersBuilder &rhs);
   PerfCountersBuilder& operator=(const PerfCountersBuilder &rhs);
   void add_impl(int idx, const char *name,
-                const char *description, const char *nick, int ty,
+                const char *description, const char *nick, int prio, int ty,
                 unique_ptr<PerfHistogram<>> histogram = nullptr);
 
   PerfCounters *m_perf_counters;
 };
+
+class PerfCountersDeleter {
+  CephContext* cct;
+
+public:
+  PerfCountersDeleter() noexcept : cct(nullptr) {}
+  PerfCountersDeleter(CephContext* cct) noexcept : cct(cct) {}
+  void operator()(PerfCounters* p) noexcept {
+    if (cct)
+      cct->get_perfcounters_collection()->remove(p);
+    delete p;
+  }
+};
+
+using PerfCountersRef = std::unique_ptr<PerfCounters, PerfCountersDeleter>;
 
 #endif

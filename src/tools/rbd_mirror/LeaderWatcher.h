@@ -10,8 +10,9 @@
 
 #include "common/AsyncOpTracker.h"
 #include "librbd/ManagedLock.h"
-#include "librbd/managed_lock/Types.h"
 #include "librbd/Watcher.h"
+#include "librbd/managed_lock/Types.h"
+#include "librbd/watcher/Types.h"
 #include "Instances.h"
 #include "MirrorStatusWatcher.h"
 #include "tools/rbd_mirror/leader_watcher/Types.h"
@@ -32,6 +33,9 @@ public:
 
     virtual void post_acquire_handler(Context *on_finish) = 0;
     virtual void pre_release_handler(Context *on_finish) = 0;
+
+    virtual void update_leader_handler(
+      const std::string &leader_instance_id) = 0;
   };
 
   LeaderWatcher(Threads<ImageCtxT> *threads, librados::IoCtx &io_ctx,
@@ -44,9 +48,13 @@ public:
   void init(Context *on_finish);
   void shut_down(Context *on_finish);
 
-  bool is_leader();
+  bool is_leader() const;
+  bool is_releasing_leader() const;
+  bool get_leader_instance_id(std::string *instance_id) const;
   void release_leader();
   void list_instances(std::vector<std::string> *instance_ids);
+
+  std::string get_instance_id();
 
 private:
   /**
@@ -109,6 +117,11 @@ private:
     bool is_leader() const {
       Mutex::Locker locker(Parent::m_lock);
       return Parent::is_state_post_acquiring() || Parent::is_state_locked();
+    }
+
+    bool is_releasing_leader() const {
+      Mutex::Locker locker(Parent::m_lock);
+      return Parent::is_state_pre_releasing();
     }
 
   protected:
@@ -180,7 +193,7 @@ private:
   Threads<ImageCtxT> *m_threads;
   Listener *m_listener;
 
-  Mutex m_lock;
+  mutable Mutex m_lock;
   uint64_t m_notifier_id;
   LeaderLock *m_leader_lock;
   Context *m_on_finish = nullptr;
@@ -195,9 +208,10 @@ private:
   Context *m_timer_task = nullptr;
   C_TimerGate *m_timer_gate = nullptr;
 
-  bufferlist m_heartbeat_ack_bl;
+  librbd::watcher::NotifyResponse m_heartbeat_response;
 
-  bool is_leader(Mutex &m_lock);
+  bool is_leader(Mutex &m_lock) const;
+  bool is_releasing_leader(Mutex &m_lock) const;
 
   void cancel_timer_task();
   void schedule_timer_task(const std::string &name,

@@ -17,9 +17,8 @@
 #ifndef CEPH_MSG_ASYNC_STACK_H
 #define CEPH_MSG_ASYNC_STACK_H
 
-#include "include/Spinlock.h"
+#include "include/spinlock.h"
 #include "common/perf_counters.h"
-#include "common/simple_spin.h"
 #include "msg/msg_types.h"
 #include "msg/async/Event.h"
 
@@ -189,11 +188,16 @@ enum {
   l_msgr_first = 94000,
   l_msgr_recv_messages,
   l_msgr_send_messages,
-  l_msgr_send_messages_inline,
   l_msgr_recv_bytes,
   l_msgr_send_bytes,
   l_msgr_created_connections,
   l_msgr_active_connections,
+
+  l_msgr_running_total_time,
+  l_msgr_running_send_time,
+  l_msgr_running_recv_time,
+  l_msgr_running_fast_dispatch_time,
+
   l_msgr_last,
 };
 
@@ -224,11 +228,15 @@ class Worker {
 
     plb.add_u64_counter(l_msgr_recv_messages, "msgr_recv_messages", "Network received messages");
     plb.add_u64_counter(l_msgr_send_messages, "msgr_send_messages", "Network sent messages");
-    plb.add_u64_counter(l_msgr_send_messages_inline, "msgr_send_messages_inline", "Network sent inline messages");
     plb.add_u64_counter(l_msgr_recv_bytes, "msgr_recv_bytes", "Network received bytes");
-    plb.add_u64_counter(l_msgr_send_bytes, "msgr_send_bytes", "Network received bytes");
+    plb.add_u64_counter(l_msgr_send_bytes, "msgr_send_bytes", "Network sent bytes");
     plb.add_u64_counter(l_msgr_active_connections, "msgr_active_connections", "Active connection number");
     plb.add_u64_counter(l_msgr_created_connections, "msgr_created_connections", "Created connection number");
+
+    plb.add_time(l_msgr_running_total_time, "msgr_running_total_time", "The total time of thread running");
+    plb.add_time(l_msgr_running_send_time, "msgr_running_send_time", "The total time of message sending");
+    plb.add_time(l_msgr_running_recv_time, "msgr_running_recv_time", "The total time of message receiving");
+    plb.add_time(l_msgr_running_fast_dispatch_time, "msgr_running_fast_dispatch_time", "The total time of fast dispatch");
 
     perf_logger = plb.create_perf_counters();
     cct->get_perfcounters_collection()->add(perf_logger);
@@ -279,7 +287,7 @@ class Worker {
 class NetworkStack : public CephContext::ForkWatcher {
   std::string type;
   unsigned num_workers = 0;
-  Spinlock pool_spin;
+  ceph::spinlock pool_spin;
   bool started = false;
 
   std::function<void ()> add_thread(unsigned i);
@@ -287,7 +295,6 @@ class NetworkStack : public CephContext::ForkWatcher {
  protected:
   CephContext *cct;
   vector<Worker*> workers;
-  // Used to indicate whether thread started
 
   explicit NetworkStack(CephContext *c, const string &t);
  public:
@@ -337,6 +344,8 @@ class NetworkStack : public CephContext::ForkWatcher {
     start();
   }
 
+  virtual bool is_ready() { return true; };
+  virtual void ready() { };
 };
 
 #endif //CEPH_MSG_ASYNC_STACK_H

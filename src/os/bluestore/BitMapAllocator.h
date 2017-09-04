@@ -12,9 +12,9 @@
 
 class BitMapAllocator : public Allocator {
   CephContext* cct;
-  std::mutex m_lock;
 
   int64_t m_block_size;//块大小
+  int64_t m_total_size;
 
   //由m_bit_alloc负责分配,回收
   BitAllocator *m_bit_alloc; // Bit allocator instance

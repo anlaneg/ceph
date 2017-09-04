@@ -1,18 +1,25 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include <errno.h>
-#include <thread>
+#include "include/scope_guard.h"
 
 #include "common/Throttle.h"
-#include "common/dout.h"
-#include "common/ceph_context.h"
+#include "common/ceph_time.h"
 #include "common/perf_counters.h"
+#include "common/Throttle.h"
+
+
+// re-include our assert to clobber the system one; fix dout:
+#include "include/assert.h"
 
 #define dout_subsys ceph_subsys_throttle
 
 #undef dout_prefix
 #define dout_prefix *_dout << "throttle(" << name << " " << (void*)this << ") "
+
+using ceph::mono_clock;
+using ceph::mono_time;
+using ceph::uniquely_lock;
 
 enum {
   l_throttle_first = 532430,
@@ -31,11 +38,9 @@ enum {
   l_throttle_last,
 };
 
-Throttle::Throttle(CephContext *cct, const std::string& n, int64_t m, bool _use_perf)
-  : cct(cct), name(n), logger(NULL),
-    max(m),
-    lock("Throttle::lock"),
-    use_perf(_use_perf)
+Throttle::Throttle(CephContext *cct, const std::string& n, int64_t m,
+		   bool _use_perf)
+  : cct(cct), name(n), max(m), use_perf(_use_perf)
 {
   assert(m >= 0);
 
@@ -57,81 +62,65 @@ Throttle::Throttle(CephContext *cct, const std::string& n, int64_t m, bool _use_
     b.add_u64_counter(l_throttle_put_sum, "put_sum", "Put data");
     b.add_time_avg(l_throttle_wait, "wait", "Waiting latency");
 
-    logger = b.create_perf_counters();
-    cct->get_perfcounters_collection()->add(logger);
-    logger->set(l_throttle_max, max.read());
+    logger = { b.create_perf_counters(), cct };
+    cct->get_perfcounters_collection()->add(logger.get());
+    logger->set(l_throttle_max, max);
   }
 }
 
 Throttle::~Throttle()
 {
-  while (!cond.empty()) {
-    Cond *cv = cond.front();
-    delete cv;
-    cond.pop_front();
-  }
-
-  if (!use_perf)
-    return;
-
-  if (logger) {
-    cct->get_perfcounters_collection()->remove(logger);
-    delete logger;
-  }
+  auto l = uniquely_lock(lock);
+  assert(conds.empty());
 }
 
 //重置max,如果max发生变化,则原有cond中首个将被缓醒.(唤醒后锁处理?)
 void Throttle::_reset_max(int64_t m)
 {
-  assert(lock.is_locked());
+  // lock must be held.
   //检查是否有必要变更max取值
-  if ((int64_t)max.read() == m)
+  if (static_cast<int64_t>(max) == m)
     return;
-
   //cond队列不为空，取第一个条件变量，并唤醒第一个等待此条件变量的
-  if (!cond.empty())
-    cond.front()->SignalOne();
-
+  if (!conds.empty())
+    conds.front().notify_one();
   if (logger)
     logger->set(l_throttle_max, m);
   //重置max
-  max.set((size_t)m);
+  max = m;
 }
 
 //尝试着检查c是否可通过，如果不能通过，就等待，返回值用于表示
 //是否经历了等待
-bool Throttle::_wait(int64_t c)
+bool Throttle::_wait(int64_t c, UNIQUE_LOCK_T(lock)& l)
 {
-  utime_t start;
+  mono_time start;
   bool waited = false;
   //检查c是否需要等待，如果不需要等待，但cond不为空，也认为需要等待
-  if (_should_wait(c) || !cond.empty()) { // always wait behind other waiters.
-    Cond *cv = new Cond;
-    cond.push_back(cv);
-    waited = true;//指明需要等待
-    ldout(cct, 2) << "_wait waiting..." << dendl;
-    if (logger)
-      start = ceph_clock_now();
+  if (_should_wait(c) || !conds.empty()) { // always wait behind other waiters.
+    {
+      auto cv = conds.emplace(conds.end());
+      auto w = make_scope_guard([this, cv]() {
+	  conds.erase(cv);
+	});
+      waited = true;//指明需要等待
+      ldout(cct, 2) << "_wait waiting..." << dendl;
+      if (logger)
+          start = mono_clock::now();
 
-    do {
-      cv->Wait(lock);//阻塞，等待被唤醒
+      //阻塞，等待被唤醒
       //被唤配，再检查是否仍需要阻塞（需要等或者自已需要等排在自已前面的人出队后再处理）
-    } while (_should_wait(c) || cv != cond.front());
-
-    ldout(cct, 2) << "_wait finished waiting" << dendl;
-    if (logger) {
-      utime_t dur = ceph_clock_now() - start;
-      logger->tinc(l_throttle_wait, dur);
+      cv->wait(l, [this, c, cv]() { return (!_should_wait(c) &&
+					    cv == conds.begin()); });
+      ldout(cct, 2) << "_wait finished waiting" << dendl;
+      if (logger) {
+	logger->tinc(l_throttle_wait, mono_clock::now() - start);
+      }
     }
-
-    //自已已被唤醒，删除自已等的条件变量
-    delete cv;
-    cond.pop_front();//一定是自已（唤醒时检查过了）
-
     // wake up the next guy
-    if (!cond.empty())
-    	  //给后面的兄弟知会一声，让它也去检查，看能不能出
-      cond.front()->SignalOne();
+    //给后面的兄弟知会一声，让它也去检查，看能不能出
+    if (!conds.empty())
+      conds.front().notify_one();
   }
   //返回是否进行过等待
   return waited;
@@ -141,68 +130,68 @@ bool Throttle::_wait(int64_t c)
 //检查自身是否等待（防止在自已前面有人等待）
 bool Throttle::wait(int64_t m)
 {
-  if (0 == max.read() && 0 == m) {
+  if (0 == max && 0 == m) {
     return false;
   }
 
-  Mutex::Locker l(lock);
+  auto l = uniquely_lock(lock);
   if (m) {
     assert(m > 0);
     _reset_max(m);
   }
   ldout(cct, 10) << "wait" << dendl;
-  return _wait(0);
+  return _wait(0, l);
 }
 
 //增加占用数
 int64_t Throttle::take(int64_t c)
 {
-  if (0 == max.read()) {
+  if (0 == max) {
     return 0;
   }
   assert(c >= 0);
   ldout(cct, 10) << "take " << c << dendl;
   {
-    Mutex::Locker l(lock);
-    count.add(c);//增加
+    auto l = uniquely_lock(lock);
+    count += c;//增加
   }
   if (logger) {
     logger->inc(l_throttle_take);
     logger->inc(l_throttle_take_sum, c);
-    logger->set(l_throttle_val, count.read());
+    logger->set(l_throttle_val, count);
   }
   //返回增加后的计数
-  return count.read();
+  return count;
 }
 
 //检查c是否可以支出,如果可以支出,则更新当前count值.(m用于更新max)
 //返回是否经历了等待，true经历了，false未经历
 bool Throttle::get(int64_t c, int64_t m)
 {
-  if (0 == max.read() && 0 == m) {
+  if (0 == max && 0 == m) {
     return false;
   }
 
   assert(c >= 0);
-  ldout(cct, 10) << "get " << c << " (" << count.read() << " -> " << (count.read() + c) << ")" << dendl;
+  ldout(cct, 10) << "get " << c << " (" << count.load() << " -> " << (count.load() + c) << ")" << dendl;
   if (logger) {
     logger->inc(l_throttle_get_started);
   }
   bool waited = false;
   {
-    Mutex::Locker l(lock);
+    auto l = uniquely_lock(lock);
     //检查是否要变更max
     if (m) {
       assert(m > 0);
       _reset_max(m);
     }
-    waited = _wait(c);
-    count.add(c);//增加占用值
+    waited = _wait(c, l);
+    count += c;//增加占用值
   }
   if (logger) {
     logger->inc(l_throttle_get);
     logger->inc(l_throttle_get_sum, c);
-    logger->set(l_throttle_val, count.read());
+    logger->set(l_throttle_val, count);
   }
   return waited;
 }
@@ -214,14 +203,14 @@ bool Throttle::get(int64_t c, int64_t m)
 bool Throttle::get_or_fail(int64_t c)
 {
   //0表示禁用此功能
-  if (0 == max.read()) {
+  if (0 == max) {
     return true;
   }
 
   assert (c >= 0);
-  Mutex::Locker l(lock);
+  auto l = uniquely_lock(lock);
   //如果需要等待，则返回false
-  if (_should_wait(c) || !cond.empty()) {
+  if (_should_wait(c) || !conds.empty()) {
     ldout(cct, 10) << "get_or_fail " << c << " failed" << dendl;
     if (logger) {
       logger->inc(l_throttle_get_or_fail_fail);
@@ -229,13 +218,14 @@ bool Throttle::get_or_fail(int64_t c)
     return false;
   } else {
 	//不需要等待，增加计数
-    ldout(cct, 10) << "get_or_fail " << c << " success (" << count.read() << " -> " << (count.read() + c) << ")" << dendl;
-    count.add(c);
+    ldout(cct, 10) << "get_or_fail " << c << " success (" << count.load()
+		   << " -> " << (count.load() + c) << ")" << dendl;
+    count += c;
     if (logger) {
       logger->inc(l_throttle_get_or_fail_success);
       logger->inc(l_throttle_get);
       logger->inc(l_throttle_get_sum, c);
-      logger->set(l_throttle_val, count.read());
+      logger->set(l_throttle_val, count);
     }
     return true;
   }
@@ -244,36 +234,38 @@ bool Throttle::get_or_fail(int64_t c)
 int64_t Throttle::put(int64_t c)
 {
   //为0时，表示禁用Throttle
-  if (0 == max.read()) {
+  if (0 == max) {
     return 0;
   }
 
   assert(c >= 0);
-  ldout(cct, 10) << "put " << c << " (" << count.read() << " -> " << (count.read()-c) << ")" << dendl;
-  Mutex::Locker l(lock);
+  ldout(cct, 10) << "put " << c << " (" << count.load() << " -> "
+		 << (count.load()-c) << ")" << dendl;
+  auto l = uniquely_lock(lock);
   if (c) {
-    if (!cond.empty())
-    	  //因为每个cond只有一个等待者，故只需要唤醒一个
-      cond.front()->SignalOne();
+    if (!conds.empty())
+      //因为每个cond只有一个等待者，故只需要唤醒一个
+      conds.front().notify_one();
+    // if count goes negative, we failed somewhere!
     //count一定大于等于c
-    assert(((int64_t)count.read()) >= c); //if count goes negative, we failed somewhere!
-    count.sub(c);//归还占用量
+    assert(static_cast<int64_t>(count) >= c);
+    count -= c;//归还占用量
     if (logger) {
       logger->inc(l_throttle_put);
       logger->inc(l_throttle_put_sum, c);
-      logger->set(l_throttle_val, count.read());
+      logger->set(l_throttle_val, count);
     }
   }
-  return count.read();//返回当前占用量
+  return count;//返回当前占用量
 }
 
 //唤醒并清空所有等待者
 void Throttle::reset()
 {
-  Mutex::Locker l(lock);
-  if (!cond.empty())
-    cond.front()->SignalOne();
-  count.set(0);
+  auto l = uniquely_lock(lock);
+  if (!conds.empty())
+    conds.front().notify_one();
+  count = 0;
   if (logger) {
     logger->set(l_throttle_val, 0);
   }
@@ -293,8 +285,9 @@ enum {
   l_backoff_throttle_last,
 };
 
-BackoffThrottle::BackoffThrottle(CephContext *cct, const std::string& n, unsigned expected_concurrency, bool _use_perf)
-  : cct(cct), name(n), logger(NULL),
+BackoffThrottle::BackoffThrottle(CephContext *cct, const std::string& n,
+				 unsigned expected_concurrency, bool _use_perf)
+  : cct(cct), name(n),
     conds(expected_concurrency),///< [in] determines size of conds
     use_perf(_use_perf)
 {
@@ -302,7 +295,8 @@ BackoffThrottle::BackoffThrottle(CephContext *cct, const std::string& n, unsigne
     return;
 
   if (cct->_conf->throttler_perf_counter) {
-    PerfCountersBuilder b(cct, string("throttle-") + name, l_backoff_throttle_first, l_backoff_throttle_last);
+    PerfCountersBuilder b(cct, string("throttle-") + name,
+			  l_backoff_throttle_first, l_backoff_throttle_last);
     b.add_u64(l_backoff_throttle_val, "val", "Currently available throttle");
     b.add_u64(l_backoff_throttle_max, "max", "Max value for throttle");
     b.add_u64_counter(l_backoff_throttle_get, "get", "Gets");
@@ -313,21 +307,16 @@ BackoffThrottle::BackoffThrottle(CephContext *cct, const std::string& n, unsigne
     b.add_u64_counter(l_backoff_throttle_put_sum, "put_sum", "Put data");
     b.add_time_avg(l_backoff_throttle_wait, "wait", "Waiting latency");
 
-    logger = b.create_perf_counters();
-    cct->get_perfcounters_collection()->add(logger);
+    logger = { b.create_perf_counters(), cct };
+    cct->get_perfcounters_collection()->add(logger.get());
     logger->set(l_backoff_throttle_max, max);
   }
 }
 
 BackoffThrottle::~BackoffThrottle()
 {
-  if (!use_perf)
-    return;
-
-  if (logger) {
-    cct->get_perfcounters_collection()->remove(logger);
-    delete logger;
-  }
+  auto l = uniquely_lock(lock);
+  assert(waiters.empty());
 }
 
 bool BackoffThrottle::set_params(
@@ -474,7 +463,7 @@ std::chrono::duration<double> BackoffThrottle::get(uint64_t c)
   }
 
   auto ticket = _push_waiter();
-  utime_t wait_from = ceph_clock_now();
+  auto wait_from = mono_clock::now();
   bool waited = false;
 
   while (waiters.begin() != ticket) {
@@ -505,7 +494,7 @@ std::chrono::duration<double> BackoffThrottle::get(uint64_t c)
   if (logger) {
     logger->set(l_backoff_throttle_val, current);
     if (waited) {
-      logger->tinc(l_backoff_throttle_wait, ceph_clock_now() - wait_from);
+      logger->tinc(l_backoff_throttle_wait, mono_clock::now() - wait_from);
     }
   }
 
@@ -555,48 +544,45 @@ uint64_t BackoffThrottle::get_max()
 }
 
 SimpleThrottle::SimpleThrottle(uint64_t max, bool ignore_enoent)
-  : m_lock("SimpleThrottle"),
-    m_max(max),
-    m_current(0),
-    m_ret(0),
-    m_ignore_enoent(ignore_enoent)
-{
-}
+  : m_max(max), m_ignore_enoent(ignore_enoent) {}
 
 SimpleThrottle::~SimpleThrottle()
 {
-  Mutex::Locker l(m_lock);
+  auto l = uniquely_lock(m_lock);
   assert(m_current == 0);
+  assert(waiters == 0);
 }
 
 void SimpleThrottle::start_op()
 {
-  Mutex::Locker l(m_lock);
-  while (m_max == m_current)
-    m_cond.Wait(m_lock);
+  auto l = uniquely_lock(m_lock);
+  waiters++;
+  m_cond.wait(l, [this]() { return m_max != m_current; });
+  waiters--;
   ++m_current;
 }
 
 void SimpleThrottle::end_op(int r)
 {
-  Mutex::Locker l(m_lock);
+  auto l = uniquely_lock(m_lock);
   --m_current;
   if (r < 0 && !m_ret && !(r == -ENOENT && m_ignore_enoent))
     m_ret = r;
-  m_cond.Signal();
+  m_cond.notify_all();
 }
 
 bool SimpleThrottle::pending_error() const
 {
-  Mutex::Locker l(m_lock);
+  auto l = uniquely_lock(m_lock);
   return (m_ret < 0);
 }
 
 int SimpleThrottle::wait_for_ret()
 {
-  Mutex::Locker l(m_lock);
-  while (m_current > 0)
-    m_cond.Wait(m_lock);
+  auto l = uniquely_lock(m_lock);
+  waiters++;
+  m_cond.wait(l, [this]() { return m_current == 0; });
+  waiters--;
   return m_ret;
 }
 
@@ -605,71 +591,76 @@ void C_OrderedThrottle::finish(int r) {
 }
 
 OrderedThrottle::OrderedThrottle(uint64_t max, bool ignore_enoent)
-  : m_lock("OrderedThrottle::m_lock"), m_max(max), m_current(0), m_ret_val(0),
-    m_ignore_enoent(ignore_enoent), m_next_tid(0), m_complete_tid(0) {
+  : m_max(max), m_ignore_enoent(ignore_enoent) {}
+
+OrderedThrottle::~OrderedThrottle() {
+  auto l  = uniquely_lock(m_lock);
+  assert(waiters == 0);
 }
 
 C_OrderedThrottle *OrderedThrottle::start_op(Context *on_finish) {
-  assert(on_finish != NULL);
+  assert(on_finish);
 
-  Mutex::Locker locker(m_lock);
+  auto l = uniquely_lock(m_lock);
   uint64_t tid = m_next_tid++;
   m_tid_result[tid] = Result(on_finish);
-  C_OrderedThrottle *ctx = new C_OrderedThrottle(this, tid);
+  auto ctx = make_unique<C_OrderedThrottle>(this, tid);
 
-  complete_pending_ops();
+  complete_pending_ops(l);
   while (m_max == m_current) {
-    m_cond.Wait(m_lock);
-    complete_pending_ops();
+    ++waiters;
+    m_cond.wait(l);
+    --waiters;
+    complete_pending_ops(l);
   }
   ++m_current;
 
-  return ctx;
+  return ctx.release();
 }
 
 void OrderedThrottle::end_op(int r) {
-  Mutex::Locker locker(m_lock);
+  auto l = uniquely_lock(m_lock);
   assert(m_current > 0);
 
   if (r < 0 && m_ret_val == 0 && (r != -ENOENT || !m_ignore_enoent)) {
     m_ret_val = r;
   }
   --m_current;
-  m_cond.Signal();
+  m_cond.notify_all();
 }
 
 void OrderedThrottle::finish_op(uint64_t tid, int r) {
-  Mutex::Locker locker(m_lock);
+  auto l = uniquely_lock(m_lock);
 
-  TidResult::iterator it = m_tid_result.find(tid);
+  auto it = m_tid_result.find(tid);
   assert(it != m_tid_result.end());
 
   it->second.finished = true;
   it->second.ret_val = r;
-  m_cond.Signal();
+  m_cond.notify_all();
 }
 
 bool OrderedThrottle::pending_error() const {
-  Mutex::Locker locker(m_lock);
+  auto l = uniquely_lock(m_lock);
   return (m_ret_val < 0);
 }
 
 int OrderedThrottle::wait_for_ret() {
-  Mutex::Locker locker(m_lock);
-  complete_pending_ops();
+  auto l = uniquely_lock(m_lock);
+  complete_pending_ops(l);
 
   while (m_current > 0) {
-    m_cond.Wait(m_lock);
-    complete_pending_ops();
+    ++waiters;
+    m_cond.wait(l);
+    --waiters;
+    complete_pending_ops(l);
   }
   return m_ret_val;
 }
 
-void OrderedThrottle::complete_pending_ops() {
-  assert(m_lock.is_locked());
-
+void OrderedThrottle::complete_pending_ops(UNIQUE_LOCK_T(m_lock)& l) {
   while (true) {
-    TidResult::iterator it = m_tid_result.begin();
+    auto it = m_tid_result.begin();
     if (it == m_tid_result.end() || it->first != m_complete_tid ||
         !it->second.finished) {
       break;
@@ -678,9 +669,9 @@ void OrderedThrottle::complete_pending_ops() {
     Result result = it->second;
     m_tid_result.erase(it);
 
-    m_lock.Unlock();
+    l.unlock();
     result.on_finish->complete(result.ret_val);
-    m_lock.Lock();
+    l.lock();
 
     ++m_complete_tid;
   }

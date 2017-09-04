@@ -267,6 +267,7 @@ namespace librados
     OPERATION_FULL_TRY           = LIBRADOS_OPERATION_FULL_TRY,
     //mainly for delete
     OPERATION_FULL_FORCE	 = LIBRADOS_OPERATION_FULL_FORCE,
+    OPERATION_IGNORE_REDIRECT	 = LIBRADOS_OPERATION_IGNORE_REDIRECT,
   };
 
   /*
@@ -301,6 +302,7 @@ namespace librados
     //flag mean ObjectOperationFlags
     void set_op_flags2(int flags);
 
+    void cmpext(uint64_t off, bufferlist& cmp_bl, int *prval);
     void cmpxattr(const char *name, uint8_t op, const bufferlist& val);
     void cmpxattr(const char *name, uint8_t op, uint64_t v);
     void exec(const char *cls, const char *method, bufferlist& inbl);
@@ -462,6 +464,14 @@ namespace librados
     void cache_pin();
     void cache_unpin();
 
+    /**
+     * Extensible tier
+     *
+     * Set redirect target
+     */
+    void set_redirect(const std::string& tgt_obj, const IoCtx& tgt_ioctx,
+		      uint64_t tgt_version);
+
     friend class IoCtx;
   };
 
@@ -481,6 +491,10 @@ namespace librados
     void getxattr(const char *name, bufferlist *pbl, int *prval);
     void getxattrs(std::map<std::string, bufferlist> *pattrs, int *prval);
     void read(size_t off, uint64_t len, bufferlist *pbl, int *prval);
+    void checksum(rados_checksum_type_t type, const bufferlist &init_value_bl,
+		  uint64_t off, size_t len, size_t chunk_size, bufferlist *pbl,
+		  int *prval);
+
     /**
      * see aio_sparse_read()
      */
@@ -744,10 +758,14 @@ namespace librados
     int writesame(const std::string& oid, bufferlist& bl,
 		  size_t write_len, uint64_t off);
     int read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off);
+    int checksum(const std::string& o, rados_checksum_type_t type,
+		 const bufferlist &init_value_bl, size_t len, uint64_t off,
+		 size_t chunk_size, bufferlist *pbl);
     int remove(const std::string& oid);
     int remove(const std::string& oid, int flags);
     int trunc(const std::string& oid, uint64_t size);
     int mapext(const std::string& o, uint64_t off, size_t len, std::map<uint64_t,uint64_t>& m);
+    int cmpext(const std::string& o, uint64_t off, bufferlist& cmp_bl);
     int sparse_read(const std::string& o, std::map<uint64_t,uint64_t>& m, bufferlist& bl, size_t len, uint64_t off);
     int getxattr(const std::string& oid, const char *name, bufferlist& bl);
     int getxattrs(const std::string& oid, std::map<std::string, bufferlist>& attrset);
@@ -984,6 +1002,20 @@ namespace librados
     int aio_sparse_read(const std::string& oid, AioCompletion *c,
 			std::map<uint64_t,uint64_t> *m, bufferlist *data_bl,
 			size_t len, uint64_t off, uint64_t snapid);
+    /**
+     * Asynchronously compare an on-disk object range with a buffer
+     *
+     * @param oid the name of the object to read from
+     * @param c what to do when the read is complete
+     * @param off object byte offset at which to start the comparison
+     * @param cmp_bl buffer containing bytes to be compared with object contents
+     * @returns 0 on success, negative error code on failure,
+     *  (-MAX_ERRNO - mismatch_off) on mismatch
+     */
+    int aio_cmpext(const std::string& oid,
+		   librados::AioCompletion *c,
+		   uint64_t off,
+		   bufferlist& cmp_bl);
     int aio_write(const std::string& oid, AioCompletion *c, const bufferlist& bl,
 		  size_t len, uint64_t off);
     int aio_append(const std::string& oid, AioCompletion *c, const bufferlist& bl,
@@ -1071,6 +1103,10 @@ namespace librados
 		    ObjectWriteOperation *op, snap_t seq,
 		    std::vector<snap_t>& snaps);
     int aio_operate(const std::string& oid, AioCompletion *c,
+        ObjectWriteOperation *op, snap_t seq,
+        std::vector<snap_t>& snaps,
+        const blkin_trace_info *trace_info);
+    int aio_operate(const std::string& oid, AioCompletion *c,
 		    ObjectReadOperation *op, bufferlist *pbl);
 
     int aio_operate(const std::string& oid, AioCompletion *c,
@@ -1081,6 +1117,9 @@ namespace librados
     int aio_operate(const std::string& oid, AioCompletion *c,
 		    ObjectReadOperation *op, int flags,
 		    bufferlist *pbl);
+    int aio_operate(const std::string& oid, AioCompletion *c,
+        ObjectReadOperation *op, int flags,
+        bufferlist *pbl, const blkin_trace_info *trace_info);
 
     // watch/notify
     int watch2(const std::string& o, uint64_t *handle,
@@ -1211,6 +1250,21 @@ namespace librados
     void set_osdmap_full_try();
     void unset_osdmap_full_try();
 
+    int application_enable(const std::string& app_name, bool force);
+    int application_enable_async(const std::string& app_name,
+                                 bool force, PoolAsyncCompletion *c);
+    int application_list(std::set<std::string> *app_names);
+    int application_metadata_get(const std::string& app_name,
+                                 const std::string &key,
+                                 std::string *value);
+    int application_metadata_set(const std::string& app_name,
+                                 const std::string &key,
+                                 const std::string& value);
+    int application_metadata_remove(const std::string& app_name,
+                                    const std::string &key);
+    int application_metadata_list(const std::string& app_name,
+                                  std::map<std::string, std::string> *values);
+
   private:
     /* You can only get IoCtx instances from Rados */
     IoCtx(IoCtxImpl *io_ctx_impl_);
@@ -1258,6 +1312,13 @@ namespace librados
     int conf_parse_env(const char *env) const;
     int conf_set(const char *option, const char *value);
     int conf_get(const char *option, std::string &val);
+
+    int service_daemon_register(
+      const std::string& service,  ///< service name (e.g., 'rgw')
+      const std::string& name,     ///< daemon name (e.g., 'gwfoo')
+      const std::map<std::string,std::string>& metadata); ///< static metadata about daemon
+    int service_daemon_update_status(
+      const std::map<std::string,std::string>& status);
 
     int pool_create(const char *name);
     int pool_create(const char *name, uint64_t auid);

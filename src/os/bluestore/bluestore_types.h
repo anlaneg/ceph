@@ -20,7 +20,6 @@
 #include "include/types.h"
 #include "include/interval_set.h"
 #include "include/utime.h"
-#include "include/small_encoding.h"
 #include "common/hobject.h"
 #include "compressor/Compressor.h"
 #include "common/Checksummer.h"
@@ -143,9 +142,18 @@ struct bluestore_pextent_t : public AllocExtent {
 
   bluestore_pextent_t() : AllocExtent() {}
   bluestore_pextent_t(uint64_t o, uint64_t l) : AllocExtent(o, l) {}
-  bluestore_pextent_t(AllocExtent &ext) : AllocExtent(ext.offset, ext.length) { }
+  bluestore_pextent_t(const AllocExtent &ext) :
+    AllocExtent(ext.offset, ext.length) { }
 
+<<<<<<< HEAD
   //如果已设置值，则为有效的
+=======
+  bluestore_pextent_t& operator=(const AllocExtent &ext) {
+    offset = ext.offset;
+    length = ext.length;
+    return *this;
+  }
+>>>>>>> upstream/master
   bool is_valid() const {
     return offset != INVALID_OFFSET;
   }
@@ -162,14 +170,19 @@ WRITE_CLASS_DENC(bluestore_pextent_t)
 
 ostream& operator<<(ostream& out, const bluestore_pextent_t& o);
 
+<<<<<<< HEAD
 //这个定义就实现了一个blob对应多个pextent的方式
 typedef mempool::bluestore_meta_other::vector<bluestore_pextent_t> PExtentVector;
+=======
+typedef mempool::bluestore_cache_other::vector<bluestore_pextent_t> PExtentVector;
+>>>>>>> upstream/master
 
 template<>
 struct denc_traits<PExtentVector> {
   static constexpr bool supported = true;
   static constexpr bool bounded = false;
   static constexpr bool featured = false;
+  static constexpr bool need_contiguous = true;
   static void bound_encode(const PExtentVector& v, size_t& p) {
     p += sizeof(uint32_t);
     const auto size = v.size();
@@ -213,11 +226,15 @@ struct bluestore_extent_ref_map_t {
     }
   };
 
+<<<<<<< HEAD
   typedef mempool::bluestore_meta_other::map<uint64_t,record_t> map_t;
   //key是offset,value是指从key指明的offset开始有length字节长的段，这个段
   //这个段被引用的次数是refs次
   //这个数据结构的目的是在clone情况下，在写时，哪些段需要copy，那些可以在原样上修改
   //这个结构比较别脚
+=======
+  typedef mempool::bluestore_cache_other::map<uint64_t,record_t> map_t;
+>>>>>>> upstream/master
   map_t ref_map;
 
   void _check() const;
@@ -233,8 +250,13 @@ struct bluestore_extent_ref_map_t {
 
   //划分共享段
   void get(uint64_t offset, uint32_t len);
+<<<<<<< HEAD
   //释放共享段
   void put(uint64_t offset, uint32_t len, PExtentVector *release);
+=======
+  void put(uint64_t offset, uint32_t len, PExtentVector *release,
+	   bool *maybe_unshared);
+>>>>>>> upstream/master
 
   bool contains(uint64_t offset, uint32_t len) const;
   bool intersects(uint64_t offset, uint32_t len) const;
@@ -370,12 +392,45 @@ struct bluestore_blob_use_tracker_t {
       assert(_num_au <= num_au);
       if (_num_au) {
         num_au = _num_au; // bytes_per_au array is left unmodified
+
       } else {
         clear();
       }
     }
   }
-  
+  void add_tail(uint32_t new_len, uint32_t _au_size) {
+    auto full_size = au_size * (num_au ? num_au : 1);
+    assert(new_len >= full_size);
+    if (new_len == full_size) {
+      return;
+    }
+    if (!num_au) {
+      uint32_t old_total = total_bytes;
+      total_bytes = 0;
+      init(new_len, _au_size);
+      assert(num_au);
+      bytes_per_au[0] = old_total;
+    } else {
+      assert(_au_size == au_size);
+      new_len = ROUND_UP_TO(new_len, au_size);
+      uint32_t _num_au = new_len / au_size;
+      assert(_num_au >= num_au);
+      if (_num_au > num_au) {
+	auto old_bytes = bytes_per_au;
+	auto old_num_au = num_au;
+	num_au = _num_au;
+	allocate();
+	for (size_t i = 0; i < old_num_au; i++) {
+	  bytes_per_au[i] = old_bytes[i];
+	}
+	for (size_t i = old_num_au; i < num_au; i++) {
+	  bytes_per_au[i] = 0;
+	}
+	delete[] old_bytes;
+      }
+    }
+  }
+
   void init(
     uint32_t full_length,
     uint32_t _au_size);
@@ -389,7 +444,7 @@ struct bluestore_blob_use_tracker_t {
   /// return false if there are some references to the blob,
   /// in this case release_units contains pextents
   /// (identified by their offsets relative to the blob start)
-  //  that are not used any more and can be safely deallocated. 
+  ///  that are not used any more and can be safely deallocated.
   bool put(
     uint32_t offset,
     uint32_t len,
@@ -452,7 +507,6 @@ struct bluestore_blob_use_tracker_t {
   static void generate_test_instances(list<bluestore_blob_use_tracker_t*>& o);
 private:
   void allocate();
-  void fall_back_to_per_au(uint32_t _num_au, uint32_t _au_size);
 };
 WRITE_CLASS_DENC(bluestore_blob_use_tracker_t)
 ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
@@ -462,10 +516,20 @@ ostream& operator<<(ostream& out, const bluestore_blob_use_tracker_t& rm);
 //数据本身存在磁盘上，这个结构体仅保存了这个blob在磁盘中的不同段的（偏移量，长度）
 //
 struct bluestore_blob_t {
+private:
+  PExtentVector extents;              ///< raw data position on device
+  uint32_t logical_length = 0;        ///< original length of data stored in the blob
+  uint32_t compressed_length = 0;     ///< compressed length if any
+
+public:
   enum {
+<<<<<<< HEAD
 	//标记为可overwrite，可分割
     FLAG_MUTABLE = 1,         ///< blob can be overwritten or split
 	//标记为已压缩
+=======
+    LEGACY_FLAG_MUTABLE = 1,  ///< [legacy] blob can be overwritten or split
+>>>>>>> upstream/master
     FLAG_COMPRESSED = 2,      ///< blob is compressed
 	//标记为有checksum
     FLAG_CSUM = 4,            ///< blob has checksums
@@ -476,6 +540,7 @@ struct bluestore_blob_t {
   //数字标记转字符串
   static string get_flags_string(unsigned flags);
 
+<<<<<<< HEAD
 
   //占用的物理磁盘范围{（offset,length),(offset,length),。。。}
   //其中offset是用于物理磁盘定位的，非文件本身的offset
@@ -491,6 +556,12 @@ struct bluestore_blob_t {
 
   //标记哪些位置未用（只有16位，故每一位表示blob_len/16字节）
   uint16_t unused = 0;     ///< portion that has never been written to (bitmap)
+=======
+  uint32_t flags = 0;                 ///< FLAG_*
+
+  typedef uint16_t unused_t;
+  unused_t unused = 0;     ///< portion that has never been written to (bitmap)
+>>>>>>> upstream/master
 
   //记录checksum 类型，及checksum块大小
   uint8_t csum_type = Checksummer::CSUM_NONE;      ///< CSUM_*
@@ -501,19 +572,23 @@ struct bluestore_blob_t {
 
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
 
+  const PExtentVector& get_extents() const {
+    return extents;
+  }
+
   DENC_HELPERS;
   //计算编码长度
   void bound_encode(size_t& p, uint64_t struct_v) const {
     assert(struct_v == 1 || struct_v == 2);
     denc(extents, p);
     denc_varint(flags, p);
-    denc_varint_lowz(compressed_length_orig, p);
+    denc_varint_lowz(logical_length, p);
     denc_varint_lowz(compressed_length, p);
     denc(csum_type, p);
     denc(csum_chunk_order, p);
     denc_varint(csum_data.length(), p);
     p += csum_data.length();
-    p += sizeof(unsigned long long);
+    p += sizeof(unused_t);
   }
 
   //进行编码
@@ -522,7 +597,7 @@ struct bluestore_blob_t {
     denc(extents, p);
     denc_varint(flags, p);
     if (is_compressed()) {
-      denc_varint_lowz(compressed_length_orig, p);
+      denc_varint_lowz(logical_length, p);
       denc_varint_lowz(compressed_length, p);
     }
     if (has_csum()) {
@@ -543,8 +618,10 @@ struct bluestore_blob_t {
     denc(extents, p);
     denc_varint(flags, p);
     if (is_compressed()) {
-      denc_varint_lowz(compressed_length_orig, p);
+      denc_varint_lowz(logical_length, p);
       denc_varint_lowz(compressed_length, p);
+    } else {
+      logical_length = get_ondisk_length();
     }
     if (has_csum()) {
       denc(csum_type, p);
@@ -591,13 +668,13 @@ struct bluestore_blob_t {
 
   void set_compressed(uint64_t clen_orig, uint64_t clen) {
     set_flag(FLAG_COMPRESSED);
-    compressed_length_orig = clen_orig;
+    logical_length = clen_orig;
     compressed_length = clen;
   }
 
   //检查是否有易变标记
   bool is_mutable() const {
-    return has_flag(FLAG_MUTABLE);
+    return !is_compressed() && !is_shared();
   }
 
   //标查是否有压缩标记
@@ -634,11 +711,14 @@ struct bluestore_blob_t {
   uint32_t get_compressed_payload_length() const {
     return is_compressed() ? compressed_length : 0;
   }
+<<<<<<< HEAD
   uint32_t get_compressed_payload_original_length() const {
     return is_compressed() ? compressed_length_orig : 0;
   }
 
   //计算x_off在物理上的偏移量，以及可以自此偏移量开始，最多读取多长数据
+=======
+>>>>>>> upstream/master
   uint64_t calc_offset(uint64_t x_off, uint64_t *plen) const {
     auto p = extents.begin();
     assert(p != extents.end());
@@ -656,10 +736,17 @@ struct bluestore_blob_t {
     return p->offset + x_off;
   }
 
+<<<<<<< HEAD
   /// return true if the entire range is allocated (mapped to extents on disk)
   //如果给定段已完成在磁盘上的映射，则返回true,否则false
   bool is_allocated(uint64_t b_off, uint64_t b_len) const {
 	//定位b_off在哪个范围内
+=======
+  // validate whether or not the status of pextents within the given range
+  // meets the requirement(allocated or unallocated).
+  bool _validate_range(uint64_t b_off, uint64_t b_len,
+                       bool require_allocated) const {
+>>>>>>> upstream/master
     auto p = extents.begin();
     assert(p != extents.end());
     while (b_off >= p->length) {
@@ -671,16 +758,29 @@ struct bluestore_blob_t {
     b_len += b_off;
     while (b_len) {
       assert(p != extents.end());
-      if (!p->is_valid()) {
-	return false;
+      if (require_allocated != p->is_valid()) {
+        return false;
       }
+
       if (p->length >= b_len) {
-	return true;
+        return true;
       }
       b_len -= p->length;
       ++p;
     }
     assert(0 == "we should not get here");
+  }
+
+  /// return true if the entire range is allocated
+  /// (mapped to extents on disk)
+  bool is_allocated(uint64_t b_off, uint64_t b_len) const {
+    return _validate_range(b_off, b_len, true);
+  }
+
+  /// return true if the entire range is unallocated
+  /// (not mapped to extents on disk)
+  bool is_unallocated(uint64_t b_off, uint64_t b_len) const {
+    return _validate_range(b_off, b_len, false);
   }
 
   /// return true if the logical range has never been used
@@ -805,12 +905,16 @@ struct bluestore_blob_t {
 
   //逻辑大小（比如磁盘占用大小）
   uint32_t get_logical_length() const {
+<<<<<<< HEAD
     if (is_compressed()) {
     	//压缩模式下，返回原长度
       return compressed_length_orig;
     } else {
       return get_ondisk_length();
     }
+=======
+    return logical_length;
+>>>>>>> upstream/master
   }
 
   //当前类型，checksum值占用多少字节
@@ -884,7 +988,12 @@ struct bluestore_blob_t {
 
   //丢弃掉最后一块物理块
   void prune_tail() {
+<<<<<<< HEAD
 	//先扔掉最后一个范围
+=======
+    const auto &p = extents.back();
+    logical_length -= p.length;
+>>>>>>> upstream/master
     extents.pop_back();
     if (has_csum()) {
       bufferptr t;
@@ -897,7 +1006,28 @@ struct bluestore_blob_t {
 			    get_csum_value_size());
     }
   }
+<<<<<<< HEAD
 
+=======
+  void add_tail(uint32_t new_len) {
+    assert(is_mutable());
+    assert(!has_unused());
+    assert(new_len > logical_length);
+    extents.emplace_back(
+      bluestore_pextent_t(
+        bluestore_pextent_t::INVALID_OFFSET,
+        new_len - logical_length));
+    logical_length = new_len;
+    if (has_csum()) {
+      bufferptr t;
+      t.swap(csum_data);
+      csum_data = buffer::create(
+	get_csum_value_size() * logical_length / get_csum_chunk_size());
+      csum_data.copy_in(0, t.length(), t.c_str());
+      csum_data.zero(t.length(), csum_data.length() - t.length());
+    }
+  }
+>>>>>>> upstream/master
   uint32_t get_release_size(uint32_t min_alloc_size) const {
     if (is_compressed()) {
     	//压缩情况下，返回压缩源大小
@@ -913,6 +1043,21 @@ struct bluestore_blob_t {
     //如果启用checksum以check sum的大于min_alloc_size为准
     return res;
   }
+
+  void split(uint32_t blob_offset, bluestore_blob_t& rb);
+  void allocated(uint32_t b_off, uint32_t length, const AllocExtentVector& allocs);
+  void allocated_test(const bluestore_pextent_t& alloc); // intended for UT only
+
+  /// updates blob's pextents container and return unused pextents eligible
+  /// for release.
+  /// all - indicates that the whole blob to be released.
+  /// logical - specifies set of logical extents within blob's
+  /// to be released
+  /// Returns true if blob has no more valid pextents
+  bool release_extents(
+    bool all,
+    const PExtentVector& logical,
+    PExtentVector* r);
 };
 WRITE_CLASS_DENC_FEATURED(bluestore_blob_t)
 
@@ -952,8 +1097,12 @@ struct bluestore_onode_t {
   uint64_t nid = 0;                    ///< numeric id (locally unique)
   //文件尺寸大小
   uint64_t size = 0;                   ///< object size
+<<<<<<< HEAD
   //属性，对象的attribute
   map<mempool::bluestore_meta_other::string, bufferptr> attrs;        ///< attrs //属性，对象的attribute
+=======
+  map<mempool::bluestore_cache_other::string, bufferptr> attrs;        ///< attrs
+>>>>>>> upstream/master
 
   struct shard_info {
     uint32_t offset = 0;  ///< logical offset for start of shard

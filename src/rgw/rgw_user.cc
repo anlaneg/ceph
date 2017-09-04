@@ -11,6 +11,7 @@
 #include "common/Formatter.h"
 #include "common/ceph_json.h"
 #include "common/RWLock.h"
+#include "common/backport14.h"
 #include "rgw_rados.h"
 #include "rgw_acl.h"
 
@@ -45,8 +46,7 @@ int rgw_user_sync_all_stats(RGWRados *store, const rgw_user& user_id)
 {
   CephContext *cct = store->ctx();
   size_t max_entries = cct->_conf->rgw_list_buckets_max_chunk;
-  bool done;
-  bool is_truncated;
+  bool is_truncated = false;
   string marker;
   int ret;
   RGWObjectCtx obj_ctx(store);
@@ -78,15 +78,55 @@ int rgw_user_sync_all_stats(RGWRados *store, const rgw_user& user_id)
         ldout(cct, 0) << "ERROR: could not sync bucket stats: ret=" << ret << dendl;
         return ret;
       }
+      RGWQuotaInfo bucket_quota;
+      ret = store->check_bucket_shards(bucket_info, bucket_info.bucket, bucket_quota);
+      if (ret < 0) {
+	ldout(cct, 0) << "ERROR in check_bucket_shards: " << cpp_strerror(-ret)<< dendl;
+      }
     }
-    done = (buckets.size() < max_entries);
-  } while (!done);
+  } while (is_truncated);
 
   ret = store->complete_sync_user_stats(user_id);
   if (ret < 0) {
     cerr << "ERROR: failed to complete syncing user stats: ret=" << ret << std::endl;
     return ret;
   }
+
+  return 0;
+}
+
+int rgw_user_get_all_buckets_stats(RGWRados *store, const rgw_user& user_id, map<string, cls_user_bucket_entry>&buckets_usage_map)
+{
+  CephContext *cct = store->ctx();
+  size_t max_entries = cct->_conf->rgw_list_buckets_max_chunk;
+  bool done;
+  bool is_truncated;
+  string marker;
+  int ret;
+
+  do {
+    RGWUserBuckets user_buckets;
+    ret = rgw_read_user_buckets(store, user_id, user_buckets, marker,
+				string(), max_entries, false, &is_truncated);
+    if (ret < 0) {
+      ldout(cct, 0) << "failed to read user buckets: ret=" << ret << dendl;
+      return ret;
+    }
+    map<string, RGWBucketEnt>& buckets = user_buckets.get_buckets();
+    for (const auto& i :  buckets) {
+      marker = i.first;
+
+      const RGWBucketEnt& bucket_ent = i.second;
+      cls_user_bucket_entry entry;
+      ret = store->cls_user_get_bucket_stats(bucket_ent.bucket, entry);
+      if (ret < 0) {
+        ldout(cct, 0) << "ERROR: could not get bucket stats: ret=" << ret << dendl;
+        return ret;
+      }
+      buckets_usage_map.emplace(bucket_ent.bucket.name, entry);
+    }
+    done = (buckets.size() < max_entries);
+  } while (!done);
 
   return 0;
 }
@@ -537,6 +577,18 @@ uint32_t rgw_str_to_perm(const char *str)
     return RGW_PERM_FULL_CONTROL;
 
   return RGW_PERM_INVALID;
+}
+
+int rgw_validate_tenant_name(const string& t)
+{
+  struct tench {
+    static bool is_good(char ch) {
+      return isalnum(ch) || ch == '_';
+    }
+  };
+  std::string::const_iterator it =
+    std::find_if_not(t.begin(), t.end(), tench::is_good);
+  return (it == t.end())? 0: -ERR_INVALID_TENANT_NAME;
 }
 
 static bool validate_access_key(string& key)
@@ -1416,11 +1468,11 @@ int RGWSubUserPool::execute_remove(RGWUserAdminOpState& op_state,
   siter = subuser_map->find(subuser_str);
   if (siter == subuser_map->end()){
     set_err_msg(err_msg, "subuser not found: " + subuser_str);
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
   if (!op_state.has_existing_subuser()) {
     set_err_msg(err_msg, "subuser not found: " + subuser_str);
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
 
   // always purge all associate keys
@@ -1476,7 +1528,7 @@ int RGWSubUserPool::execute_modify(RGWUserAdminOpState& op_state, std::string *e
 
   if (!op_state.has_existing_subuser()) {
     set_err_msg(err_msg, "subuser does not exist");
-    return -EINVAL;
+    return -ERR_NO_SUCH_SUBUSER;
   }
 
   subuser_pair.first = subuser_str;
@@ -1847,6 +1899,13 @@ int RGWUser::check_op(RGWUserAdminOpState& op_state, std::string *err_msg)
     return -EINVAL;
   }
 
+  int ret = rgw_validate_tenant_name(op_id.tenant);
+  if (ret) {
+    set_err_msg(err_msg,
+		"invalid tenant only alphanumeric and _ characters are allowed");
+    return ret;
+  }
+
   //set key type when it not set or set by context
   if ((op_state.get_key_type() < 0) || op_state.key_type_setbycontext) {
     op_state.set_key_type(KEY_TYPE_S3);
@@ -2030,8 +2089,7 @@ int RGWUser::execute_remove(RGWUserAdminOpState& op_state, std::string *err_msg)
     return -ENOENT;
   }
 
-  bool done;
-  bool is_truncated;
+  bool is_truncated = false;
   string marker;
   CephContext *cct = store->ctx();
   size_t max_buckets = cct->_conf->rgw_list_buckets_max_chunk;
@@ -2061,8 +2119,7 @@ int RGWUser::execute_remove(RGWUserAdminOpState& op_state, std::string *err_msg)
       marker = it->first;
     }
 
-    done = (m.size() < max_buckets);
-  } while (!done);
+  } while (is_truncated);
 
   ret = rgw_delete_user(store, user_info, op_state.objv);
   if (ret < 0) {
@@ -2193,8 +2250,7 @@ int RGWUser::execute_modify(RGWUserAdminOpState& op_state, std::string *err_msg)
       return -EINVAL;
     }
 
-    bool done;
-    bool is_truncated;
+    bool is_truncated = false;
     string marker;
     CephContext *cct = store->ctx();
     size_t max_buckets = cct->_conf->rgw_list_buckets_max_chunk;
@@ -2223,8 +2279,7 @@ int RGWUser::execute_modify(RGWUserAdminOpState& op_state, std::string *err_msg)
         return ret;
       }
 
-      done = (m.size() < max_buckets);
-    } while (!done);
+    } while (is_truncated);
   }
   op_state.set_user_info(user_info);
 
@@ -2300,7 +2355,7 @@ int RGWUserAdminOp_User::info(RGWRados *store, RGWUserAdminOpState& op_state,
     return ret;
 
   if (!op_state.has_existing_user())
-    return -ENOENT;
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2368,8 +2423,11 @@ int RGWUserAdminOp_User::modify(RGWRados *store, RGWUserAdminOpState& op_state,
   Formatter *formatter = flusher.get_formatter();
 
   ret = user.modify(op_state, NULL);
-  if (ret < 0)
+  if (ret < 0) {
+    if (ret == -ENOENT)
+      ret = -ERR_NO_SUCH_USER;
     return ret;
+  }
 
   ret = user.info(info, NULL);
   if (ret < 0)
@@ -2395,6 +2453,8 @@ int RGWUserAdminOp_User::remove(RGWRados *store, RGWUserAdminOpState& op_state,
 
   ret = user.remove(op_state, NULL);
 
+  if (ret == -ENOENT)
+    ret = -ERR_NO_SUCH_USER;
   return ret;
 }
 
@@ -2406,6 +2466,9 @@ int RGWUserAdminOp_Subuser::create(RGWRados *store, RGWUserAdminOpState& op_stat
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2433,6 +2496,9 @@ int RGWUserAdminOp_Subuser::modify(RGWRados *store, RGWUserAdminOpState& op_stat
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2462,6 +2528,9 @@ int RGWUserAdminOp_Subuser::remove(RGWRados *store, RGWUserAdminOpState& op_stat
     return ret;
 
 
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
+
   ret = user.subusers.remove(op_state, NULL);
   if (ret < 0)
     return ret;
@@ -2477,6 +2546,9 @@ int RGWUserAdminOp_Key::create(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2512,6 +2584,9 @@ int RGWUserAdminOp_Key::remove(RGWRados *store, RGWUserAdminOpState& op_state,
   if (ret < 0)
     return ret;
 
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
+
 
   ret = user.keys.remove(op_state, NULL);
   if (ret < 0)
@@ -2528,6 +2603,9 @@ int RGWUserAdminOp_Caps::add(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2556,6 +2634,9 @@ int RGWUserAdminOp_Caps::remove(RGWRados *store, RGWUserAdminOpState& op_state,
   int ret = user.init(store, op_state);
   if (ret < 0)
     return ret;
+
+  if (!op_state.has_existing_user())
+    return -ERR_NO_SUCH_USER;
 
   Formatter *formatter = flusher.get_formatter();
 
@@ -2692,13 +2773,19 @@ public:
     pool = store->get_zone_params().user_uid_pool;
   }
 
-  int list_keys_init(RGWRados *store, void **phandle) override
+  int list_keys_init(RGWRados *store, const string& marker, void **phandle) override
   {
-    list_keys_info *info = new list_keys_info;
+    auto info = ceph::make_unique<list_keys_info>();
 
     info->store = store;
 
-    *phandle = (void *)info;
+    int ret = store->list_raw_objects_init(store->get_zone_params().user_uid_pool, marker,
+                                           &info->ctx);
+    if (ret < 0) {
+      return ret;
+    }
+
+    *phandle = (void *)info.release();
 
     return 0;
   }
@@ -2714,8 +2801,8 @@ public:
 
     list<string> unfiltered_keys;
 
-    int ret = store->list_raw_objects(store->get_zone_params().user_uid_pool, no_filter,
-                                      max, info->ctx, unfiltered_keys, truncated);
+    int ret = store->list_raw_objects_next(no_filter, max, info->ctx,
+                                           unfiltered_keys, truncated);
     if (ret < 0 && ret != -ENOENT)
       return ret;		        
     if (ret == -ENOENT) {
@@ -2740,6 +2827,11 @@ public:
   void list_keys_complete(void *handle) override {
     list_keys_info *info = static_cast<list_keys_info *>(handle);
     delete info;
+  }
+
+  string get_marker(void *handle) {
+    list_keys_info *info = static_cast<list_keys_info *>(handle);
+    return info->store->list_raw_objs_get_cursor(info->ctx);
   }
 };
 

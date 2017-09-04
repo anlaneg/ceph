@@ -252,7 +252,7 @@ class Client : public Dispatcher, public md_config_obs_t {
  public:
   using Dispatcher::cct;
 
-  PerfCounters *logger;
+  std::unique_ptr<PerfCounters> logger;
 
   class CommandHook : public AdminSocketHook {
     Client *m_client;
@@ -304,8 +304,10 @@ public:
     return UserPerm(uid, gid);
   }
 protected:
-  MonClient *monclient;
   Messenger *messenger;  
+  MonClient *monclient;
+  Objecter  *objecter;
+
   client_t whoami;
 
   int user_id, group_id;
@@ -339,6 +341,7 @@ protected:
   MetaSession *_open_mds_session(mds_rank_t mds);
   void _close_mds_session(MetaSession *s);
   void _closed_mds_session(MetaSession *s);
+  bool _any_stale_sessions() const;
   void _kick_stale_sessions();
   void handle_client_session(MClientSession *m);
   void send_reconnect(MetaSession *s);
@@ -371,7 +374,7 @@ protected:
 			   int unless,int force=0);
   void encode_dentry_release(Dentry *dn, MetaRequest *req,
 			     mds_rank_t mds, int drop, int unless);
-  mds_rank_t choose_target_mds(MetaRequest *req);
+  mds_rank_t choose_target_mds(MetaRequest *req, Inode** phash_diri=NULL);
   void connect_mds_targets(mds_rank_t mds);
   void send_request(MetaRequest *request, MetaSession *session,
 		    bool drop_cap_releases=false);
@@ -383,9 +386,9 @@ protected:
   bool is_dir_operation(MetaRequest *request);
 
   bool   initialized;
-  bool   authenticated;
   bool   mounted;
   bool   unmounting;
+  bool   blacklisted;
 
   // When an MDS has sent us a REJECT, remember that and don't
   // contact it again.  Remember which inst rejected us, so that
@@ -403,10 +406,9 @@ public:
   void _sync_write_commit(Inode *in);
 
 protected:
-  Filer                 *filer;     
-  ObjectCacher          *objectcacher;
-  Objecter              *objecter;     // (non-blocking) osd interface
-  WritebackHandler      *writeback_handler;
+  std::unique_ptr<Filer>             filer;
+  std::unique_ptr<ObjectCacher>      objectcacher;
+  std::unique_ptr<WritebackHandler>  writeback_handler;
 
   // cache
   ceph::unordered_map<vinodeno_t, Inode*> inode_map;
@@ -443,8 +445,7 @@ protected:
   SnapRealm *get_snap_realm_maybe(inodeno_t r);
   void put_snap_realm(SnapRealm *realm);
   bool adjust_realm_parent(SnapRealm *realm, inodeno_t parent);
-  inodeno_t update_snap_trace(bufferlist& bl, bool must_flush=true);
-  inodeno_t _update_snap_trace(vector<SnapRealmInfo>& trace);
+  void update_snap_trace(bufferlist& bl, SnapRealm **realm_ret, bool must_flush=true);
   void invalidate_snaprealm_and_children(SnapRealm *realm);
 
   Inode *open_snapdir(Inode *diri);
@@ -497,7 +498,6 @@ protected:
   friend class C_Client_CacheInvalidate;  // calls ino_invalidate_cb
   friend class C_Client_DentryInvalidate;  // calls dentry_invalidate_cb
   friend class C_Block_Sync; // Calls block map and protected helpers
-  friend class C_C_Tick; // Asserts on client_lock
   friend class C_Client_RequestInterrupt;
   friend class C_Client_Remount;
   friend void intrusive_ptr_release(Inode *in);
@@ -586,11 +586,18 @@ protected:
 
   void _close_sessions();
 
+  /**
+   * The basic housekeeping parts of init (perf counters, admin socket)
+   * that is independent of how objecters/monclient/messengers are
+   * being set up.
+   */
+  void _finish_init();
+
  public:
   void set_filer_flags(int flags);
   void clear_filer_flags(int flags);
 
-  Client(Messenger *m, MonClient *mc);
+  Client(Messenger *m, MonClient *mc, Objecter *objecter_);
   ~Client() override;
   void tear_down_cache();
 
@@ -601,8 +608,8 @@ protected:
   inodeno_t get_root_ino();
   Inode *get_root();
 
-  int init()  WARN_UNUSED_RESULT;
-  void shutdown();
+  virtual int init();
+  virtual void shutdown();
 
   // messaging
   void handle_mds_map(class MMDSMap *m);
@@ -716,7 +723,11 @@ protected:
 
   bool use_faked_inos() { return _use_faked_inos; }
   vinodeno_t map_faked_ino(ino_t ino);
-
+ 
+  //notify the mds to flush the mdlog
+  void flush_mdlog_sync();
+  void flush_mdlog(MetaSession *session);
+  
   // ----------------------
   // fs ops.
 private:
@@ -737,6 +748,7 @@ private:
 
   // other helpers
   void _fragmap_remove_non_leaves(Inode *in);
+  void _fragmap_remove_stopped_mds(Inode *in, mds_rank_t mds);
 
   void _ll_get(Inode *in);
   int _ll_put(Inode *in, int num);
@@ -943,6 +955,7 @@ public:
 
   // crap
   int chdir(const char *s, std::string &new_cwd, const UserPerm& perms);
+  void _getcwd(std::string& cwd, const UserPerm& perms);
   void getcwd(std::string& cwd, const UserPerm& perms);
 
   // namespace ops
@@ -1088,6 +1101,9 @@ public:
   int get_file_stripe_address(int fd, loff_t offset, vector<entity_addr_t>& address);
   int get_file_extent_osds(int fd, loff_t off, loff_t *len, vector<int>& osds);
   int get_osd_addr(int osd, entity_addr_t& addr);
+  
+  // expose mdsmap
+  int64_t get_default_pool_id();
 
   // expose osdmap
   int get_local_osd();
@@ -1222,6 +1238,21 @@ public:
   const char** get_tracked_conf_keys() const override;
   void handle_conf_change(const struct md_config_t *conf,
 	                          const std::set <std::string> &changed) override;
+};
+
+/**
+ * Specialization of Client that manages its own Objecter instance
+ * and handles init/shutdown of messenger/monclient
+ */
+class StandaloneClient : public Client
+{
+  public:
+  StandaloneClient(Messenger *m, MonClient *mc);
+
+  ~StandaloneClient() override;
+
+  int init() override;
+  void shutdown() override;
 };
 
 #endif

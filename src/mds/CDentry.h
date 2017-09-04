@@ -86,8 +86,10 @@ public:
   static const int STATE_BADREMOTEINO = (1<<3);
   static const int STATE_EVALUATINGSTRAY = (1<<4);
   static const int STATE_PURGINGPINNED =  (1<<5);
+  static const int STATE_BOTTOMLRU =    (1<<6);
   // stray dentry needs notification of releasing reference
   static const int STATE_STRAY =	STATE_NOTIFYREF;
+  static const int MASK_STATE_IMPORT_KEPT = STATE_BOTTOMLRU;
 
   // -- pins --
   static const int PIN_INODEPIN =     1;  // linked inode is pinned
@@ -119,16 +121,6 @@ public:
     version(0), projected_version(0) {
     linkage.remote_ino = ino;
     linkage.remote_d_type = dt;
-  }
-
-  static void *operator new(size_t num_bytes) {
-    void *n = pool.malloc();
-    if (!n)
-      throw std::bad_alloc();
-    return n;
-  }
-  void operator delete(void *p) {
-    pool.free(p);
   }
 
   const char *pin_name(int p) const override {
@@ -168,9 +160,7 @@ public:
     projected.push_back(linkage_t());
     return &projected.back();
   }
-  void push_projected_linkage() {
-    _project_linkage();
-  }
+  void push_projected_linkage();
   void push_projected_linkage(inodeno_t ino, char d_type) {
     linkage_t *p = _project_linkage();
     p->remote_ino = ino;
@@ -301,7 +291,7 @@ public:
     ::decode(replica_map, blp);
 
     // twiddle
-    state = 0;
+    state &= MASK_STATE_IMPORT_KEPT;
     state_set(CDentry::STATE_AUTH);
     if (nstate & STATE_DIRTY)
       _mark_dirty(ls);
@@ -383,16 +373,6 @@ protected:
 
   version_t version;  // dir version when last touched.
   version_t projected_version;  // what it will be when i unlock/commit.
-
-
-private:
-  /*
-   * This class uses a boost::pool to handle allocation. This is *not*
-   * thread-safe, so don't do allocations from multiple threads!
-   *
-   * Alternatively, switch the pool to use a boost::singleton_pool.
-   */
-  static boost::pool<> pool;
 };
 
 ostream& operator<<(ostream& out, const CDentry& dn);

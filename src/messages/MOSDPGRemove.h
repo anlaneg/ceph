@@ -22,10 +22,10 @@
 
 class MOSDPGRemove : public Message {
 
-  static const int HEAD_VERSION = 2;
-  static const int COMPAT_VERSION = 1;
+  static const int HEAD_VERSION = 3;
+  static const int COMPAT_VERSION = 3;
 
-  epoch_t epoch;
+  epoch_t epoch = 0;
 
  public:
   vector<spg_t> pg_list;
@@ -47,34 +47,12 @@ public:
 
   void encode_payload(uint64_t features) override {
     ::encode(epoch, payload);
-
-    vector<pg_t> _pg_list;
-    _pg_list.reserve(pg_list.size());
-    vector<shard_id_t> _shard_list;
-    _shard_list.reserve(pg_list.size());
-    for (vector<spg_t>::iterator i = pg_list.begin(); i != pg_list.end(); ++i) {
-      _pg_list.push_back(i->pgid);
-      _shard_list.push_back(i->shard);
-    }
-    ::encode(_pg_list, payload);
-    ::encode(_shard_list, payload);
+    ::encode(pg_list, payload);
   }
   void decode_payload() override {
     bufferlist::iterator p = payload.begin();
     ::decode(epoch, p);
-    vector<pg_t> _pg_list;
-    ::decode(_pg_list, p);
-
-    vector<shard_id_t> _shard_list(_pg_list.size(), shard_id_t::NO_SHARD);
-    if (header.version >= 2) {
-      _shard_list.clear();
-      ::decode(_shard_list, p);
-    }
-    assert(_shard_list.size() == _pg_list.size());
-    pg_list.reserve(_shard_list.size());
-    for (unsigned i = 0; i < _shard_list.size(); ++i) {
-      pg_list.push_back(spg_t(_pg_list[i], _shard_list[i]));
-    }
+    ::decode(pg_list, p);
   }
   void print(ostream& out) const override {
     out << "osd pg remove(" << "epoch " << epoch << "; ";

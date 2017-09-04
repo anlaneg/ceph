@@ -30,7 +30,7 @@ public:
   SubsystemMap() : m_max_name_len(0) {}
 
   //获取子系统数目
-  int get_num() const {
+  size_t get_num() const {
     return m_subsys.size();
   }
 

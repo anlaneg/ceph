@@ -413,6 +413,7 @@ int FileJournal::open(uint64_t fs_op_seq)
   dout(2) << "open " << fn << " fsid " << fsid << " fs_op_seq " << fs_op_seq << dendl;
 
   uint64_t next_seq = fs_op_seq + 1;
+  uint64_t seq = -1;
 
   int err = _open(false);
   if (err)
@@ -425,7 +426,7 @@ int FileJournal::open(uint64_t fs_op_seq)
   // read header?
   err = read_header(&header);
   if (err < 0)
-    return err;
+    goto out;
 
   // static zeroed buffer for alignment padding
   delete [] zero_buf;
@@ -438,32 +439,38 @@ int FileJournal::open(uint64_t fs_op_seq)
   if (header.fsid != fsid) {
     derr << "FileJournal::open: ondisk fsid " << header.fsid << " doesn't match expected " << fsid
          << ", invalid (someone else's?) journal" << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
   if (header.max_size > max_size) {
     dout(2) << "open journal size " << header.max_size << " > current " << max_size << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
   if (header.block_size != block_size) {
     dout(2) << "open journal block size " << header.block_size << " != current " << block_size << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
   if (header.max_size % header.block_size) {
     dout(2) << "open journal max size " << header.max_size
 	    << " not a multiple of block size " << header.block_size << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
   if (header.alignment != block_size && directio) {
     dout(0) << "open journal alignment " << header.alignment << " does not match block size "
 	    << block_size << " (required for direct_io journal mode)" << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
   if ((header.alignment % CEPH_DIRECTIO_ALIGNMENT) && directio) {
     dout(0) << "open journal alignment " << header.alignment
 	    << " is not multiple of minimum directio alignment "
 	    << CEPH_DIRECTIO_ALIGNMENT << " (required for direct_io journal mode)"
 	    << dendl;
-    return -EINVAL;
+    err = -EINVAL;
+    goto out;
   }
 
   // looks like a valid header.
@@ -473,16 +480,7 @@ int FileJournal::open(uint64_t fs_op_seq)
 
   // find next entry
   read_pos = header.start;
-  uint64_t seq = header.start_seq;
-
-  // last_committed_seq is 1 before the start of the journal or
-  // 0 if the start is 0
-  last_committed_seq = seq > 0 ? seq - 1 : seq;
-  if (last_committed_seq < fs_op_seq) {
-    dout(2) << "open advancing committed_seq " << last_committed_seq
-	    << " to fs op_seq " << fs_op_seq << dendl;
-    last_committed_seq = fs_op_seq;
-  }
+  seq = header.start_seq;
 
   while (1) {
     bufferlist bl;
@@ -508,6 +506,9 @@ int FileJournal::open(uint64_t fs_op_seq)
   }
 
   return 0;
+out:
+  close();
+  return err;
 }
 
 void FileJournal::_close(int fd) const
@@ -851,6 +852,8 @@ int FileJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_
 	  assert(aio_write_queue_bytes >= bytes);
 	  aio_write_queue_bytes -= bytes;
 	}
+#else
+	(void)bytes;
 #endif
       }
       if (r == -ENOSPC) {
@@ -875,7 +878,7 @@ int FileJournal::prepare_multi_write(bufferlist& bl, uint64_t& orig_ops, uint64_
           }
           print_header(header);
         }
-        
+
         return -ENOSPC;  // hrm, full on first op
       }
       if (eleft) {
@@ -946,9 +949,17 @@ void FileJournal::queue_completions_thru(uint64_t seq)
       logger->tinc(l_filestore_journal_latency, lat);
     }
     if (next.finish)
+<<<<<<< HEAD
       finisher->queue(next.finish);// ---- 将seq对应在的finish加入到finisher对应的对列中.
     if (next.tracked_op)
+=======
+      finisher->queue(next.finish);
+    if (next.tracked_op) {
+>>>>>>> upstream/master
       next.tracked_op->mark_event("journaled_completion_queued");
+      next.tracked_op->journal_trace.event("queued completion");
+      next.tracked_op->journal_trace.keyval("completed through", seq);
+    }
     items.erase(it++);
   }
   batch_unpop_completions(items);//将不相关的放回来.
@@ -995,8 +1006,10 @@ int FileJournal::prepare_single_write(write_item &next_write, bufferlist& bl, of
   footerptr.copy_in(post_offset + magic2_offset, sizeof(uint64_t), (char *)&magic2);
 
   bl.claim_append(ebl);
-  if (next_write.tracked_op)
+  if (next_write.tracked_op) {
     next_write.tracked_op->mark_event("write_thread_in_journal_buffer");
+    next_write.tracked_op->journal_trace.event("prepare_single_write");
+  }
 
   journalq.push_back(pair<uint64_t,off64_t>(seq, queue_pos));
   writing_seq = seq;
@@ -1432,7 +1445,10 @@ int FileJournal::write_aio_bl(off64_t& pos, bufferlist& bl, uint64_t seq)
     aio_lock.Unlock();
 
     iocb *piocb = &aio.iocb;
-    int attempts = 10;
+
+    // 2^16 * 125us = ~8 seconds, so max sleep is ~16 seconds
+    int attempts = 16;
+    int delay = 125;
     do {
       int r = io_submit(aio_ctx, 1, &piocb);
       dout(20) << "write_aio_bl io_submit return value: " << r << dendl;
@@ -1440,7 +1456,8 @@ int FileJournal::write_aio_bl(off64_t& pos, bufferlist& bl, uint64_t seq)
 	derr << "io_submit to " << aio.off << "~" << cur_len
 	     << " got " << cpp_strerror(r) << dendl;
 	if (r == -EAGAIN && attempts-- > 0) {
-	  usleep(500);
+	  usleep(delay);
+	  delay *= 2;
 	  continue;
 	}
 	check_align(pos, tbl);
@@ -1633,6 +1650,14 @@ void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
     logger->inc(l_filestore_journal_bytes, e.length());
   }
 
+  if (osd_op) {
+    osd_op->mark_event("commit_queued_for_journal_write");
+    if (osd_op->store_trace) {
+      osd_op->journal_trace.init("journal", &trace_endpoint, &osd_op->store_trace);
+      osd_op->journal_trace.event("submit_entry");
+      osd_op->journal_trace.keyval("seq", seq);
+    }
+  }
   {
     Mutex::Locker l1(writeq_lock);
 #ifdef HAVE_LIBAIO
@@ -1650,8 +1675,15 @@ void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
       completion_item(
 	seq, oncommit, ceph_clock_now(), osd_op));//构造完成回调加入completions
     if (writeq.empty())
+<<<<<<< HEAD
       writeq_cond.Signal();//如果writeq中之间没有,需要考虑读者是否已等待唤醒
     writeq.push_back(write_item(seq, e, orig_len, osd_op));//将入将要写的的数据.
+=======
+      writeq_cond.Signal();
+    writeq.push_back(write_item(seq, e, orig_len, osd_op));
+    if (osd_op)
+      osd_op->journal_trace.keyval("queue depth", writeq.size());
+>>>>>>> upstream/master
   }
 }
 

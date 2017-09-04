@@ -12,54 +12,27 @@
  * 
  */
 
-
-
 #ifndef CEPH_MDS_H
 #define CEPH_MDS_H
 
-#include "mdstypes.h"
-
-#include "msg/Dispatcher.h"
-#include "include/CompatSet.h"
-#include "include/types.h"
-#include "include/Context.h"
-#include "common/DecayCounter.h"
-#include "common/perf_counters.h"
-#include "common/Mutex.h"
-#include "common/Cond.h"
-#include "common/Timer.h"
 #include "common/LogClient.h"
-#include "common/TrackedOp.h"
-#include "common/Finisher.h"
-#include "common/cmdparse.h"
+#include "common/Mutex.h"
+#include "common/Timer.h"
+#include "include/Context.h"
+#include "include/types.h"
 #include "mgr/MgrClient.h"
-
-#include "MDSRank.h"
-#include "MDSMap.h"
+#include "msg/Dispatcher.h"
 
 #include "Beacon.h"
+#include "MDSMap.h"
+#include "MDSRank.h"
 
-
-#define CEPH_MDS_PROTOCOL    28 /* cluster internal */
-
-class MonClient;
-
-class Server;
-class Locker;
-class MDCache;
-class MDBalancer;
-class MDSInternalContextBase;
-
-class Messenger;
-class Message;
-
-class SnapServer;
-class SnapClient;
-
-class MDSTableServer;
-class MDSTableClient;
+#define CEPH_MDS_PROTOCOL    30 /* cluster internal */
 
 class AuthAuthorizeHandlerRegistry;
+class Message;
+class Messenger;
+class MonClient;
 
 class MDSDaemon : public Dispatcher, public md_config_obs_t {
  public:
@@ -114,8 +87,7 @@ class MDSDaemon : public Dispatcher, public md_config_obs_t {
 				  const std::set <std::string> &changed) override;
  protected:
   // tick and other timer fun
-  class C_MDS_Tick;
-  C_MDS_Tick *tick_event;
+  Context *tick_event = nullptr;
   void     reset_tick();
 
   void wait_for_omap_osds();
@@ -170,7 +142,6 @@ protected:
   friend class C_MDS_Send_Command_Reply;
   static void send_command_reply(MCommand *m, MDSRank* mds_rank, int r,
 				 bufferlist outbl, const std::string& outs);
-  int _handle_command_legacy(std::vector<std::string> args);
   int _handle_command(
       const cmdmap_t &cmdmap,
       MCommand *m,
@@ -178,7 +149,6 @@ protected:
       std::string *outs,
       Context **run_later,
       bool *need_reply);
-  void handle_command(class MMonCommand *m);
   void handle_command(class MCommand *m);
   void handle_mds_map(class MMDSMap *m);
   void _handle_mds_map(MDSMap *oldmap);

@@ -25,12 +25,12 @@
 struct MOSDScrub : public Message {
 
   static const int HEAD_VERSION = 2;
-  static const int COMPAT_VERSION = 1;
+  static const int COMPAT_VERSION = 2;
 
   uuid_d fsid;
   vector<pg_t> scrub_pgs;
-  bool repair;
-  bool deep;
+  bool repair = false;
+  bool deep = false;
 
   MOSDScrub() : Message(MSG_OSD_SCRUB, HEAD_VERSION, COMPAT_VERSION) {}
   MOSDScrub(const uuid_d& f, bool r, bool d) :
@@ -68,11 +68,7 @@ public:
     ::decode(fsid, p);
     ::decode(scrub_pgs, p);
     ::decode(repair, p);
-    if (header.version >= 2) {
-      ::decode(deep, p);
-    } else {
-      deep = false;
-    }
+    ::decode(deep, p);
   }
 };
 

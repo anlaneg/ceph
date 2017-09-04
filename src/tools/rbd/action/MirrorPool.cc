@@ -4,7 +4,6 @@
 #include "tools/rbd/ArgumentTypes.h"
 #include "tools/rbd/Shell.h"
 #include "tools/rbd/Utils.h"
-#include "include/atomic.h"
 #include "include/Context.h"
 #include "include/stringify.h"
 #include "include/rbd/librbd.hpp"
@@ -20,6 +19,8 @@
 #include <boost/program_options.hpp>
 #include <boost/regex.hpp>
 #include "include/assert.h"
+
+#include <atomic>
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd
@@ -319,7 +320,7 @@ private:
 class PromoteImageRequest : public ImageRequestBase {
 public:
   PromoteImageRequest(librados::IoCtx &io_ctx, OrderedThrottle &throttle,
-                      const std::string &image_name, atomic_t *counter,
+                      const std::string &image_name, std::atomic<unsigned> *counter,
                       bool force)
     : ImageRequestBase(io_ctx, throttle, image_name), m_counter(counter),
       m_force(force) {
@@ -334,11 +335,11 @@ protected:
                       librbd::RBD::AioCompletion *aio_comp) override {
     image.aio_mirror_image_promote(m_force, aio_comp);
   }
+
   void handle_execute_action(int r) override {
     if (r >= 0) {
-      m_counter->inc();
+      (*m_counter)++;
     }
-    ImageRequestBase::handle_execute_action(r);
   }
 
   std::string get_action_type() const override {
@@ -346,14 +347,14 @@ protected:
   }
 
 private:
-  atomic_t *m_counter;
+  std::atomic<unsigned> *m_counter = nullptr;
   bool m_force;
 };
 
 class DemoteImageRequest : public ImageRequestBase {
 public:
   DemoteImageRequest(librados::IoCtx &io_ctx, OrderedThrottle &throttle,
-                     const std::string &image_name, atomic_t *counter)
+                     const std::string &image_name, std::atomic<unsigned> *counter)
     : ImageRequestBase(io_ctx, throttle, image_name), m_counter(counter) {
   }
 
@@ -368,7 +369,7 @@ protected:
   }
   void handle_execute_action(int r) override {
     if (r >= 0) {
-      m_counter->inc();
+      (*m_counter)++;
     }
     ImageRequestBase::handle_execute_action(r);
   }
@@ -378,7 +379,7 @@ protected:
   }
 
 private:
-  atomic_t *m_counter;
+  std::atomic<unsigned> *m_counter = nullptr;
 };
 
 class StatusImageRequest : public ImageRequestBase {
@@ -458,7 +459,8 @@ public:
       m_factory(std::bind(ImageRequestAllocator<RequestT>(),
                           std::ref(m_io_ctx), std::ref(m_throttle),
                           std::placeholders::_1, std::forward<Args>(args)...)),
-      m_throttle(g_conf->rbd_concurrent_management_ops, true) {
+      m_throttle(g_conf->get_val<int64_t>("rbd_concurrent_management_ops"),
+                 true) {
   }
 
   int execute() {
@@ -466,7 +468,7 @@ public:
     // mirror image operations
     librbd::RBD rbd;
     int r = rbd.list(m_io_ctx, m_image_names);
-    if (r < 0) {
+    if (r < 0 && r != -ENOENT) {
       std::cerr << "rbd: failed to list images within pool" << std::endl;
       return r;
     }
@@ -527,10 +529,25 @@ int execute_peer_add(const po::variables_map &vm) {
   if (r < 0) {
     return r;
   }
+  
+  librbd::RBD rbd;
+  rbd_mirror_mode_t mirror_mode;
+  r = rbd.mirror_mode_get(io_ctx, &mirror_mode);
+  if (r < 0) {
+    std::cerr << "rbd: failed to retrieve mirror mode: " 
+              << cpp_strerror(r) << std::endl;
+    return r;
+  }
+  
+  if (mirror_mode == RBD_MIRROR_MODE_DISABLED) {
+    std::cerr << "rbd: failed to add mirror peer: "
+              << "mirroring must be enabled on the pool " 
+              << pool_name << std::endl;
+    return -EINVAL;
+  }
 
   // TODO: temporary restriction to prevent adding multiple peers
   // until rbd-mirror daemon can properly handle the scenario
-  librbd::RBD rbd;
   std::vector<librbd::mirror_peer_t> mirror_peers;
   r = rbd.mirror_peer_list(io_ctx, &mirror_peers);
   if (r < 0) {
@@ -915,12 +932,12 @@ int execute_promote(const po::variables_map &vm) {
     return r;
   }
 
-  atomic_t counter;
+  std::atomic<unsigned> counter = { 0 };
   ImageRequestGenerator<PromoteImageRequest> generator(io_ctx, &counter,
                                                        vm["force"].as<bool>());
   r = generator.execute();
 
-  std::cout << "Promoted " << counter.read() << " mirrored images" << std::endl;
+  std::cout << "Promoted " << counter.load() << " mirrored images" << std::endl;
   return r;
 }
 
@@ -940,11 +957,11 @@ int execute_demote(const po::variables_map &vm) {
     return r;
   }
 
-  atomic_t counter;
+  std::atomic<unsigned> counter { 0 };
   ImageRequestGenerator<DemoteImageRequest> generator(io_ctx, &counter);
   r = generator.execute();
 
-  std::cout << "Demoted " << counter.read() << " mirrored images" << std::endl;
+  std::cout << "Demoted " << counter.load() << " mirrored images" << std::endl;
   return r;
 }
 

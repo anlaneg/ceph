@@ -4,18 +4,17 @@
 #ifndef CEPH_THROTTLE_H
 #define CEPH_THROTTLE_H
 
-#include "Mutex.h"
-#include "Cond.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <iostream>
 #include <list>
 #include <map>
-#include <iostream>
-#include <condition_variable>
-#include <chrono>
-#include "include/atomic.h"
-#include "include/Context.h"
+#include <mutex>
 
-class CephContext;
-class PerfCounters;
+#include "include/Context.h"
+#include "common/convenience.h"
+#include "common/perf_counters.h"
 
 /**
  * @class Throttle
@@ -30,10 +29,10 @@ class PerfCounters;
 class Throttle {
   CephContext *cct;
   const std::string name;
-  PerfCounters *logger;
-  ceph::atomic_t count, max;//占用值，最大可用值（max为0时表示禁用）
-  Mutex lock;
-  list<Cond*> cond;//条件变更列表，在各自变量上阻塞
+  PerfCountersRef logger;
+  std::atomic<unsigned> count = { 0 }, max = { 0 };//占用值，最大可用值（max为0时表示禁用）
+  std::mutex lock;
+  std::list<std::condition_variable> conds;//条件变更列表，在各自变量上阻塞
   const bool use_perf;
 
 public:
@@ -45,8 +44,8 @@ private:
 
   //检查c是否需要等待才能满足
   bool _should_wait(int64_t c) const {
-    int64_t m = max.read();
-    int64_t cur = count.read();
+    int64_t m = max;
+    int64_t cur = count;
     return
       m && //m不能为0，0时表示禁用本功能
 	  //普通情况，c一定小于m
@@ -55,7 +54,7 @@ private:
        (c >= m && cur > m));     // except for large c
   }
 
-  bool _wait(int64_t c);
+  bool _wait(int64_t c, UNIQUE_LOCK_T(lock)& l);
 
 public:
   /**
@@ -63,20 +62,20 @@ public:
    * @returns the number of taken slots
    */
   int64_t get_current() const {
-    return count.read();
+    return count;
   }
 
   /**
    * get the max number of slots
    * @returns the max number of slots
    */
-  int64_t get_max() const { return max.read(); }
+  int64_t get_max() const { return max; }
 
   /**
    * return true if past midpoint
    */
   bool past_midpoint() const {
-    return count.read() >= max.read() / 2;
+    return count >= max / 2;
   }
 
   /**
@@ -127,7 +126,7 @@ public:
     return _should_wait(c);
   }
   void reset_max(int64_t m) {
-    Mutex::Locker l(lock);
+    auto l = ceph::uniquely_lock(lock);
     _reset_max(m);
   }
 };
@@ -161,7 +160,7 @@ public:
 class BackoffThrottle {
   CephContext *cct;
   const std::string name;
-  PerfCounters *logger;
+  PerfCountersRef logger;
 
   std::mutex lock;
   using locker = std::unique_lock<std::mutex>;
@@ -259,12 +258,13 @@ public:
   bool pending_error() const;
   int wait_for_ret();
 private:
-  mutable Mutex m_lock;
-  Cond m_cond;
+  mutable std::mutex m_lock;
+  std::condition_variable m_cond;
   uint64_t m_max;
-  uint64_t m_current;
-  int m_ret;
+  uint64_t m_current = 0;
+  int m_ret = 0;
   bool m_ignore_enoent;
+  uint32_t waiters = 0;
 };
 
 
@@ -294,6 +294,7 @@ private:
 class OrderedThrottle {
 public:
   OrderedThrottle(uint64_t max, bool ignore_enoent);
+  ~OrderedThrottle();
 
   C_OrderedThrottle *start_op(Context *on_finish);
   void end_op(int r);
@@ -319,19 +320,20 @@ private:
 
   typedef std::map<uint64_t, Result> TidResult;
 
-  mutable Mutex m_lock;
-  Cond m_cond;
+  mutable std::mutex m_lock;
+  std::condition_variable m_cond;
   uint64_t m_max;
-  uint64_t m_current;
-  int m_ret_val;
+  uint64_t m_current = 0;
+  int m_ret_val = 0;
   bool m_ignore_enoent;
 
-  uint64_t m_next_tid;
-  uint64_t m_complete_tid;
+  uint64_t m_next_tid = 0;
+  uint64_t m_complete_tid = 0;
 
   TidResult m_tid_result;
 
-  void complete_pending_ops();
+  void complete_pending_ops(UNIQUE_LOCK_T(m_lock)& l);
+  uint32_t waiters = 0;
 };
 
 #endif

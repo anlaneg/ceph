@@ -148,7 +148,7 @@ public:
   interval_set<inodeno_t> pending_prealloc_inos; // journaling prealloc, will be added to prealloc_inos
 
   void notify_cap_release(size_t n_caps);
-  void notify_recall_sent(int const new_limit);
+  void notify_recall_sent(const int new_limit);
   void clear_recalled_at();
 
   inodeno_t next_ino() const {
@@ -665,6 +665,8 @@ public:
   void save_if_dirty(const std::set<entity_name_t> &tgt_sessions,
                      MDSGatherBuilder *gather_bld);
 };
+
+std::ostream& operator<<(std::ostream &out, const Session &s);
 
 
 #endif

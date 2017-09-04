@@ -1,8 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <mutex>
 #include <random>
-#include "include/Spinlock.h"
+
+#include <netdb.h>
+
 #include "include/types.h"
 #include "Messenger.h"
 
@@ -15,7 +18,7 @@
 //创建client用的消息投递对象
 Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
 {
-  std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf->ms_type : cct->_conf->ms_public_type;
+  std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf->get_val<std::string>("ms_type") : cct->_conf->ms_public_type;
   uint64_t nonce = 0;
   get_random_bytes((char*)&nonce, sizeof(nonce));
   return Messenger::create(cct, public_msgr_type, entity_name_t::CLIENT(),
@@ -32,9 +35,10 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
 	//这个分支非常的没有用。
     static std::random_device seed;
     static std::default_random_engine random_engine(seed());
-    static Spinlock random_lock;
 
-    std::lock_guard<Spinlock> lock(random_lock);
+    static std::mutex random_lock;
+    std::lock_guard<std::mutex> lock(random_lock);
+
     std::uniform_int_distribution<> dis(0, 1);
     r = dis(random_engine);
   }
@@ -52,6 +56,27 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
 #endif
   lderr(cct) << "unrecognized ms_type '" << type << "'" << dendl;
   return nullptr;
+}
+
+void Messenger::set_endpoint_addr(const entity_addr_t& a,
+                                  const entity_name_t &name)
+{
+  size_t hostlen;
+  if (a.get_family() == AF_INET)
+    hostlen = sizeof(struct sockaddr_in);
+  else if (a.get_family() == AF_INET6)
+    hostlen = sizeof(struct sockaddr_in6);
+  else
+    hostlen = 0;
+
+  if (hostlen) {
+    char buf[NI_MAXHOST] = { 0 };
+    getnameinfo(a.get_sockaddr(), hostlen, buf, sizeof(buf),
+                NULL, 0, NI_NUMERICHOST);
+
+    trace_endpoint.copy_ip(buf);
+  }
+  trace_endpoint.set_port(a.get_port());
 }
 
 /*

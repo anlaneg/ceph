@@ -13,6 +13,10 @@ Get Usage
 
 Request bandwidth usage information.
 
+Note: this feature is disabled by default, can be enabled by setting ``rgw
+enable usage log = true`` in the appropriate section of ceph.conf. For changes
+in ceph.conf to take effect, radosgw process restart is needed.
+
 :caps: usage=read
 
 Syntax
@@ -54,7 +58,7 @@ Request Parameters
 
 :Description: Specifies whether data entries should be returned.
 :Type: Boolean
-:Example: True [False]
+:Example: True [True]
 :Required: No
 
 
@@ -62,7 +66,7 @@ Request Parameters
 
 :Description: Specifies whether data summary should be returned.
 :Type: Boolean
-:Example: True [False]
+:Example: True [True]
 :Required: No
 
 
@@ -163,6 +167,10 @@ Trim Usage
 Remove usage information. With no dates specified, removes all usage
 information.
 
+Note: this feature is disabled by default, can be enabled by setting ``rgw
+enable usage log = true`` in the appropriate section of ceph.conf. For changes
+in ceph.conf to take effect, radosgw process restart is needed.
+
 :caps: usage=write
 
 Syntax
@@ -215,8 +223,7 @@ TBD.
 Get User Info
 =============
 
-Get user information. If no user is specified returns the list of all users along with suspension
-information.
+Get user information.
 
 :caps: users=read
 
@@ -314,6 +321,11 @@ generated key is added to the keyring without replacing an existing key pair.
 If ``access-key`` is specified and refers to an existing key owned by the user
 then it will be modified.
 
+.. versionadded:: Luminous
+
+A ``tenant`` may either be specified as a part of uid or as an additional
+request param.
+
 :caps: users=write
 
 Syntax
@@ -335,6 +347,9 @@ Request Parameters
 :Type: String
 :Example: ``foo_user``
 :Required: Yes
+
+A tenant name may also specified as a part of ``uid``, by following the syntax
+``tenant$user``, refer to `Multitenancy`_ for more details.
 
 ``display-name``
 
@@ -401,6 +416,15 @@ Request Parameters
 :Example: False [False]
 :Required: No
 
+.. versionadded:: Jewel
+
+``tenant``
+
+:Description: the Tenant under which a user is a part of.
+:Type: string
+:Example: tenant1
+:Required: No
+
 Response Entities
 ~~~~~~~~~~~~~~~~~
 
@@ -410,6 +434,11 @@ If successful, the response contains the user information.
 
 :Description: A container for the user data information.
 :Type: Container
+
+``tenant``
+:Description: The tenant which user is a part of
+:Type: String
+:Parent: ``user``
 
 ``user_id``
 
@@ -738,9 +767,8 @@ Create Subuser
 ==============
 
 Create a new subuser (primarily useful for clients using the Swift API).
-Note that either ``gen-subuser`` or ``subuser`` is required for a valid
-request. Note that in general for a subuser to be useful, it must be
-granted permissions by specifying ``access``. As with user creation if
+Note that in general for a subuser to be useful, it must be granted
+permissions by specifying ``access``. As with user creation if
 ``subuser`` is specified without ``secret``, then a secret key will
 be automatically generated.
 
@@ -771,7 +799,7 @@ Request Parameters
 :Description: Specify the subuser ID to be created.
 :Type: String
 :Example: ``sub_foo``
-:Required: No
+:Required: Yes
 
 ``secret-key``
 
@@ -1696,7 +1724,7 @@ Request Parameters
 
 :Description: The administrative capability to add to the user.
 :Type: String
-:Example: ``usage=read, write``
+:Example: ``usage=read,write;user=write``
 :Required: Yes
 
 Response Entities
@@ -1736,12 +1764,11 @@ Example Request
 
 ::
 
-	PUT /{admin}/user?caps&format=json HTTP/1.1
+	PUT /{admin}/user?caps&user-caps=usage=read,write;user=write&format=json HTTP/1.1
 	Host: {fqdn}
 	Content-Type: text/plain
 	Authorization: {your-authorization-token}
 
-	usage=read
 
 
 Remove A User Capability
@@ -1813,11 +1840,6 @@ Special Error Responses
 :Description: User does not possess specified capability.
 :Code: 404 Not Found
 
-Special Error Responses
-~~~~~~~~~~~~~~~~~~~~~~~
-
-None.
-
 
 Quotas
 ======
@@ -1837,19 +1859,20 @@ Valid parameters for quotas include:
 
 - **Maximum Objects:** The ``max-objects`` setting allows you to specify
   the maximum number of objects. A negative value disables this setting.
-  
+
 - **Maximum Size:** The ``max-size`` option allows you to specify a quota
   for the maximum number of bytes. A negative value disables this setting.
-  
-- **Quota Scope:** The ``quota-scope`` option sets the scope for the quota.
+
+- **Quota Type:** The ``quota-type`` option sets the scope for the quota.
   The options are ``bucket`` and ``user``.
 
-
+- **Enable/Disable Quota:** The ``enabled`` option specifies whether the
+  quota should be enabled. The value should be either 'True' or 'False'.
 
 Get User Quota
 ~~~~~~~~~~~~~~
 
-To get a quota, the user must have ``users`` capability set with ``read`` 
+To get a quota, the user must have ``users`` capability set with ``read``
 permission. ::
 
 	GET /admin/user?quota&uid=<uid>&quota-type=user
@@ -1858,7 +1881,7 @@ permission. ::
 Set User Quota
 ~~~~~~~~~~~~~~
 
-To set a quota, the user must have ``users`` capability set with ``write`` 
+To set a quota, the user must have ``users`` capability set with ``write``
 permission. ::
 
 	PUT /admin/user?quota&uid=<uid>&quota-type=user
@@ -1871,7 +1894,7 @@ as encoded in the corresponding read operation.
 Get Bucket Quota
 ~~~~~~~~~~~~~~~~
 
-To get a quota, the user must have ``users`` capability set with ``read`` 
+To get a quota, the user must have ``users`` capability set with ``read``
 permission. ::
 
 	GET /admin/user?quota&uid=<uid>&quota-type=bucket
@@ -1880,7 +1903,7 @@ permission. ::
 Set Bucket Quota
 ~~~~~~~~~~~~~~~~
 
-To set a quota, the user must have ``users`` capability set with ``write`` 
+To set a quota, the user must have ``users`` capability set with ``write``
 permission. ::
 
 	PUT /admin/user?quota&uid=<uid>&quota-type=bucket
@@ -1923,3 +1946,4 @@ Standard Error Responses
 
 .. _Admin Guide: ../admin
 .. _Quota Management: ../admin#quota-management
+.. _Multitenancy: ./multitenancy

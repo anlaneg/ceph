@@ -20,15 +20,15 @@
 
 class MOSDPGLog : public Message {
 
-  static const int HEAD_VERSION = 4;
-  static const int COMPAT_VERSION = 2;
+  static const int HEAD_VERSION = 5;
+  static const int COMPAT_VERSION = 5;
 
-  epoch_t epoch;
+  epoch_t epoch = 0;
   /// query_epoch is the epoch of the query being responded to, or
   /// the current epoch if this is not being sent in response to a
   /// query. This allows the recipient to disregard responses to old
   /// queries.
-  epoch_t query_epoch;
+  epoch_t query_epoch = 0;
 
 public:
   shard_id_t to;
@@ -36,7 +36,7 @@ public:
   pg_info_t info;
   pg_log_t log;
   pg_missing_t missing;
-  pg_interval_map_t past_intervals;
+  PastIntervals past_intervals;
 
   epoch_t get_epoch() const { return epoch; }
   spg_t get_pgid() const { return spg_t(info.pgid.pgid, to); }
@@ -71,6 +71,7 @@ public:
     // swapped out by OSD code.
     out << "pg_log(" << info.pgid << " epoch " << epoch
 	<< " log " << log
+	<< " pi " << past_intervals
 	<< " query_epoch " << query_epoch << ")";
   }
 
@@ -90,19 +91,10 @@ public:
     ::decode(info, p);
     log.decode(p, info.pgid.pool());
     missing.decode(p, info.pgid.pool());
-    if (header.version >= 2) {
-      ::decode(query_epoch, p);
-    }
-    if (header.version >= 3) {
-      ::decode(past_intervals, p);
-    }
-    if (header.version >= 4) {
-      ::decode(to, p);
-      ::decode(from, p);
-    } else {
-      to = shard_id_t::NO_SHARD;
-      from = shard_id_t::NO_SHARD;
-    }
+    ::decode(query_epoch, p);
+    ::decode(past_intervals, p);
+    ::decode(to, p);
+    ::decode(from, p);
   }
 };
 

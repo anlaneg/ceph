@@ -633,43 +633,57 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
 
   char buf[PATH_MAX];
   char *t = buf;
-  char *end = t + sizeof(buf);
+  const char *end = t + sizeof(buf);
   if (oid.hobj.snap == CEPH_NOSNAP)
     t += snprintf(t, end - t, "head");
   else if (oid.hobj.snap == CEPH_SNAPDIR)
     t += snprintf(t, end - t, "snapdir");
   else
+<<<<<<< HEAD
     t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);//放入snap
   snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());//放入对象hash
   full_name += string(buf);
+=======
+    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);
+  t += snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());
+  full_name.append(buf, t);
+>>>>>>> upstream/master
   full_name.append("_");
 
   append_escaped(oid.hobj.nspace.begin(), oid.hobj.nspace.end(), &full_name);//放入ns
   full_name.append("_");
 
   t = buf;
-  end = t + sizeof(buf);
   if (oid.hobj.pool == -1)
     t += snprintf(t, end - t, "none");
   else
+<<<<<<< HEAD
     t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);//放入pool
   full_name += string(buf);
+=======
+    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);
+  full_name.append(buf, t);
+>>>>>>> upstream/master
 
   if (oid.generation != ghobject_t::NO_GEN ||
       oid.shard_id != shard_id_t::NO_SHARD) {
     full_name.append("_");
 
     t = buf;
-    end = t + sizeof(buf);
-    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.generation);
-    full_name += string(buf);
+    t += snprintf(t, end - buf, "%llx", (long long unsigned)oid.generation);
+    full_name.append(buf, t);
 
     full_name.append("_");//放入gen
 
     t = buf;
+<<<<<<< HEAD
     end = t + sizeof(buf);
     t += snprintf(t, end - t, "%x", (int)oid.shard_id);
     full_name += string(buf);//放入shard
+=======
+    t += snprintf(t, end - buf, "%x", (int)oid.shard_id);
+    full_name.append(buf, t);
+>>>>>>> upstream/master
   }
 
   return full_name;
@@ -1051,7 +1065,7 @@ int LFNIndex::lfn_parse_object_name_keyless(const string &long_name, ghobject_t 
   out->hobj.pool = pool;
   if (!r) return -EINVAL;
   string temp = lfn_generate_object_name(*out);
-  return r ? 0 : -EINVAL;
+  return 0;
 }
 
 //对begin到end之间的字符串进行转义,对于"\\","\s","\n","\u"分别换议为"\","/","n","_"

@@ -98,7 +98,17 @@ class KernelMount(CephFSMount):
         if force:
             cmd.append('-f')
 
-        self.client_remote.run(args=cmd)
+        try:
+            self.client_remote.run(args=cmd)
+        except Exception as e:
+            self.client_remote.run(args=[
+                'sudo',
+                run.Raw('PATH=/usr/sbin:$PATH'),
+                'lsof',
+                run.Raw(';'),
+                'ps', 'auxf',
+            ])
+            raise e
 
         rproc = self.client_remote.run(
             args=[
@@ -251,10 +261,7 @@ class KernelMount(CephFSMount):
         """
         osd_map = self._read_debug_file("osdmap")
         lines = osd_map.split("\n")
-        epoch = int(lines[0].split()[1])
+        first_line_tokens = lines[0].split()
+        epoch, barrier = int(first_line_tokens[1]), int(first_line_tokens[3])
 
-        mds_sessions = self._read_debug_file("mds_sessions")
-        lines = mds_sessions.split("\n")
-        epoch_barrier = int(lines[2].split()[1].strip('"'))
-
-        return epoch, epoch_barrier
+        return epoch, barrier

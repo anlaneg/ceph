@@ -50,7 +50,7 @@ To add a keyring for an OSD, execute the following::
 
 To list the cluster's keys and their capabilities, execute the following::
 
-	ceph auth list
+	ceph auth ls
 
 
 Placement Group Subsystem
@@ -141,15 +141,11 @@ Remove an existing bucket from the CRUSH map. ::
 
 Move an existing bucket from one position in the hierarchy to another.  ::
 
-   ceph osd crush move {id} {loc1} [{loc2} ...]
+	ceph osd crush move {id} {loc1} [{loc2} ...]
 
 Set the weight of the item given by ``{name}`` to ``{weight}``. ::
 
 	ceph osd crush reweight {name} {weight}
-
-Create a cluster snapshot. ::
-
-	ceph osd cluster_snap {name}
 
 Mark an OSD as lost. This may result in permanent data loss. Use with caution. ::
 
@@ -189,10 +185,6 @@ Mark ``{osd-num}`` in the distribution (i.e. allocated data). ::
 
 	ceph osd in {osd-num}
 
-List classes that are loaded in the ceph cluster. ::
-
-	ceph class list
-
 Set or clear the pause flags in the OSD map. If set, no IO requests
 will be sent to any OSD. Clearing the flags via unpause results in
 resending pending requests. ::
@@ -207,7 +199,7 @@ sets an override weight on the OSD. This value is in the range 0 to 1,
 and forces CRUSH to re-place (1-weight) of the data that would
 otherwise live on this drive. It does not change the weights assigned
 to the buckets above the OSD in the crush map, and is a corrective
-measure in case the normal CRUSH distribution isn't working out quite
+measure in case the normal CRUSH distribution is not working out quite
 right. For instance, if one of your OSDs is at 90% and the others are
 at 50%, you could reduce this weight to try and compensate for it. ::
 
@@ -222,7 +214,7 @@ threshold it will use that percentage instead. ::
 
 Describes what reweight-by-utilization would do. ::
 
-    ceph osd test-reweight-by-utilization
+	ceph osd test-reweight-by-utilization
 
 Adds/removes the address to/from the blacklist. When adding an address,
 you can specify how long it should be blacklisted in seconds; otherwise,
@@ -279,14 +271,14 @@ Sends a repair command to OSD.N. To send the command to all OSDs, use ``*``. ::
 
 	ceph osd repair N
 
-Runs a simple throughput benchmark against OSD.N, writing ``NUMBER_OF_OBJECTS``
+Runs a simple throughput benchmark against OSD.N, writing ``TOTAL_DATA_BYTES``
 in write requests of ``BYTES_PER_WRITE`` each. By default, the test
 writes 1 GB in total in 4-MB increments.
 The benchmark is non-destructive and will not overwrite existing live
 OSD data, but might temporarily affect the performance of clients
 concurrently accessing the OSD. ::
 
-	ceph tell osd.N bench [NUMER_OF_OBJECTS] [BYTES_PER_WRITE]
+	ceph tell osd.N bench [TOTAL_DATA_BYTES] [BYTES_PER_WRITE]
 
 
 MDS Subsystem

@@ -40,7 +40,7 @@ int create_image_full_pp(librbd::RBD &rbd, librados::IoCtx &ioctx,
       stripe_unit = (1ull << (*order-1));
     }
 
-    printf("creating image with stripe unit: %ld, stripe count: %ld\n",
+    printf("creating image with stripe unit: %" PRIu64 ", stripe count: %" PRIu64 "\n",
            stripe_unit, IMAGE_STRIPE_COUNT);
     return rbd.create3(ioctx, name.c_str(), size, features, order, stripe_unit,
                        IMAGE_STRIPE_COUNT);
@@ -108,6 +108,13 @@ int create_image_data_pool(librados::Rados &rados, std::string &data_pool, bool 
     *created = (r == 0);
     return 0;
   }
+
+  librados::IoCtx ioctx;
+  r = rados.ioctx_create(pool.c_str(), ioctx);
+  if (r < 0) {
+    return r;
+  }
+  ioctx.application_enable("rbd", true);
 
   return r;
 }

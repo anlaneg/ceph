@@ -133,6 +133,8 @@ static int parse_map_options(char *options)
         return -EINVAL;
     } else if (!strcmp(this_char, "lock_on_read")) {
       put_map_option("lock_on_read", this_char);
+    } else if (!strcmp(this_char, "exclusive")) {
+      put_map_option("exclusive", this_char);
     } else {
       std::cerr << "rbd: unknown map option '" << this_char << "'" << std::endl;
       return -EINVAL;
@@ -227,7 +229,7 @@ static void print_error_description(const char *poolname, const char *imgname,
   if (maperrno == -ENOENT)
     goto done;
 
-  r = utils::init_and_open_image(poolname, imgname, snapname,
+  r = utils::init_and_open_image(poolname, imgname, "", snapname,
 				 true, &rados, &ioctx, &image);
   if (r < 0)
     goto done;
@@ -257,8 +259,10 @@ static void print_error_description(const char *poolname, const char *imgname,
       } else {
         std::cout << "You can disable features unsupported by the kernel "
                   << "with \"rbd feature disable ";
-        if (poolname != at::DEFAULT_POOL_NAME)
+
+        if (poolname != utils::get_default_pool_name()) {
           std::cout << poolname << "/";
+        }
         std::cout << imgname;
       }
     } else {
@@ -285,9 +289,10 @@ static int do_kernel_map(const char *poolname, const char *imgname,
 {
 #if defined(WITH_KRBD)
   struct krbd_ctx *krbd;
-  std::ostringstream oss;
+  std::ostringstream oss, mapped_info;
   char *devnode;
   int r;
+  bool img_mapped;
 
   r = krbd_create_from_context(g_ceph_context, &krbd);
   if (r < 0)
@@ -306,6 +311,15 @@ static int do_kernel_map(const char *poolname, const char *imgname,
       oss << it->second;
       ++it;
     }
+  }
+
+  r = krbd_is_image_mapped(krbd, poolname, imgname, snapname,
+			   mapped_info, img_mapped);
+  if (r < 0) {
+    std::cerr << "rbd: warning: can't get image map infomation: "
+	      << cpp_strerror(r) << std::endl;
+  } else if (img_mapped) {
+    std::cerr << "rbd: warning: " << mapped_info.str() << std::endl;
   }
 
   r = krbd_map(krbd, poolname, imgname, snapname, oss.str().c_str(), &devnode);
@@ -385,7 +399,8 @@ void get_map_arguments(po::options_description *positional,
                                      at::ARGUMENT_MODIFIER_NONE);
   options->add_options()
     ("options,o", po::value<std::string>(), "map options")
-    ("read-only", po::bool_switch(), "map read-only");
+    ("read-only", po::bool_switch(), "map read-only")
+    ("exclusive", po::bool_switch(), "disable automatic exclusive lock transitions");
 }
 
 int execute_map(const po::variables_map &vm) {
@@ -404,9 +419,13 @@ int execute_map(const po::variables_map &vm) {
   if (vm["read-only"].as<bool>()) {
     put_map_option("rw", "ro");
   }
+  if (vm["exclusive"].as<bool>()) {
+    put_map_option("exclusive", "exclusive");
+  }
 
   // parse default options first so they can be overwritten by cli options
-  char *default_map_options = strdup(g_conf->rbd_default_map_options.c_str());
+  char *default_map_options = strdup(g_conf->get_val<std::string>(
+    "rbd_default_map_options").c_str());
   BOOST_SCOPE_EXIT( (default_map_options) ) {
     free(default_map_options);
   } BOOST_SCOPE_EXIT_END;
@@ -503,7 +522,7 @@ int execute_unmap(const po::variables_map &vm) {
   return 0;
 }
 
-Shell::SwitchArguments switched_arguments({"read-only"});
+Shell::SwitchArguments switched_arguments({"read-only", "exclusive"});
 Shell::Action action_show(
   {"showmapped"}, {}, "Show the rbd images mapped by the kernel.", "",
   &get_show_arguments, &execute_show);

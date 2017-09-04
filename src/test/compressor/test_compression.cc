@@ -106,7 +106,7 @@ TEST_P(CompressorTest, big_round_trip_repeated)
 
 TEST_P(CompressorTest, big_round_trip_randomish)
 {
-  unsigned len = 1048576 * 100;//269;
+  unsigned len = 1048576 * 10;//269;
   bufferlist orig;
   const char *alphabet = "abcdefghijklmnopqrstuvwxyz";
   if (false) {
@@ -243,7 +243,7 @@ void test_compress(CompressorRef compressor, size_t size)
   }
   bufferlist in;
   in.append(data, size);
-  for (size_t t = 0; t < 100000; t++) {
+  for (size_t t = 0; t < 10000; t++) {
     bufferlist out;
     int res = compressor->compress(in, out);
     EXPECT_EQ(res, 0);
@@ -260,7 +260,7 @@ void test_decompress(CompressorRef compressor, size_t size)
   in.append(data, size);
   int res = compressor->compress(in, out);
   EXPECT_EQ(res, 0);
-  for (size_t t = 0; t < 100000; t++) {
+  for (size_t t = 0; t < 10000; t++) {
     bufferlist out_dec;
     int res = compressor->decompress(out, out_dec);
     EXPECT_EQ(res, 0);
@@ -322,16 +322,27 @@ INSTANTIATE_TEST_CASE_P(
   Compressor,
   CompressorTest,
   ::testing::Values(
+#ifdef HAVE_LZ4
+    "lz4",
+#endif
+#ifdef __x86_64__
     "zlib/isal",
+#endif
     "zlib/noisal",
     "snappy",
     "zstd"));
+
+#ifdef __x86_64__
 
 TEST(ZlibCompressor, zlib_isal_compatibility)
 {
   g_conf->set_val("compressor_zlib_isal", "true");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef isal = Compressor::create(g_ceph_context, "zlib");
+  if (!isal) {
+    // skip the test if the plugin is not ready
+    return;
+  }
   g_conf->set_val("compressor_zlib_isal", "false");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef zlib = Compressor::create(g_ceph_context, "zlib");
@@ -363,6 +374,7 @@ TEST(ZlibCompressor, zlib_isal_compatibility)
   exp.append(test);
   EXPECT_TRUE(exp.contents_equal(after));
 }
+#endif
 
 TEST(CompressionPlugin, all)
 {
@@ -386,16 +398,22 @@ TEST(CompressionPlugin, all)
   }
 }
 
+#ifdef __x86_64__
+
 TEST(ZlibCompressor, isal_compress_zlib_decompress_random)
 {
   g_conf->set_val("compressor_zlib_isal", "true");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef isal = Compressor::create(g_ceph_context, "zlib");
+  if (!isal) {
+    // skip the test if the plugin is not ready
+    return;
+  }
   g_conf->set_val("compressor_zlib_isal", "false");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef zlib = Compressor::create(g_ceph_context, "zlib");
 
-  for (int cnt=0; cnt<1000; cnt++)
+  for (int cnt=0; cnt<100; cnt++)
   {
     srand(cnt + 1000);
     int log2 = (rand()%18) + 1;
@@ -423,11 +441,15 @@ TEST(ZlibCompressor, isal_compress_zlib_decompress_walk)
   g_conf->set_val("compressor_zlib_isal", "true");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef isal = Compressor::create(g_ceph_context, "zlib");
+  if (!isal) {
+    // skip the test if the plugin is not ready
+    return;
+  }
   g_conf->set_val("compressor_zlib_isal", "false");
   g_ceph_context->_conf->apply_changes(NULL);
   CompressorRef zlib = Compressor::create(g_ceph_context, "zlib");
 
-  for (int cnt=0; cnt<1000; cnt++)
+  for (int cnt=0; cnt<100; cnt++)
   {
     srand(cnt + 1000);
     int log2 = (rand()%18) + 1;
@@ -452,3 +474,5 @@ TEST(ZlibCompressor, isal_compress_zlib_decompress_walk)
     EXPECT_TRUE(exp.contents_equal(after));
   }
 }
+
+#endif	// __x86_64__
