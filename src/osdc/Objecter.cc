@@ -387,12 +387,8 @@ void Objecter::init()
 
   cct->_conf->add_observer(this);
 
-<<<<<<< HEAD
   //标记已初始化
-  initialized.set(1);
-=======
   initialized = true;
->>>>>>> upstream/master
 }
 
 /*
@@ -3291,13 +3287,10 @@ void Objecter::_send_op(Op *op, MOSDOp *m)
 
   m->set_tid(op->tid);
 
-<<<<<<< HEAD
-  //对外发送消息
-=======
   if (op->trace.valid()) {
     m->trace.init("op msg", nullptr, &op->trace);
   }
->>>>>>> upstream/master
+  //对外发送消息
   op->session->con->send_message(m);
 }
 

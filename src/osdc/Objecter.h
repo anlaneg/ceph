@@ -1207,11 +1207,7 @@ public:
   using Dispatcher::cct;
   std::multimap<string,string> crush_location;
 
-<<<<<<< HEAD
-  atomic_t initialized;//标记是否已初始化
-=======
-  std::atomic<bool> initialized{false};
->>>>>>> upstream/master
+  std::atomic<bool> initialized{false};//标记是否已初始化
 
 private:
   std::atomic<uint64_t> last_tid{0};

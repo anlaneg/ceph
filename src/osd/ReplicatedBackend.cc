@@ -127,12 +127,8 @@ void ReplicatedBackend::run_recovery_op(
   delete h;
 }
 
-<<<<<<< HEAD
 //针对pull,构造请求,针对push构造响应.(如果主上有,优先从主上拿,主上没有从别的上面拿)
-void ReplicatedBackend::recover_object(
-=======
 int ReplicatedBackend::recover_object(
->>>>>>> upstream/master
   const hobject_t &hoid,
   eversion_t v,
   ObjectContextRef head,
@@ -196,12 +192,8 @@ bool ReplicatedBackend::can_handle_while_inactive(OpRequestRef op)
   }
 }
 
-<<<<<<< HEAD
 //幅本形式的处理消息
-bool ReplicatedBackend::handle_message(
-=======
 bool ReplicatedBackend::_handle_message(
->>>>>>> upstream/master
   OpRequestRef op
   )
 {
@@ -220,20 +212,12 @@ bool ReplicatedBackend::_handle_message(
     return true;
 
   case MSG_OSD_REPOP: {
-<<<<<<< HEAD
-    sub_op_modify(op);//幅本将在这里处理完成
-=======
-    do_repop(op);
->>>>>>> upstream/master
+    do_repop(op);//幅本将在这里处理完成
     return true;
   }
 
   case MSG_OSD_REPOPREPLY: {
-<<<<<<< HEAD
-    sub_op_modify_reply(op);//幅本发送过来的响应消息
-=======
-    do_repop_reply(op);
->>>>>>> upstream/master
+    do_repop_reply(op);//幅本发送过来的响应消息
     return true;
   }
 
@@ -648,12 +632,8 @@ void ReplicatedBackend::op_commit(
   }
 }
 
-<<<<<<< HEAD
 //osd_repopreply消息处理
-void ReplicatedBackend::sub_op_modify_reply(OpRequestRef op)
-=======
 void ReplicatedBackend::do_repop_reply(OpRequestRef op)
->>>>>>> upstream/master
 {
   static_cast<MOSDRepOpReply*>(op->get_nonconst_req())->finish_decode();
   const MOSDRepOpReply *r = static_cast<const MOSDRepOpReply *>(op->get_req());
@@ -1100,25 +1080,17 @@ void ReplicatedBackend::issue_op(
       op_t,
       peer,
       pinfo);
-<<<<<<< HEAD
-
-    //前面构造了消息,现在把消息发给它(peer.osd)
-=======
     if (op->op)
       wr->trace.init("replicated op", nullptr, &op->op->pg_trace);
->>>>>>> upstream/master
+    //前面构造了消息,现在把消息发给它(peer.osd)
     get_parent()->send_message_osd_cluster(
       peer.osd, wr, get_osdmap()->get_epoch());
   }
 }
 
 // sub op modify
-<<<<<<< HEAD
 //幅本操作入口
-void ReplicatedBackend::sub_op_modify(OpRequestRef op)
-=======
 void ReplicatedBackend::do_repop(OpRequestRef op)
->>>>>>> upstream/master
 {
   static_cast<MOSDRepOp*>(op->get_nonconst_req())->finish_decode();
   const MOSDRepOp *m = static_cast<const MOSDRepOp *>(op->get_req());
@@ -1215,34 +1187,8 @@ void ReplicatedBackend::repop_applied(RepModifyRef rm)
   dout(10) << __func__ << " on " << rm << " op "
 	   << *rm->op->get_req() << dendl;
   const Message *m = rm->op->get_req();
-<<<<<<< HEAD
-
-  Message *ack = NULL;
-  eversion_t version;
-
-  if (m->get_type() == MSG_OSD_SUBOP) {
-    // doesn't have CLIENT SUBOP feature ,use Subop
-    const MOSDSubOp *req = static_cast<const MOSDSubOp*>(m);
-    version = req->version;
-    if (!rm->committed)
-      ack = new MOSDSubOpReply(
-	req, parent->whoami_shard(),
-	0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
-  } else if (m->get_type() == MSG_OSD_REPOP) {
-	  //幅本操作
-    const MOSDRepOp *req = static_cast<const MOSDRepOp*>(m);
-    version = req->version;
-    if (!rm->committed)
-      ack = new MOSDRepOpReply(
-	static_cast<const MOSDRepOp*>(m), parent->whoami_shard(),
-	0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
-  } else {
-    ceph_abort();
-  }
-=======
   const MOSDRepOp *req = static_cast<const MOSDRepOp*>(m);
   eversion_t version = req->version;
->>>>>>> upstream/master
 
   // send ack to acker only if we haven't sent a commit already
   if (!rm->committed) {
@@ -1272,32 +1218,7 @@ void ReplicatedBackend::repop_commit(RepModifyRef rm)
 	   << dendl;
   assert(get_osdmap()->is_up(rm->ackerosd));
 
-<<<<<<< HEAD
-  const Message *m = rm->op->get_req();
-  Message *commit = NULL;
-  if (m->get_type() == MSG_OSD_SUBOP) {
-    // doesn't have CLIENT SUBOP feature ,use Subop
-    MOSDSubOpReply  *reply = new MOSDSubOpReply(
-      static_cast<const MOSDSubOp*>(m),
-      get_parent()->whoami_shard(),
-      0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ONDISK);
-    reply->set_last_complete_ondisk(rm->last_complete);
-    commit = reply;
-  } else if (m->get_type() == MSG_OSD_REPOP) {
-	  //如果是幅本操作消息,则向那个谁回应opReply
-    MOSDRepOpReply *reply = new MOSDRepOpReply(
-      static_cast<const MOSDRepOp*>(m),
-      get_parent()->whoami_shard(),
-      0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ONDISK);
-    reply->set_last_complete_ondisk(rm->last_complete);
-    commit = reply;
-  }
-  else {
-    ceph_abort();
-  }
-=======
   get_parent()->update_last_complete_ondisk(rm->last_complete);
->>>>>>> upstream/master
 
   MOSDRepOpReply *reply = new MOSDRepOpReply(
     m,
@@ -2064,14 +1985,10 @@ int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
       return -EINVAL;
     }
 
-<<<<<<< HEAD
-    if (oi.version != recovery_info.version) {//本地对象版本与请求的版本不一致.
-=======
     // If requestor didn't know the version, use ours
     if (v == eversion_t()) {
       v = oi.version;
     } else if (oi.version != v) {
->>>>>>> upstream/master
       get_parent()->clog_error() << get_info().pgid << " push "
 				 << recovery_info.soid << " v "
 				 << recovery_info.version
@@ -2391,14 +2308,7 @@ int ReplicatedBackend::start_pushes(
     map<pg_shard_t, pg_missing_t>::const_iterator j =
       get_parent()->get_shard_missing().find(peer);//找peer的missing表项
     assert(j != get_parent()->get_shard_missing().end());
-<<<<<<< HEAD
     if (j->second.is_missing(soid)) {//如果peer j 也缺少此对象
-      ++pushes;
-      h->pushes[peer].push_back(PushOp());//定义pushes
-      prep_push_to_replica(obc, soid, peer,
-			   &(h->pushes[peer].back()), h->cache_dont_need);//需要从本地读取并加入pushes
-=======
-    if (j->second.is_missing(soid)) {
       shards.push_back(j);
     }
   }
@@ -2420,7 +2330,6 @@ int ReplicatedBackend::start_pushes(
 	if (p == peer) break;
       }
       return r;
->>>>>>> upstream/master
     }
   }
   return shards.size();
