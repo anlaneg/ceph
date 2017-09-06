@@ -2077,28 +2077,18 @@ void FileStore::_do_op(OpSequencer *osr, ThreadPool::TPHandle &handle)
     int orig = cct->_conf->filestore_inject_stall;
     dout(5) << __FUNC__ << ": filestore_inject_stall " << orig << ", sleeping" << dendl;
     sleep(orig);
-<<<<<<< HEAD
     cct->_conf->set_val("filestore_inject_stall", "0");//这里清空了(为什么?)
-    dout(5) << "_do_op done stalling" << dendl;
-=======
-    cct->_conf->set_val("filestore_inject_stall", "0");
     dout(5) << __FUNC__ << ": done stalling" << dendl;
->>>>>>> upstream/master
   }
 
   osr->apply_lock.Lock();
   Op *o = osr->peek_queue();
   o->trace.event("op_apply_start");
   apply_manager.op_apply_start(o->op);
-<<<<<<< HEAD
-  dout(5) << "_do_op " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << " start" << dendl;
-  int r = _do_transactions(o->tls, o->op, &handle);//落盘
-=======
   dout(5) << __FUNC__ << ": " << o << " seq " << o->op << " " << *osr << "/" << osr->parent << " start" << dendl;
   o->trace.event("_do_transactions start");
-  int r = _do_transactions(o->tls, o->op, &handle);
+  int r = _do_transactions(o->tls, o->op, &handle);//落盘
   o->trace.event("op_apply_finish");
->>>>>>> upstream/master
   apply_manager.op_apply_finish(o->op);
   dout(10) << __FUNC__ << ": " << o << " seq " << o->op << " r = " << r
 	   << ", finisher " << o->onreadable << " " << o->onreadable_sync << dendl;
@@ -2301,12 +2291,8 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
   int r = do_transactions(tls, op);
 
   if (r >= 0) {
-<<<<<<< HEAD
-    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);//op为操作序号(一会确认),osd_op是什么?
-=======
     trace.event("journal started");
-    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);
->>>>>>> upstream/master
+    _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);//op为操作序号(一会确认),osd_op是什么?
   } else {
     delete ondisk;
   }
@@ -2864,11 +2850,7 @@ void FileStore::_do_transaction(
         const coll_t &cid = i.get_cid(op->cid);
         tracepoint(objectstore, mkcoll_enter, osr_name);
         if (_check_replay_guard(cid, spos) > 0)
-<<<<<<< HEAD
-          r = _create_collection(cid, spos);//创建collection
-=======
-          r = _create_collection(cid, op->split_bits, spos);
->>>>>>> upstream/master
+          r = _create_collection(cid, op->split_bits, spos);//创建collection
         tracepoint(objectstore, mkcoll_exit, r);
       }
       break;
@@ -3995,25 +3977,16 @@ void FileStore::sync_entry()
 
     utime_t startwait = ceph_clock_now();
     if (!force_sync) {
-<<<<<<< HEAD
-      dout(20) << "sync_entry waiting for max_interval " << max_interval << dendl;
-      //如果不是强制同步,则等待至少max_interval秒钟
-=======
       dout(20) << __FUNC__ << ":  waiting for max_interval " << max_interval << dendl;
->>>>>>> upstream/master
+      //如果不是强制同步,则等待至少max_interval秒钟
       sync_cond.WaitInterval(lock, max_interval);
     } else {
       dout(20) << __FUNC__ << ": not waiting, force_sync set" << dendl;
     }
 
     if (force_sync) {
-<<<<<<< HEAD
-      dout(20) << "sync_entry force_sync set" << dendl;
-      force_sync = false;//还原强制设置标记
-=======
       dout(20) << __FUNC__ << ": force_sync set" << dendl;
-      force_sync = false;
->>>>>>> upstream/master
+      force_sync = false;//还原强制设置标记
     } else if (stop) {
       dout(20) << __FUNC__ << ": stop set" << dendl;
       break;
@@ -4090,13 +4063,8 @@ void FileStore::sync_entry()
 	  }
 	  dout(20) << " done waiting for checkpoint " << cid << " to complete" << dendl;
 	}
-<<<<<<< HEAD
-      } else
-      {
-    //已经拿到cp,可以解锁,容许其它进程写了.
-=======
       } else {
->>>>>>> upstream/master
+        //已经拿到cp,可以解锁,容许其它进程写了.
 	apply_manager.commit_started();
 	op_tp.unpause();
 
@@ -5645,25 +5613,14 @@ int FileStore::_split_collection(const coll_t& cid,
 {
   int r;
   {
-<<<<<<< HEAD
-    dout(15) << __func__ << " " << cid << " bits: " << bits << dendl;
-    if (!collection_exists(cid)) {//cid必须存在
-      dout(2) << __func__ << ": " << cid << " DNE" << dendl;
-      assert(replaying);
-      return 0;
-    }
-    if (!collection_exists(dest)) {//dest必须存在
-      dout(2) << __func__ << ": " << dest << " DNE" << dendl;
-=======
     dout(15) << __FUNC__ << ": " << cid << " bits: " << bits << dendl;
-    if (!collection_exists(cid)) {
+    if (!collection_exists(cid)) {//cid必须存在
       dout(2) << __FUNC__ << ": " << cid << " DNE" << dendl;
       assert(replaying);
       return 0;
     }
-    if (!collection_exists(dest)) {
+    if (!collection_exists(dest)) {//dest必须存在
       dout(2) << __FUNC__ << ": " << dest << " DNE" << dendl;
->>>>>>> upstream/master
       assert(replaying);
       return 0;
     }

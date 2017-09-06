@@ -1660,18 +1660,12 @@ void PrimaryLogPG::do_request(
     op->mark_delayed("waiting_for_map not empty");
     return;
   }
-<<<<<<< HEAD
 
   //如果请求方的osdmap版本比我们的大，则我们必须在更新osdmap版本号后
   //才能执行op,故加入等待map队列
-  if (op_must_wait_for_map(get_osdmap()->get_epoch(), op)) {
-    dout(20) << __func__ << " queue on waiting_for_map "
-	     << op->get_source() << dendl;
-=======
   if (!have_same_or_newer_map(op->min_epoch)) {
     dout(20) << __func__ << " min " << op->min_epoch
 	     << ", queue on waiting_for_map " << op->get_source() << dendl;
->>>>>>> upstream/master
     waiting_for_map[op->get_source()].push_back(op);
     op->mark_delayed("op must wait for map");
     return;
@@ -1778,17 +1772,6 @@ void PrimaryLogPG::do_request(
     }
     break;
 
-<<<<<<< HEAD
-  case MSG_OSD_SUBOP:
-    do_sub_op(op);//处理复本操作
-    break;
-
-  case MSG_OSD_SUBOPREPLY:
-    do_sub_op_reply(op);
-    break;
-
-=======
->>>>>>> upstream/master
   case MSG_OSD_PG_SCAN:
     do_scan(op, handle);
     break;
@@ -1797,9 +1780,6 @@ void PrimaryLogPG::do_request(
     do_backfill(op);
     break;
 
-<<<<<<< HEAD
-  case MSG_OSD_REP_SCRUB://主发给从的清洗消息
-=======
   case MSG_OSD_PG_BACKFILL_REMOVE:
     do_backfill_remove(op);
     break;
@@ -1826,7 +1806,6 @@ void PrimaryLogPG::do_request(
     break;
 
   case MSG_OSD_REP_SCRUB:
->>>>>>> upstream/master
     replica_scrub(op, handle);
     break;
 
@@ -1947,14 +1926,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     }
   }
 
-<<<<<<< HEAD
-  //如果有pg自身的操作,则做pg操作
-  if (op->includes_pg_op()) {
-    return do_pg_op(op);//做pg操作(内部信息的显示工作)
-  }
-
-=======
->>>>>>> upstream/master
   if (!op_has_sufficient_caps(op)) {
     osd->reply_op_error(op, -EPERM);
     return;
@@ -2020,28 +1991,19 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
   // bypass all full checks anyway.  If this op isn't write or
   // read-ordered, we skip.
   // FIXME: we exclude mds writes for now.
-<<<<<<< HEAD
-  if (write_ordered && !( m->get_source().is_mds() || m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
-      info.history.last_epoch_marked_full > m->get_map_epoch()) {//检查Pg是否为满，当Pg为满 时，osdmap会下发标记，此状态会记录入last_epoch_marked_full
-=======
   if (write_ordered && !(m->get_source().is_mds() ||
 			 m->has_flag(CEPH_OSD_FLAG_FULL_TRY) ||
 			 m->has_flag(CEPH_OSD_FLAG_FULL_FORCE)) &&
-      info.history.last_epoch_marked_full > m->get_map_epoch()) {
->>>>>>> upstream/master
+      info.history.last_epoch_marked_full > m->get_map_epoch()) {//检查Pg是否为满，当Pg为满 时，osdmap会下发标记，此状态会记录入last_epoch_marked_full
     dout(10) << __func__ << " discarding op sent before full " << m << " "
 	     << *m << dendl;
     return;
   }
-<<<<<<< HEAD
-  if (!(m->get_source().is_mds()) && osd->check_failsafe_full() && write_ordered) {//检查osd状 态
-=======
   // mds should have stopped writing before this point.
   // We can't allow OSD to become non-startable even if mds
   // could be writing as part of file removals.
   ostringstream ss;
   if (write_ordered && osd->check_failsafe_full(ss) && !m->has_flag(CEPH_OSD_FLAG_FULL_TRY)) {
->>>>>>> upstream/master
     dout(10) << __func__ << " fail-safe full check failed, dropping request"
              << ss.str()
 	     << dendl;
@@ -2255,9 +2217,6 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       return;
   }
 
-<<<<<<< HEAD
-  //缓存处理(如果此对象不需要缓存处理，则返回false,否则由缓存直接处理。)
-=======
   if (obc.get() && obc->obs.exists && obc->obs.oi.has_manifest()) {
     if (maybe_handle_manifest(op,
 			       write_ordered,
@@ -2265,7 +2224,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
     return;
   }
 
->>>>>>> upstream/master
+  //缓存处理(如果此对象不需要缓存处理，则返回false,否则由缓存直接处理。)
   if (maybe_handle_cache(op,
 			 write_ordered,//写有 序
 			 obc,
@@ -2602,11 +2561,7 @@ PrimaryLogPG::cache_result_t PrimaryLogPG::maybe_handle_cache_detail(
 
     if (op->may_write() || op->may_cache()) {
       if (can_proxy_write) {
-<<<<<<< HEAD
-        do_proxy_write(op, missing_oid);//代理写
-=======
-        do_proxy_write(op);
->>>>>>> upstream/master
+        do_proxy_write(op);//代理写
       } else {
 	// promote if can't proxy the write
 	promote_object(obc, missing_oid, oloc, op, promote_obc);//提升后写
@@ -2825,21 +2780,11 @@ struct C_ProxyRead : public Context {
   }
 };
 
-<<<<<<< HEAD
-void PrimaryLogPG::do_proxy_read(OpRequestRef op)//代理读(本身并不缓存结果）
-=======
-void PrimaryLogPG::do_proxy_read(OpRequestRef op, ObjectContextRef obc)
->>>>>>> upstream/master
+void PrimaryLogPG::do_proxy_read(OpRequestRef op, ObjectContextRef obc)//代理读(本身并不缓存结果）
 {
   // NOTE: non-const here because the ProxyReadOp needs mutable refs to
   // stash the result in the request's OSDOp vector
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
-<<<<<<< HEAD
-  object_locator_t oloc(m->get_object_locator());
-  oloc.pool = pool.info.tier_of; //变更pool
-
-  const hobject_t& soid = m->get_hobj();
-=======
   object_locator_t oloc;
   hobject_t soid;
   /* extensible tier */
@@ -2857,9 +2802,8 @@ void PrimaryLogPG::do_proxy_read(OpRequestRef op, ObjectContextRef obc)
   /* proxy */
     soid = m->get_hobj();
     oloc = object_locator_t(m->get_object_locator());
-    oloc.pool = pool.info.tier_of;
+    oloc.pool = pool.info.tier_of;//变更pool
   }
->>>>>>> upstream/master
   unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY;
 
   // pass through some original flags that make sense.
@@ -2895,12 +2839,8 @@ void PrimaryLogPG::do_proxy_read(OpRequestRef op, ObjectContextRef obc)
   }
 
   C_ProxyRead *fin = new C_ProxyRead(this, soid, get_last_peering_reset(),
-<<<<<<< HEAD
 				     prdop);//构造读取结束后，返回client的回调逻辑
-=======
-				     prdop);
   unsigned n = info.pgid.hash_to_shard(osd->m_objecter_finishers);
->>>>>>> upstream/master
   ceph_tid_t tid = osd->objecter->read(
     soid.oid, oloc, obj_op,
     m->get_snapid(), NULL,
@@ -3049,11 +2989,7 @@ struct C_ProxyWrite_Commit : public Context {
   }
 };
 
-<<<<<<< HEAD
-void PrimaryLogPG::do_proxy_write(OpRequestRef op, const hobject_t& missing_oid)//代理写，不需要写入缓存
-=======
-void PrimaryLogPG::do_proxy_write(OpRequestRef op, ObjectContextRef obc)
->>>>>>> upstream/master
+void PrimaryLogPG::do_proxy_write(OpRequestRef op, ObjectContextRef obc)//代理写，不需要写入缓存
 {
   // NOTE: non-const because ProxyWriteOp takes a mutable ref
   MOSDOp *m = static_cast<MOSDOp*>(op->get_nonconst_req());
@@ -3380,17 +3316,7 @@ void PrimaryLogPG::execute_ctx(OpContext *ctx)
     if (result >= 0)
       do_osd_op_effects(ctx, m->get_connection());
 
-<<<<<<< HEAD
-    if (ctx->pending_async_reads.empty()) {
-      complete_read_ctx(result, ctx);//将读取到的信息返回.(同步)
-    } else {
-      in_progress_async_reads.push_back(make_pair(op, ctx));
-      ctx->start_async_reads(this);
-    }
-
-=======
-    complete_read_ctx(result, ctx);
->>>>>>> upstream/master
+    complete_read_ctx(result, ctx);//将读取到的信息返回.(同步)
     return;
   }
 
@@ -3567,59 +3493,6 @@ void PrimaryLogPG::log_op_stats(OpContext *ctx)
 	   << " lat " << latency << dendl;
 }
 
-<<<<<<< HEAD
-void PrimaryLogPG::do_sub_op(OpRequestRef op)
-{
-  const MOSDSubOp *m = static_cast<const MOSDSubOp*>(op->get_req());
-  assert(have_same_or_newer_map(m->map_epoch));
-  assert(m->get_type() == MSG_OSD_SUBOP);
-  dout(15) << "do_sub_op " << *op->get_req() << dendl;
-
-  if (!is_peered()) {
-    waiting_for_peered.push_back(op);
-    op->mark_delayed("waiting for active");
-    return;
-  }
-
-  const OSDOp *first = NULL;
-  if (m->ops.size() >= 1) {
-    first = &m->ops[0];
-  }
-
-  if (first) {
-    switch (first->op.op) {
-    case CEPH_OSD_OP_DELETE:
-      sub_op_remove(op);
-      return;
-    case CEPH_OSD_OP_SCRUB_RESERVE://主上发送过来的清洗预留
-      sub_op_scrub_reserve(op);
-      return;
-    case CEPH_OSD_OP_SCRUB_UNRESERVE:
-      sub_op_scrub_unreserve(op);//主上发送过来的,要求取消预订
-      return;
-    case CEPH_OSD_OP_SCRUB_MAP://从上清洗的map响应
-      sub_op_scrub_map(op);
-      return;
-    }
-  }
-}
-
-void PrimaryLogPG::do_sub_op_reply(OpRequestRef op)
-{
-  const MOSDSubOpReply *r = static_cast<const MOSDSubOpReply *>(op->get_req());
-  assert(r->get_type() == MSG_OSD_SUBOPREPLY);
-  if (r->ops.size() >= 1) {
-    const OSDOp& first = r->ops[0];
-    switch (first.op.op) {
-    case CEPH_OSD_OP_SCRUB_RESERVE:
-      sub_op_scrub_reserve_reply(op);
-      return;
-    }
-  }
-}
-
-=======
->>>>>>> upstream/master
 void PrimaryLogPG::do_scan(
   OpRequestRef op,
   ThreadPool::TPHandle &handle)
@@ -7506,11 +7379,7 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
   }
 }
 
-<<<<<<< HEAD
-hobject_t PrimaryLogPG::generate_temp_object()//生成临时对象，用客户端的id+本地seq构成名称。
-=======
-hobject_t PrimaryLogPG::generate_temp_object(const hobject_t& target)
->>>>>>> upstream/master
+hobject_t PrimaryLogPG::generate_temp_object(const hobject_t& target)//生成临时对象，用客户端的id+本地seq构成名称。
 {
   ostringstream ss;
   ss << "temp_" << info.pgid << "_" << get_role()
@@ -7548,13 +7417,9 @@ int PrimaryLogPG::prepare_transaction(OpContext *ctx)
   }
 
   // prepare the actual mutation
-<<<<<<< HEAD
   //这是一个异常复杂的函数,主要是将osdc端发送过来的
   //消息转换为os层可以处理的transaction
-  int result = do_osd_ops(ctx, ctx->ops);
-=======
   int result = do_osd_ops(ctx, *ctx->ops);
->>>>>>> upstream/master
   if (result < 0) {
     if (ctx->op->may_write() &&
 	get_osdmap()->require_osd_release >= CEPH_RELEASE_KRAKEN) {
@@ -9301,10 +9166,7 @@ void PrimaryLogPG::op_applied(const eversion_t &applied_version)
   last_update_applied = applied_version;
   if (is_primary()) {
     if (scrubber.active) {
-<<<<<<< HEAD
-      if (last_update_applied == scrubber.subset_last_update) {
-        requeue_scrub();//我们选了一个范围,这个范围中有一个对象关联了subset_last_update,现在这个applied到达此版本,scrub可以运行了.使其入对.
-=======
+      //我们选了一个范围,这个范围中有一个对象关联了subset_last_update,现在这个applied到达此版本,scrub可以运行了.使其入对.
       if (last_update_applied >= scrubber.subset_last_update) {
         if (ops_blocked_by_scrub()) {
           requeue_scrub(true);
@@ -9312,7 +9174,6 @@ void PrimaryLogPG::op_applied(const eversion_t &applied_version)
           requeue_scrub(false);
         }
 
->>>>>>> upstream/master
       }
     } else {
       assert(scrubber.start == scrubber.end);
@@ -9938,14 +9799,9 @@ ObjectContextRef PrimaryLogPG::get_object_context(
 		 << dendl;
 	// new object.
 	object_info_t oi(soid);
-<<<<<<< HEAD
-	SnapSetContext *ssc = get_snapset_context(//拿到ssc
-	  soid, true, 0, false);//false指对象不存在
-=======
 	SnapSetContext *ssc = get_snapset_context(
 	  soid, true, 0, false);
         assert(ssc);
->>>>>>> upstream/master
 	obc = create_object_context(oi, ssc);
 	dout(10) << __func__ << ": " << obc << " " << soid
 		 << " " << obc->rwstate
@@ -10370,17 +10226,10 @@ SnapSetContext *PrimaryLogPG::get_snapset_context(//如果ssc存在,返回ssc,�
 	r = pgbackend->objects_get_attr(oid.get_head(), SS_ATTR, &bv);
       if (r < 0) {//head对象可能不存在，此时可以尝试去snapdir中查找，如果还查找不到，说明有错误
 	// try _snapset
-<<<<<<< HEAD
-      if (!(oid.is_snapdir() && !oid_existed))
-	r = pgbackend->objects_get_attr(oid.get_snapdir(), SS_ATTR, &bv);//在snapdir中查找
-      if (r < 0 && !can_create)
-	return NULL;
-=======
 	if (!(oid.is_snapdir() && !oid_existed))
 	  r = pgbackend->objects_get_attr(oid.get_snapdir(), SS_ATTR, &bv);
 	if (r < 0 && !can_create)
 	  return NULL;
->>>>>>> upstream/master
       }
     } else {
       assert(attrs->count(SS_ATTR));
@@ -10522,13 +10371,8 @@ int PrimaryLogPG::recover_missing(
   }
   start_recovery_op(soid);//增加计数,用于总是限制
   assert(!recovering.count(soid));
-<<<<<<< HEAD
   recovering.insert(make_pair(soid, obc));//指明正在恢复,防止重复恢复
-  pgbackend->recover_object(//构造h中的恢复方式pull或者push?
-=======
-  recovering.insert(make_pair(soid, obc));
-  int r = pgbackend->recover_object(
->>>>>>> upstream/master
+  int r = pgbackend->recover_object(//构造h中的恢复方式pull或者push?
     soid,
     v,
     head_obc,
@@ -11041,11 +10885,8 @@ void PrimaryLogPG::on_removal(ObjectStore::Transaction *t)
 
   write_if_dirty(*t);
 
-<<<<<<< HEAD
-  on_shutdown();//停止此pg上的操作
-=======
   if (!deleting)
-    on_shutdown();
+    on_shutdown();//停止此pg上的操作
 }
 
 void PrimaryLogPG::clear_async_reads()
@@ -11058,7 +10899,6 @@ void PrimaryLogPG::clear_async_reads()
              << dendl;
     close_op_ctx(i.second);
   }
->>>>>>> upstream/master
 }
 
 void PrimaryLogPG::on_shutdown()
@@ -11451,13 +11291,8 @@ bool PrimaryLogPG::start_recovery_ops(
 
   const auto &missing = pg_log.get_missing();
 
-<<<<<<< HEAD
-  int num_missing = missing.num_missing();//有多少没有发现位置的.
-  int num_unfound = get_num_unfoTund();
-=======
-  unsigned int num_missing = missing.num_missing();
+  unsigned int num_missing = missing.num_missing();//有多少没有发现位置的.
   uint64_t num_unfound = get_num_unfound();
->>>>>>> upstream/master
 
   if (num_missing == 0) {
     info.last_complete = info.last_update;//如果已恢复完成,则last_complete赋值,使两者相等
@@ -11799,31 +11634,7 @@ int PrimaryLogPG::prep_object_replica_pushes(
   // NOTE: we know we will get a valid oloc off of disk here.
   ObjectContextRef obc = get_object_context(soid, false);
   if (!obc) {
-<<<<<<< HEAD
-    pg_log.missing_add(soid, v, eversion_t());
-    missing_loc.remove_location(soid, pg_whoami);//自已不缺
-    bool uhoh = true;
-    assert(!actingbackfill.empty());
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
-	 ++i) {
-      if (*i == get_primary()) continue;
-      pg_shard_t peer = *i;
-      if (!peer_missing[peer].is_missing(soid, v)) {//如果peer_msiing中不缺少这个对象,那么它就有这个对象
-	missing_loc.add_location(soid, peer);//peer不缺,添加相应位置
-	dout(10) << info.pgid << " unexpectedly missing " << soid << " v" << v
-		 << ", there should be a copy on shard " << peer << dendl;
-	uhoh = false;
-      }
-    }
-    if (uhoh)
-      osd->clog->error() << info.pgid << " missing primary copy of " << soid << ", unfound";
-    else
-      osd->clog->error() << info.pgid << " missing primary copy of " << soid
-			 << ", will try copies on " << missing_loc.get_locations(soid);
-=======
     primary_error(soid, v);
->>>>>>> upstream/master
     return 0;
   }
 
@@ -11846,11 +11657,7 @@ int PrimaryLogPG::prep_object_replica_pushes(
    * In almost all cases, therefore, this lock should be uncontended.
    */
   obc->ondisk_read_lock();
-<<<<<<< HEAD
-  pgbackend->recover_object(//数据被封装在h中
-=======
-  int r = pgbackend->recover_object(
->>>>>>> upstream/master
+  int r = pgbackend->recover_object(//数据被封装在h中
     soid,
     v,
     ObjectContextRef(),
@@ -11918,16 +11725,10 @@ uint64_t PrimaryLogPG::recover_replicas(uint64_t max, ThreadPool::TPHandle &hand
 	continue;
       }
 
-<<<<<<< HEAD
-      //对象没有找到.
-      if (missing_loc.is_unfound(soid)) {
-	dout(10) << __func__ << ": " << soid << " still unfound" << dendl;
-=======
       if (missing_loc.is_deleted(soid)) {
 	dout(10) << __func__ << ": " << soid << " is a delete, removing" << dendl;
 	map<hobject_t,pg_missing_item>::const_iterator r = m.get_items().find(soid);
 	started += prep_object_replica_deletes(soid, r->second.need, h);
->>>>>>> upstream/master
 	continue;
       }
 

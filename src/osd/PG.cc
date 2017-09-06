@@ -413,12 +413,8 @@ void PG::proc_master_log(
     info.last_epoch_started = oinfo.last_epoch_started;//大者优先
     dirty_info = true;
   }
-<<<<<<< HEAD
-  if (info.history.merge(oinfo.history))//histroy合并
-=======
   if (oinfo.last_interval_started > info.last_interval_started) {
     info.last_interval_started = oinfo.last_interval_started;
->>>>>>> upstream/master
     dirty_info = true;
   }
   update_history(oinfo.history);
@@ -471,20 +467,10 @@ bool PG::proc_replica_info(
 
   dout(10) << " got osd." << from << " " << oinfo << dendl;
   assert(is_primary());
-<<<<<<< HEAD
   peer_info[from] = oinfo;//设置
   might_have_unfound.insert(from);//由于他有过上报,所以这里认为它上面可能有未发现的.
-  
-  unreg_next_scrub();
-  if (info.history.merge(oinfo.history))//合并Histroy,采用更"新"的历史
-    dirty_info = true;
-  reg_next_scrub();
-=======
-  peer_info[from] = oinfo;
-  might_have_unfound.insert(from);
 
   update_history(oinfo.history);
->>>>>>> upstream/master
   
   // stray?
   if (!is_up(from) && !is_acting(from)) {
@@ -598,21 +584,14 @@ bool PG::search_for_missing(
 bool PG::MissingLoc::readable_with_acting(
   const hobject_t &hoid,
   const set<pg_shard_t> &acting) const {
-<<<<<<< HEAD
-  if (!needs_recovery(hoid)) return true;//如果不需要恢复,返回true
-  auto missing_loc_entry = missing_loc.find(hoid);
-  if (missing_loc_entry == missing_loc.end()) return false//需要恢复,但missing_loc中无此对象,说明位置暂时不清楚;
-  
-  //收集现有的此对象的已知位置,检查是否可读
-=======
-  if (!needs_recovery(hoid))
+  if (!needs_recovery(hoid))//如果不需要恢复,返回true
     return true;
   if (is_deleted(hoid))
     return false;
   auto missing_loc_entry = missing_loc.find(hoid);
   if (missing_loc_entry == missing_loc.end())
-    return false;
->>>>>>> upstream/master
+    return false;//需要恢复,但missing_loc中无此对象,说明位置暂时不清楚;
+  //收集现有的此对象的已知位置,检查是否可读
   const set<pg_shard_t> &locs = missing_loc_entry->second;
   ldout(pg->cct, 10) << __func__ << ": locs:" << locs << dendl;
   set<pg_shard_t> have_acting;
@@ -834,141 +813,6 @@ bool PG::needs_backfill() const
   return false;
 }
 
-<<<<<<< HEAD
-//start,end是在选择自哪个时间点到当前acting集合没有发生过变化.
-//oldest_map是我们记录的最旧的osdmap
-bool PG::_calc_past_interval_range(epoch_t *start, epoch_t *end, epoch_t oldest_map)
-{
-  if (info.history.same_interval_since) {
-    *end = info.history.same_interval_since;
-  } else {
-    // PG must be imported, so let's calculate the whole range.
-    *end = osdmap_ref->get_epoch();//取当前osdmap的版本号
-  }
-
-  // Do we already have the intervals we want?
-  map<epoch_t,pg_interval_t>::const_iterator pif = past_intervals.begin();
-  if (pif != past_intervals.end()) {
-    if (pif->first <= info.history.last_epoch_clean) {//如果版本比last_epoch_clean要小,说明这个版本之后重新达到了clean
-    	//此时这个version就没有意义了
-      dout(10) << __func__ << ": already have past intervals back to "
-	       << info.history.last_epoch_clean << dendl;
-      return false;//不用再计算了
-    }
-    *end = pif->first;
-  }
-
-  *start = MAX(MAX(info.history.epoch_created,
-		   info.history.last_epoch_clean),
-	       oldest_map);//取最近一次pg是clean的版本与created的版本中较大的,如果oldest_map更大则选择.
-  if (*start >= *end) {
-    dout(10) << __func__ << " start epoch " << *start << " >= end epoch " << *end
-	     << ", nothing to do" << dendl;
-    return false;//这种情况下还从来没变过,所以没有结果
-  }
-
-  return true;
-}
-
-
-void PG::generate_past_intervals()
-{
-  //先粗略的找个起始位置终止位置.{范围:我们记录的上一次clean时间,到现在}
-  epoch_t cur_epoch, end_epoch;
-  if (!_calc_past_interval_range(&cur_epoch, &end_epoch,
-      osd->get_superblock().oldest_map)) {
-    if (info.history.same_interval_since == 0) {
-      info.history.same_interval_since = end_epoch;
-      dirty_info = true;
-    }
-    return;
-  }
-
-  //这一段主要是计算past_intervals,即用来说明当前pg在cur_epoch,end_poch之间经历了几次
-  //变化
-  OSDMapRef last_map, cur_map;
-  int primary = -1;
-  int up_primary = -1;
-  vector<int> acting, up, old_acting, old_up;
-
-  cur_map = osd->get_map(cur_epoch);
-  cur_map->pg_to_up_acting_osds(
-    get_pgid().pgid, &up, &up_primary, &acting, &primary);//up,up_primary,acting,primary
-  epoch_t same_interval_since = cur_epoch;
-  dout(10) << __func__ << " over epochs " << cur_epoch << "-"
-	   << end_epoch << dendl;
-  ++cur_epoch;
-  for (; cur_epoch <= end_epoch; ++cur_epoch) {
-    int old_primary = primary;
-    int old_up_primary = up_primary;
-    last_map.swap(cur_map);
-    old_up.swap(up);
-    old_acting.swap(acting);
-
-    cur_map = osd->get_map(cur_epoch);
-    pg_t pgid = get_pgid().pgid;
-    if (last_map->get_pools().count(pgid.pool()))//如果在上一个时间点,pool已存在父节点上,直接用父节点考虑up/acting
-      pgid = pgid.get_ancestor(last_map->get_pg_num(pgid.pool()));
-    cur_map->pg_to_up_acting_osds(pgid, &up, &up_primary, &acting, &primary);
-
-    boost::scoped_ptr<IsPGRecoverablePredicate> recoverable(
-      get_is_recoverable_predicate());
-    std::stringstream debug;
-    bool new_interval = pg_interval_t::check_new_interval(
-      old_primary,
-      primary,
-      old_acting,
-      acting,
-      old_up_primary,
-      up_primary,
-      old_up,
-      up,
-      same_interval_since,//从此epoch开始至今up/acting未变化
-      info.history.last_epoch_clean,
-      cur_map,
-      last_map,
-      pgid,
-      recoverable.get(),
-      &past_intervals,
-      &debug);
-    if (new_interval) {
-      dout(10) << debug.str() << dendl;
-      same_interval_since = cur_epoch;//发现了新的interval,则进行新的same_interval_since填充
-    }
-  }
-
-  // PG import needs recalculated same_interval_since
-  //如果info中还没有设置same_interval_since,则填充最后一次的same_interval_since
-  if (info.history.same_interval_since == 0) {
-    assert(same_interval_since);
-    dout(10) << __func__ << " fix same_interval_since " << same_interval_since << " pg " << *this << dendl;
-    dout(10) << __func__ << " past_intervals " << past_intervals << dendl;
-    // Fix it
-    info.history.same_interval_since = same_interval_since;
-  }
-
-  // record our work.
-  dirty_info = true;
-  dirty_big_info = true;
-}
-
-/*
- * Trim past_intervals.
- *
- * This gets rid of all the past_intervals that happened before last_epoch_clean.
- */
-void PG::trim_past_intervals()
-{
-  std::map<epoch_t,pg_interval_t>::iterator pif = past_intervals.begin();
-  std::map<epoch_t,pg_interval_t>::iterator end = past_intervals.end();
-  while (pif != end) {
-    if (pif->second.last >= info.history.last_epoch_clean)
-      return;
-    dout(10) << __func__ << ": trimming " << pif->second << dendl;
-    past_intervals.erase(pif++);
-    dirty_big_info = true;
-  }
-=======
 
 void PG::check_past_interval_bounds() const
 {
@@ -1015,7 +859,6 @@ void PG::check_past_interval_bounds() const
       assert(0 == "past_interval end mismatch");
     }
   }
->>>>>>> upstream/master
 }
 
 bool PG::adjust_need_up_thru(const OSDMapRef osdmap)
@@ -1083,12 +926,8 @@ bool PG::all_unfound_are_queried_or_lost(const OSDMapRef osdmap) const
   return true;
 }
 
-<<<<<<< HEAD
 //构造可以去哪些osd上进行探测.
-void PG::build_prior(std::unique_ptr<PriorSet> &prior_set)
-=======
 PastIntervals::PriorSet PG::build_prior()
->>>>>>> upstream/master
 {
   if (1) {
     // sanity check
@@ -1458,21 +1297,8 @@ void PG::calc_replicated_acting(
        * as far backwards as necessary to pick up any peers which can
        * be log recovered by auth_log_shard's log */
       ss << " shard " << up_cand << " (up) backfill " << cur_info << std::endl;
-<<<<<<< HEAD
-      if (compat_mode) {
-	if (backfill->empty()) {
-	  backfill->insert(up_cand);
-	  want->push_back(*i);
-	  acting_backfill->insert(up_cand);
-	}
-      } else {//同类型走这个
-	backfill->insert(up_cand);
-	acting_backfill->insert(up_cand);//这种都是不完全的.
-      }
-=======
       backfill->insert(up_cand);
       acting_backfill->insert(up_cand);
->>>>>>> upstream/master
     } else {
       want->push_back(*i);
       acting_backfill->insert(up_cand);//加入别一个up
@@ -1499,13 +1325,8 @@ void PG::calc_replicated_acting(
 
     const pg_info_t &cur_info = all_info.find(acting_cand)->second;
     if (cur_info.is_incomplete() ||
-<<<<<<< HEAD
 	cur_info.last_update < primary->second.log_tail) {//恢复中或者不重合，无法使用
-      ss << " shard " << acting_cand << " (stray) REJECTED "
-=======
-	cur_info.last_update < primary->second.log_tail) {
       ss << " shard " << acting_cand << " (acting) REJECTED "
->>>>>>> upstream/master
 	       << cur_info << std::endl;
     } else {
       want->push_back(*i);
@@ -1605,34 +1426,10 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
   assert(!auth_log_shard->second.is_incomplete());
   auth_log_shard_id = auth_log_shard->first;
 
-<<<<<<< HEAD
-  // Determine if compatibility needed
-  bool compat_mode = !cct->_conf->osd_debug_override_acting_compat;
-  if (compat_mode) {
-    bool all_support = true;
-    OSDMapRef osdmap = get_osdmap();
-
-    for (map<pg_shard_t, pg_info_t>::iterator it = all_info.begin();
-	 it != all_info.end();
-	 ++it) {
-      pg_shard_t peer = it->first;
-
-      const osd_xinfo_t& xi = osdmap->get_xinfo(peer.osd);
-      if (!(xi.features & CEPH_FEATURE_OSD_ERASURE_CODES)) {
-	all_support = false;
-	break;
-      }
-    }
-    if (all_support)
-      compat_mode = false;
-  }
-
   //want_backfill是需要执行backfill操作的osd,它们来自于up集
   //want_acting_backfill的是可以帮助执行backfill操作
   //want是期待以为成为up集的osd
   //want_priamry是期待的主,它可能与计算的主不同.(主这个时候没有up或者什么的)
-=======
->>>>>>> upstream/master
   set<pg_shard_t> want_backfill, want_acting_backfill;
   vector<int> want;//哪些可以用
   pg_shard_t want_primary;//主
@@ -1808,26 +1605,17 @@ void PG::activate(ObjectStore::Transaction& t,
     if (acting.size() >= pool.info.min_size) {
       assert(cct->_conf->osd_find_best_info_ignore_history_les ||
 	     info.last_epoch_started <= activation_epoch);
-<<<<<<< HEAD
       info.last_epoch_started = activation_epoch;//记录started时间
-=======
-      info.last_epoch_started = activation_epoch;
       info.last_interval_started = info.history.same_interval_since;
->>>>>>> upstream/master
     }
   } else if (is_acting(pg_whoami)) {
     /* update last_epoch_started on acting replica to whatever the primary sent
      * unless it's smaller (could happen if we are going peered rather than
      * active, see doc/dev/osd_internals/last_epoch_started.rst) */
-<<<<<<< HEAD
-    if (info.last_epoch_started < activation_epoch)
-      info.last_epoch_started = activation_epoch;//对于幅本
-=======
     if (info.last_epoch_started < activation_epoch) {
-      info.last_epoch_started = activation_epoch;
+      info.last_epoch_started = activation_epoch;//对于幅本
       info.last_interval_started = info.history.same_interval_since;
     }
->>>>>>> upstream/master
   }
 
   auto &missing = pg_log.get_missing();
@@ -1900,12 +1688,8 @@ void PG::activate(ObjectStore::Transaction& t,
       dout(10) << "activate peer osd." << peer << " " << pi << dendl;
 
       MOSDPGLog *m = 0;
-<<<<<<< HEAD
-      pg_missing_t& pm = peer_missing[peer];//对端missing集
-=======
       assert(peer_missing.count(peer));
-      pg_missing_t& pm = peer_missing[peer];
->>>>>>> upstream/master
+      pg_missing_t& pm = peer_missing[peer];//对端missing集
 
       bool needs_past_intervals = pi.dne();//一般情况应是false,除非首次
 
@@ -1927,40 +1711,8 @@ void PG::activate(ObjectStore::Transaction& t,
 			    << " from (" << pi.log_tail << "," << pi.last_update
 			    << "] " << pi.last_backfill
 			    << " to " << info.last_update;
-<<<<<<< HEAD
     	//对于pi.last_backfill.is_max成立的,将执行backfill
-    	if (!pi.is_empty() && activator_map) {//对方没有发送过来info信息,则向其发送info信息,使其更新info信息
-    		dout(10) << "activate peer osd." << peer << " is up to date, queueing in pending_activators" << dendl;
-    		(*activator_map)[peer.osd].push_back(
-    				make_pair(
-    						pg_notify_t(
-    								peer.shard, pg_whoami.shard,
-									get_osdmap()->get_epoch(),
-									get_osdmap()->get_epoch(),
-									info),
-								past_intervals));
-    	} else {//向我们发送过info信息,我们把pglog发送过去,防止它少
-    		dout(10) << "activate peer osd." << peer << " is up to date, but sending pg_log anyway" << dendl;
-    		m = new MOSDPGLog(
-    				i->shard, pg_whoami.shard,
-					get_osdmap()->get_epoch(), info);
-    	}
-      } else if (//log之间无交集或者上次打算执行backfill或者强制需要执行backfill或者属于backfill_targets集
-    	pg_log.get_tail() > pi.last_update ||
-		pi.last_backfill == hobject_t() ||
-		force_restart_backfill ||
-		(backfill_targets.count(*i) && pi.last_backfill.is_max())) {//如果是需要执行backfill的
-    	  /* ^ This last case covers a situation where a replica is not contiguous
-    	   * with the auth_log, but is contiguous with this replica.  Reshuffling
-    	   * the active set to handle this would be tricky, so instead we just go
-    	   * ahead and backfill it anyway.  This is probably preferrable in any
-    	   * case since the replica in question would have to be significantly
-    	   * behind.
-    	   */
-    	  // backfill
-    	  osd->clog->info() << info.pgid << " starting backfill to osd." << peer
-=======
-	if (!pi.is_empty() && activator_map) {
+	if (!pi.is_empty() && activator_map) {//对方没有发送过来info信息,则向其发送info信息,使其更新info信息
 	  dout(10) << "activate peer osd." << peer << " is up to date, queueing in pending_activators" << dendl;
 	  (*activator_map)[peer.osd].push_back(
 	    make_pair(
@@ -1970,13 +1722,13 @@ void PG::activate(ObjectStore::Transaction& t,
 		get_osdmap()->get_epoch(),
 		info),
 	      past_intervals));
-	} else {
+	} else {//向我们发送过info信息,我们把pglog发送过去,防止它少
 	  dout(10) << "activate peer osd." << peer << " is up to date, but sending pg_log anyway" << dendl;
 	  m = new MOSDPGLog(
 	    i->shard, pg_whoami.shard,
 	    get_osdmap()->get_epoch(), info);
 	}
-      } else if (
+      } else if (//log之间无交集或者上次打算执行backfill或者强制需要执行backfill或者属于backfill_targets集
 	pg_log.get_tail() > pi.last_update ||
 	pi.last_backfill == hobject_t() ||
 	force_restart_backfill ||
@@ -1990,7 +1742,6 @@ void PG::activate(ObjectStore::Transaction& t,
 	 */
 	// backfill
 	osd->clog->debug() << info.pgid << " starting backfill to osd." << peer
->>>>>>> upstream/master
 			 << " from (" << pi.log_tail << "," << pi.last_update
 			  << "] " << pi.last_backfill
 			 << " to " << info.last_update;
@@ -2037,27 +1788,19 @@ void PG::activate(ObjectStore::Transaction& t,
       if (m && pi.last_backfill != hobject_t()) {//更新本端关于对端的missing表,记录哪些已发送.
         for (list<pg_log_entry_t>::iterator p = m->log.log.begin();
              p != m->log.log.end();
-<<<<<<< HEAD
-             ++p)
-	  if (p->soid <= pi.last_backfill)
-	    pm.add_next_event(*p);//我们当前计算的missing表,一会我们会将这些发送过去.
-      }
-      
-      //发送到对端(把刚才三种情况的消息发送给对端)
-=======
              ++p) {
 	  if (p->soid <= pi.last_backfill &&
 	      !p->is_error()) {
 	    if (perform_deletes_during_peering() && p->is_delete()) {
 	      pm.rm(p->soid, p->version);
 	    } else {
-	      pm.add_next_event(*p);
+	      pm.add_next_event(*p);//我们当前计算的missing表,一会我们会将这些发送过去.
 	    }
 	  }
 	}
       }
 
->>>>>>> upstream/master
+      //发送到对端(把刚才三种情况的消息发送给对端)
       if (m) {
     	  dout(10) << "activate peer osd." << peer << " sending " << m->log << dendl;
     	  //m->log.print(cout);
@@ -2229,12 +1972,8 @@ void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
       get_osdmap()->get_epoch(),
       info);
 
-<<<<<<< HEAD
     i.info.history.last_epoch_started = activation_epoch;//更新last_epoch_started
-=======
-    i.info.history.last_epoch_started = activation_epoch;
     i.info.history.last_interval_started = i.info.history.same_interval_since;
->>>>>>> upstream/master
     if (acting.size() >= pool.info.min_size) {
       state_set(PG_STATE_ACTIVE);
     } else {
@@ -2290,12 +2029,8 @@ bool PG::requeue_scrub(bool high_priority)
   }
 }
 
-<<<<<<< HEAD
 //pg入恢复队列
-void PG::queue_recovery(bool front)
-=======
 void PG::queue_recovery()
->>>>>>> upstream/master
 {
   if (!is_primary() || !is_peered()) {
     dout(10) << "queue_recovery -- not primary or not peered " << dendl;
@@ -2311,13 +2046,8 @@ void PG::queue_recovery()
 
 bool PG::queue_scrub()
 {
-<<<<<<< HEAD
-  assert(_lock.is_locked());
-  if (is_scrubbing()) {//是否正在清洗
-=======
   assert(is_locked());
-  if (is_scrubbing()) {
->>>>>>> upstream/master
+  if (is_scrubbing()) {//是否正在清洗
     return false;
   }
   scrubber.priority = scrubber.must_scrub ?
@@ -3752,12 +3482,7 @@ void PG::requeue_map_waiters()
   epoch_t epoch = get_osdmap()->get_epoch();
   auto p = waiting_for_map.begin();
   while (p != waiting_for_map.end()) {
-<<<<<<< HEAD
-	//如果等待队列中宣称的osdmap版本仍比我们当前的版本大，则此操作仍然在队列中
-    if (op_must_wait_for_map(epoch, p->second.front())) {
-=======
     if (epoch < p->second.front()->min_epoch) {
->>>>>>> upstream/master
       dout(20) << __func__ << " " << p->first << " front op "
 	       << p->second.front() << " must still wait, doing nothing"
 	       << dendl;
@@ -3802,13 +3527,8 @@ void PG::requeue_map_waiters()
 bool PG::sched_scrub()
 {
   bool nodeep_scrub = false;
-<<<<<<< HEAD
-  assert(_lock.is_locked());
-  if (!(is_primary() && is_active() && is_clean() && !is_scrubbing())) {//状态不对,不做
-=======
   assert(is_locked());
-  if (!(is_primary() && is_active() && is_clean() && !is_scrubbing())) {
->>>>>>> upstream/master
+  if (!(is_primary() && is_active() && is_clean() && !is_scrubbing())) {//状态不对,不做
     return false;
   }
 
@@ -3871,24 +3591,14 @@ bool PG::sched_scrub()
   bool ret = true;
   if (!scrubber.reserved) {//第一次进来,还没有预订
     assert(scrubber.reserved_peers.empty());
-<<<<<<< HEAD
-    if (osd->inc_scrubs_pending()) {//未绝可增加
-      dout(20) << "sched_scrub: reserved locally, reserving replicas" << dendl;
+    if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
+         osd->inc_scrubs_pending()) {//未绝可增加
+      dout(20) << __func__ << ": reserved locally, reserving replicas" << dendl;
       scrubber.reserved = true;//标记开始预订
       scrubber.reserved_peers.insert(pg_whoami);//加入自已
       scrub_reserve_replicas();//向其它osd发起预订
     } else {//自身无法预订
-      dout(20) << "sched_scrub: failed to reserve locally" << dendl;
-=======
-    if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
-         osd->inc_scrubs_pending()) {
-      dout(20) << __func__ << ": reserved locally, reserving replicas" << dendl;
-      scrubber.reserved = true;
-      scrubber.reserved_peers.insert(pg_whoami);
-      scrub_reserve_replicas();
-    } else {
       dout(20) << __func__ << ": failed to reserve locally" << dendl;
->>>>>>> upstream/master
       ret = false;
     }
   }
@@ -4020,38 +3730,6 @@ void PG::_request_scrub_map(
     replica.osd, repscrubop, get_osdmap()->get_epoch());
 }
 
-<<<<<<< HEAD
-//从上接受到主的资源预留请求
-void PG::sub_op_scrub_reserve(OpRequestRef op)
-{
-  const MOSDSubOp *m = static_cast<const MOSDSubOp*>(op->get_req());
-  assert(m->get_type() == MSG_OSD_SUBOP);
-  dout(7) << "sub_op_scrub_reserve" << dendl;
-
-  if (scrubber.reserved) {//如果已预留,则不响应.
-    dout(10) << "Ignoring reserve request: Already reserved" << dendl;
-    return;
-  }
-
-  op->mark_started();
-
-  scrubber.reserved = osd->inc_scrubs_pending();//检查是否足够预留
-
-  MOSDSubOpReply *reply = new MOSDSubOpReply(
-    m, pg_whoami, 0, get_osdmap()->get_epoch(), CEPH_OSD_FLAG_ACK);
-  ::encode(scrubber.reserved, reply->get_data());//响应预留情况.
-  osd->send_message_osd_cluster(reply, m->get_connection());
-}
-
-//清洗预订响应.
-void PG::sub_op_scrub_reserve_reply(OpRequestRef op)
-{
-  const MOSDSubOpReply *reply = static_cast<const MOSDSubOpReply*>(op->get_req());
-  assert(reply->get_type() == MSG_OSD_SUBOPREPLY);
-  dout(7) << "sub_op_scrub_reserve_reply" << dendl;
-
-  if (!scrubber.reserved) {//如果本端没有要求预订
-=======
 void PG::handle_scrub_reserve_request(OpRequestRef op)
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
@@ -4083,7 +3761,6 @@ void PG::handle_scrub_reserve_grant(OpRequestRef op, pg_shard_t from)
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
   if (!scrubber.reserved) {
->>>>>>> upstream/master
     dout(10) << "ignoring obsolete scrub reserve reply" << dendl;
     return;
   }
@@ -4100,46 +3777,22 @@ void PG::handle_scrub_reserve_reject(OpRequestRef op, pg_shard_t from)
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
-<<<<<<< HEAD
-
-  pg_shard_t from = reply->from;
-  bufferlist::iterator p = const_cast<bufferlist&>(reply->get_data()).begin();
-  bool reserved;
-  ::decode(reserved, p);
-
-  if (scrubber.reserved_peers.find(from) != scrubber.reserved_peers.end()) {//之前已收到过它的响应
-    dout(10) << " already had osd." << from << " reserved" << dendl;
-  } else {
-    if (reserved) {
-      dout(10) << " osd." << from << " scrub reserve = success" << dendl;
-      scrubber.reserved_peers.insert(from);//加入接受预订
-    } else {
-      /* One decline stops this pg from being scheduled for scrubbing. */
-      dout(10) << " osd." << from << " scrub reserve = fail" << dendl;
-      scrubber.reserve_failed = true;//如果有一个osd拒绝预订,则置为true
-    }
-    sched_scrub();//处理调度(有对端响应回来了)
-  }
-}
-
-void PG::sub_op_scrub_unreserve(OpRequestRef op)//清空预定,无需响应对端
-=======
   if (!scrubber.reserved) {
     dout(10) << "ignoring obsolete scrub reserve reply" << dendl;
     return;
   }
-  if (scrubber.reserved_peers.find(from) != scrubber.reserved_peers.end()) {
+  if (scrubber.reserved_peers.find(from) != scrubber.reserved_peers.end()) {//之前已收到过它的响应
     dout(10) << " already had osd." << from << " reserved" << dendl;
   } else {
     /* One decline stops this pg from being scheduled for scrubbing. */
     dout(10) << " osd." << from << " scrub reserve = fail" << dendl;
-    scrubber.reserve_failed = true;
-    sched_scrub();
+    scrubber.reserve_failed = true;//如果有一个osd拒绝预订,则置为true
+    sched_scrub();//处理调度(有对端响应回来了)
+
   }
 }
 
 void PG::handle_scrub_reserve_release(OpRequestRef op)
->>>>>>> upstream/master
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
@@ -4258,18 +3911,10 @@ void PG::_scan_snaps(ScrubMap &smap) //对快照的扫描处理.
     const hobject_t &hoid = i->first;
     ScrubMap::object &o = i->second;
 
-<<<<<<< HEAD
-    if (hoid.snap < CEPH_MAXSNAP) {//快照
-      // fake nlinks for old primaries
-      bufferlist bl;
-      if (o.attrs.find(OI_ATTR) == o.attrs.end()) {//不含OI_ATTR
-	o.nlinks = 0;
-=======
     if (hoid.is_head() || hoid.is_snapdir()) {
       // parse the SnapSet
       bufferlist bl;
       if (o.attrs.find(SS_ATTR) == o.attrs.end()) {
->>>>>>> upstream/master
 	continue;
       }
       bl.push_back(o.attrs[SS_ATTR]);
@@ -4554,18 +4199,9 @@ void PG::replica_scrub(
   MOSDRepScrubMap *reply = new MOSDRepScrubMap(
     spg_t(info.pgid.pgid, get_primary().shard),
     msg->map_epoch,
-<<<<<<< HEAD
-    osd->get_tid(),
-    v);
-  ::encode(map, subop->get_data());//将构造好的map加入到MOSDSubOp消息中,发送
-  subop->ops = scrub;
-
-  osd->send_message_osd_cluster(subop, msg->get_connection());
-=======
     pg_whoami);
-  ::encode(map, reply->get_data());
+  ::encode(map, reply->get_data());//将构造好的map加入到MOSDSubOp消息中,发送
   osd->send_message_osd_cluster(reply, msg->get_connection());
->>>>>>> upstream/master
 }
 
 /* Scrub:
@@ -4578,13 +4214,9 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
 {
   if (cct->_conf->osd_scrub_sleep > 0 &&
       (scrubber.state == PG::Scrubber::NEW_CHUNK ||
-<<<<<<< HEAD
-       scrubber.state == PG::Scrubber::INACTIVE)) {//是否需要等
-=======
        scrubber.state == PG::Scrubber::INACTIVE) &&
        scrubber.needs_sleep) {
     ceph_assert(!scrubber.sleeping);
->>>>>>> upstream/master
     dout(20) << __func__ << " state is INACTIVE|NEW_CHUNK, sleeping" << dendl;
 
     // Do an async sleep so we don't block the op queue
@@ -6069,106 +5701,6 @@ bool PG::can_discard_request(OpRequestRef& op)
   return true;
 }
 
-<<<<<<< HEAD
-//检查消息中包含的version与cur_epoch进行比对,如果version>cur_epoch则返回true
-bool PG::op_must_wait_for_map(epoch_t cur_epoch, OpRequestRef& op)
-{
-  switch (op->get_req()->get_type()) {
-  case CEPH_MSG_OSD_OP://对于osdop操作
-	  //!(如果消息体中的版本号小于等于cur_epoch）为假时，返回true
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDOp*>(op->get_req())->get_map_epoch());
-
-  case CEPH_MSG_OSD_BACKOFF:
-    return false; // we don't care about maps
-
-  case MSG_OSD_SUBOP:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDSubOp*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_REPOP:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDRepOp*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_SUBOPREPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDSubOpReply*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_REPOPREPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDRepOpReply*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_SCAN:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGScan*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_BACKFILL:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGBackfill*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_PUSH:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGPush*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_PULL:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGPull*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_PUSH_REPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGPushReply*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_EC_WRITE:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDECSubOpWrite*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_EC_WRITE_REPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDECSubOpWriteReply*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_EC_READ:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDECSubOpRead*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_EC_READ_REPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDECSubOpReadReply*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_REP_SCRUB:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDRepScrub*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_UPDATE_LOG_MISSING:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGUpdateLogMissing*>(op->get_req())->map_epoch);
-
-  case MSG_OSD_PG_UPDATE_LOG_MISSING_REPLY:
-    return !have_same_or_newer_map(
-      cur_epoch,
-      static_cast<const MOSDPGUpdateLogMissingReply*>(op->get_req())->map_epoch);
-  }
-  ceph_abort();
-  return false;
-}
-
-=======
->>>>>>> upstream/master
 void PG::take_waiters()
 {
   dout(10) << "take_waiters" << dendl;
@@ -6526,12 +6058,8 @@ boost::statechart::result PG::RecoveryState::Reset::react(const AdvMap& advmap)
       advmap.newacting, advmap.acting_primary,
       context< RecoveryMachine >().get_cur_transaction());
   }
-<<<<<<< HEAD
   pg->remove_down_peer_info(advmap.osdmap);//移除down掉的osd
-=======
-  pg->remove_down_peer_info(advmap.osdmap);
   pg->check_past_interval_bounds();
->>>>>>> upstream/master
   return discard_event();
 }
 
@@ -7263,12 +6791,8 @@ PG::RecoveryState::Recovering::Recovering(my_context ctx)
 
   PG *pg = context< RecoveryMachine >().pg;
   pg->state_clear(PG_STATE_RECOVERY_WAIT);
-<<<<<<< HEAD
-  pg->state_set(PG_STATE_RECOVERING);//置为recoverying状态
-=======
   pg->state_clear(PG_STATE_RECOVERY_TOOFULL);
-  pg->state_set(PG_STATE_RECOVERING);
->>>>>>> upstream/master
+  pg->state_set(PG_STATE_RECOVERING);//置为recoverying状态
   pg->publish_stats_to_osd();
   pg->queue_recovery();//recovering 恢复入队处理(此函数负责处理恢复)
 }
@@ -7960,19 +7484,6 @@ PG::RecoveryState::GetInfo::GetInfo(my_context ctx)
   context< RecoveryMachine >().log_enter(state_name);
 
   PG *pg = context< RecoveryMachine >().pg;
-<<<<<<< HEAD
-  pg->generate_past_intervals();//计算出pg在已知的osdmap中经历了多少次变化,并将其记录在past_intervals中
-  unique_ptr<PriorSet> &prior_set = context< Peering >().prior_set;
-
-  assert(pg->blocked_by.empty());
-
-  if (!prior_set.get())
-    pg->build_prior(prior_set);//构造了osd集合,这些集合,用于说明此pg在哪个osd上都可能存在{当前up的,且在past_intervals中及当前存在的osd}
-
-  pg->reset_min_peer_features();
-  get_infos();//向prior_set索要info信息
-  if (prior_set->pg_down) {
-=======
   pg->check_past_interval_bounds();
   PastIntervals::PriorSet &prior_set = context< Peering >().prior_set;
 
@@ -7981,9 +7492,8 @@ PG::RecoveryState::GetInfo::GetInfo(my_context ctx)
   prior_set = pg->build_prior();
 
   pg->reset_min_peer_features();
-  get_infos();
+  get_infos();//向prior_set索要info信息
   if (prior_set.pg_down) {
->>>>>>> upstream/master
     post_event(IsDown());
   } else if (peer_info_requested.empty()) {//如果不需要向其它副本要信息,即只有一个自已,直接进入gotinfo状态
 
@@ -8068,70 +7578,7 @@ boost::statechart::result PG::RecoveryState::GetInfo::react(const MNotifyRec& in
     pg->apply_peer_features(infoevt.features);
 
     // are we done getting everything?
-<<<<<<< HEAD
-    //检查是否所有人都返回了
-    if (peer_info_requested.empty() && !prior_set->pg_down) {
-      /*
-       * make sure we have at least one !incomplete() osd from the
-       * last rw interval.  the incomplete (backfilling) replicas
-       * get a copy of the log, but they don't get all the object
-       * updates, so they are insufficient to recover changes during
-       * that interval.
-       */
-      if (pg->info.history.last_epoch_started) {
-    	  //注意这里是逆序遍历,否则第一个break就不对了.
-	for (map<epoch_t,pg_interval_t>::reverse_iterator p = pg->past_intervals.rbegin();
-	     p != pg->past_intervals.rend();
-	     ++p) {
-	  if (p->first < pg->info.history.last_epoch_started)
-	    break;//如果小于这个值,就没必要再向后检查了
-	  if (!p->second.maybe_went_rw)
-	    continue;//连到达rw的可能性都没有,不考虑
-	  pg_interval_t& interval = p->second;
-	  ldout(pg->cct, 10) << " last maybe_went_rw interval was " << interval << dendl;
-	  OSDMapRef osdmap = pg->get_osdmap();
-
-	  /*
-	   * this mirrors the PriorSet calculation: we wait if we
-	   * don't have an up (AND !incomplete) node AND there are
-	   * nodes down that might be usable.
-	   */
-	  bool any_up_complete_now = false;
-	  bool any_down_now = false;
-	  for (unsigned i=0; i<interval.acting.size(); i++) {
-	    int o = interval.acting[i];
-	    if (o == CRUSH_ITEM_NONE)
-	      continue;
-	    pg_shard_t so(o, pg->pool.info.ec_pool() ? shard_id_t(i) : shard_id_t::NO_SHARD);
-	    if (!osdmap->exists(o) || osdmap->get_info(o).lost_at > interval.first)//必须在当前版本中存在并且无丢失
-	      continue;  // dne or lost
-	    if (osdmap->is_up(o)) {
-	      pg_info_t *pinfo;
-	      if (so == pg->pg_whoami) {//我自已
-		pinfo = &pg->info;
-	      } else {//其它幅本
-		assert(pg->peer_info.count(so));
-		pinfo = &pg->peer_info[so];
-	      }
-	      if (!pinfo->is_incomplete())
-		any_up_complete_now = true;//up状态,complete状态(只要这个集合中有一个进入,即为true
-	    } else {
-	      any_down_now = true;//down状态(只要这个集合中有一个进入即为true)
-	    }
-	  }
-
-	  //这里是善意推测,由于没有一个osd是完整的,且至少有一个osd是down的,所以我们认为down的可能是完整的.赌一把,扔掉消息等.
-	  if (!any_up_complete_now && any_down_now) {
-	    ldout(pg->cct, 10) << " no osds up+complete from interval " << interval << dendl;
-	    post_event(IsDown());
-	    return discard_event();
-	  }
-	  break;
-	}
-      }
-=======
     if (peer_info_requested.empty() && !prior_set.pg_down) {
->>>>>>> upstream/master
       ldout(pg->cct, 20) << "Common peer features: " << hex << pg->get_min_peer_features() << dec << dendl;
       ldout(pg->cct, 20) << "Common acting features: " << hex << pg->get_min_acting_features() << dec << dendl;
       ldout(pg->cct, 20) << "Common upacting features: " << hex << pg->get_min_upacting_features() << dec << dendl;
@@ -8708,179 +8155,8 @@ void PG::RecoveryState::RecoveryMachine::log_exit(const char *state_name, utime_
 #undef dout_prefix
 #define dout_prefix (*_dout << (debug_pg ? debug_pg->gen_prefix() : string()) << " PriorSet: ")
 
-<<<<<<< HEAD
-PG::PriorSet::PriorSet(CephContext* cct,
-		       bool ec_pool,
-		       IsPGRecoverablePredicate *c,
-		       const OSDMap &osdmap,
-		       const map<epoch_t, pg_interval_t> &past_intervals,
-		       const vector<int> &up,
-		       const vector<int> &acting,
-		       const pg_info_t &info,
-		       const PG *debug_pg)
-  : cct(cct), ec_pool(ec_pool), pg_down(false), pcontdec(c)
-{
-  // Include current acting and up nodes... not because they may
-  // contain old data (this interval hasn't gone active, obviously),
-  // but because we want their pg_info to inform choose_acting(), and
-  // so that we know what they do/do not have explicitly before
-  // sending them any new info/logs/whatever.
-  //acting集合中的加入probe
-  for (unsigned i = 0; i < acting.size(); i++) {
-    if (acting[i] != CRUSH_ITEM_NONE)
-      probe.insert(pg_shard_t(acting[i], ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD));//acting集合中的每一个osd
-  }
-  // It may be possible to exclude the up nodes, but let's keep them in
-  // there for now.
-  //up集合中的加入到probe
-  for (unsigned i = 0; i < up.size(); i++) {
-    if (up[i] != CRUSH_ITEM_NONE)
-      probe.insert(pg_shard_t(up[i], ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD));//up集合中的每一个osd(set类型会自动去重)
-  }
-
-  //过去间隔中的acting,
-  for (map<epoch_t,pg_interval_t>::const_reverse_iterator p = past_intervals.rbegin();
-       p != past_intervals.rend();
-       ++p) {
-    const pg_interval_t &interval = p->second;
-    dout(10) << "build_prior " << interval << dendl;
-
-    //为什么,我们不关心这种?
-    //这种interval里的数据已被放在log中了,也就是说,现在已在missing集中,后面在missing集中我们会算出来其缺少的.
-    if (interval.last < info.history.last_epoch_started)
-      break;  // we don't care
-
-    if (interval.acting.empty())
-      continue;
-
-    if (!interval.maybe_went_rw)//没有进入到读写,说明无变化,不考虑
-      continue;
-
-    // look at candidate osds during this interval.  each falls into
-    // one of three categories: up, down (but potentially
-    // interesting), or lost (down, but we won't wait for it).
-    set<pg_shard_t> up_now;
-    bool any_down_now = false;  // any candidates down now (that might have useful data)
-
-    // consider ACTING osds
-    for (unsigned i = 0; i < interval.acting.size(); i++) {//旧的集合添加
-      int o = interval.acting[i];
-      if (o == CRUSH_ITEM_NONE)
-	continue;
-      pg_shard_t so(o, ec_pool ? shard_id_t(i) : shard_id_t::NO_SHARD);
-
-      const osd_info_t *pinfo = 0;
-      if (osdmap.exists(o))//o对应的osd存在{在当前的osd中要exists}
-	pinfo = &osdmap.get_info(o);
-
-      if (osdmap.is_up(o)) {//当前他们是up的,加入probe,及up_now
-	// include past acting osds if they are up.
-	probe.insert(so);
-	up_now.insert(so);
-      } else if (!pinfo) {//当前是down的,也没有拿到pinfo,加入down集合
-	dout(10) << "build_prior  prior osd." << o << " no longer exists" << dendl;
-	down.insert(o);
-      } else if (pinfo->lost_at > interval.first) {
-	dout(10) << "build_prior  prior osd." << o << " is down, but lost_at " << pinfo->lost_at << dendl;
-	up_now.insert(so);//??
-	down.insert(o);
-      } else {
-	dout(10) << "build_prior  prior osd." << o << " is down" << dendl;
-	down.insert(o);
-	any_down_now = true;
-      }
-    }
-
-    // if not enough osds survived this interval, and we may have gone rw,
-    // then we need to wait for one of those osds to recover to
-    // ensure that we haven't lost any information.
-    if (!(*pcontdec)(up_now) && any_down_now) {
-      // fixme: how do we identify a "clean" shutdown anyway?
-      dout(10) << "build_prior  possibly went active+rw, insufficient up;"
-	       << " including down osds" << dendl;
-      for (vector<int>::const_iterator i = interval.acting.begin();
-	   i != interval.acting.end();
-	   ++i) {
-	if (osdmap.exists(*i) &&   // if it doesn't exist, we already consider it lost.
-	    osdmap.is_down(*i)) {
-	  pg_down = true; //注意:pg将被置为down
-
-	  // make note of when any down osd in the cur set was lost, so that
-	  // we can notice changes in prior_set_affected.
-	  blocked_by[*i] = osdmap.get_info(*i).lost_at;
-	}
-      }
-    }
-  }
-
-  dout(10) << "build_prior final: probe " << probe
-	   << " down " << down
-	   << " blocked_by " << blocked_by
-	   << (pg_down ? " pg_down":"")
-	   << dendl;
-}
-
-// true if the given map affects the prior set
-//查看probe集是否受osdmap影响,如果影响,就返回True
-bool PG::PriorSet::affected_by_map(const OSDMapRef osdmap, const PG *debug_pg) const
-{
-  for (set<pg_shard_t>::iterator p = probe.begin();
-       p != probe.end();
-       ++p) {
-    int o = p->osd;
-
-    // did someone in the prior set go down?
-    if (osdmap->is_down(o) && down.count(o) == 0) {
-      dout(10) << "affected_by_map osd." << o << " now down" << dendl;
-      return true;
-    }
-
-    // did a down osd in cur get (re)marked as lost?
-    map<int, epoch_t>::const_iterator r = blocked_by.find(o);
-    if (r != blocked_by.end()) {
-      if (!osdmap->exists(o)) {
-	dout(10) << "affected_by_map osd." << o << " no longer exists" << dendl;
-	return true;
-      }
-      if (osdmap->get_info(o).lost_at != r->second) {
-	dout(10) << "affected_by_map osd." << o << " (re)marked as lost" << dendl;
-	return true;
-      }
-    }
-  }
-
-  // did someone in the prior down set go up?
-  for (set<int>::const_iterator p = down.begin();
-       p != down.end();
-       ++p) {
-    int o = *p;
-
-    if (osdmap->is_up(o)) {
-      dout(10) << "affected_by_map osd." << o << " now up" << dendl;
-      return true;
-    }
-
-    // did someone in the prior set get lost or destroyed?
-    if (!osdmap->exists(o)) {
-      dout(10) << "affected_by_map osd." << o << " no longer exists" << dendl;
-      return true;
-    }
-    // did a down osd in down get (re)marked as lost?
-    map<int, epoch_t>::const_iterator r = blocked_by.find(o);
-    if (r != blocked_by.end()) {
-      if (osdmap->get_info(o).lost_at != r->second) {
-        dout(10) << "affected_by_map osd." << o << " (re)marked as lost" << dendl;
-        return true;
-      }
-    } 
-  }
-
-  return false;
-}
 
 //事件处理前回调
-=======
->>>>>>> upstream/master
 void PG::RecoveryState::start_handle(RecoveryCtx *new_ctx) {
   assert(!rctx);
   assert(!orig_ctx);

@@ -489,11 +489,7 @@ public:
   struct OpContext {
     OpRequestRef op;//请求
     osd_reqid_t reqid;
-<<<<<<< HEAD
     vector<OSDOp> &ops;//操作集，记录了本消息要求执行的操作
-=======
-    vector<OSDOp> *ops;
->>>>>>> upstream/master
 
     const ObjectState *obs; // Old objectstate
     const SnapSet *snapset; // Old snapset
@@ -1361,13 +1357,8 @@ protected:
   // -- proxyread --
   map<ceph_tid_t, ProxyReadOpRef> proxyread_ops;//这个队列的目的仅仅是为了可cancel
 
-<<<<<<< HEAD
-  void do_proxy_read(OpRequestRef op);
-  void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);//代理读完成时会被调用
-=======
   void do_proxy_read(OpRequestRef op, ObjectContextRef obc = NULL);
-  void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);
->>>>>>> upstream/master
+  void finish_proxy_read(hobject_t oid, ceph_tid_t tid, int r);//代理读完成时会被调用
   void cancel_proxy_read(ProxyReadOpRef prdop);
 
   friend struct C_ProxyRead;

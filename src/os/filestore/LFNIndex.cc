@@ -639,15 +639,9 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
   else if (oid.hobj.snap == CEPH_SNAPDIR)
     t += snprintf(t, end - t, "snapdir");
   else
-<<<<<<< HEAD
     t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);//放入snap
-  snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());//放入对象hash
-  full_name += string(buf);
-=======
-    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.snap);
-  t += snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());
+  t += snprintf(t, end - t, "_%.*X", (int)(sizeof(oid.hobj.get_hash())*2), oid.hobj.get_hash());//放入对象hash
   full_name.append(buf, t);
->>>>>>> upstream/master
   full_name.append("_");
 
   append_escaped(oid.hobj.nspace.begin(), oid.hobj.nspace.end(), &full_name);//放入ns
@@ -657,13 +651,8 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
   if (oid.hobj.pool == -1)
     t += snprintf(t, end - t, "none");
   else
-<<<<<<< HEAD
     t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);//放入pool
-  full_name += string(buf);
-=======
-    t += snprintf(t, end - t, "%llx", (long long unsigned)oid.hobj.pool);
   full_name.append(buf, t);
->>>>>>> upstream/master
 
   if (oid.generation != ghobject_t::NO_GEN ||
       oid.shard_id != shard_id_t::NO_SHARD) {
@@ -676,14 +665,8 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
     full_name.append("_");//放入gen
 
     t = buf;
-<<<<<<< HEAD
-    end = t + sizeof(buf);
-    t += snprintf(t, end - t, "%x", (int)oid.shard_id);
-    full_name += string(buf);//放入shard
-=======
     t += snprintf(t, end - buf, "%x", (int)oid.shard_id);
-    full_name.append(buf, t);
->>>>>>> upstream/master
+    full_name.append(buf, t);//放入shard
   }
 
   return full_name;

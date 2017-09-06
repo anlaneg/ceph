@@ -74,9 +74,6 @@ void PGLog::IndexedLog::trim(
 
     unindex(e);         // remove from index,//自索引中移除此entity
 
-<<<<<<< HEAD
-    //移除队列中的entity(另外需要查看riter是否需要更新,防止其空指向)
-=======
     // add to dup list
     generic_dout(20) << "earliest_dup_version = " << earliest_dup_version << dendl;
     if (e.version.version >= earliest_dup_version) {
@@ -94,7 +91,7 @@ void PGLog::IndexedLog::trim(
       }
     }
 
->>>>>>> upstream/master
+    //移除队列中的entity(另外需要查看riter是否需要更新,防止其空指向)
     if (rollback_info_trimmed_to_riter == log.rend() ||
 	e.version == rollback_info_trimmed_to_riter->version) {
       log.pop_front();
@@ -178,13 +175,8 @@ void PGLog::trim(
     assert(trim_to <= info.last_complete);
 
     dout(10) << "trim " << log << " to " << trim_to << dendl;
-<<<<<<< HEAD
-    log.trim(cct, trim_to, &trimmed);
-    info.log_tail = log.tail;//更新info.log_tail
-=======
     log.trim(cct, trim_to, &trimmed, &trimmed_dups, &write_from_dups);
-    info.log_tail = log.tail;
->>>>>>> upstream/master
+    info.log_tail = log.tail;//更新info.log_tail
   }
 }
 
@@ -705,12 +697,8 @@ void PGLog::_write_log_and_missing_wo_missing(
   set<string> *log_keys_debug
   )
 {
-<<<<<<< HEAD
   //将trimmed中的数据加入to_remove中,一会构造删除数据到transaction
-  set<string> to_remove;
-=======
   set<string> to_remove(trimmed_dups);
->>>>>>> upstream/master
   for (set<eversion_t>::const_iterator i = trimmed.begin();
        i != trimmed.end();
        ++i) {

@@ -253,13 +253,8 @@ public:
 	boost::intrusive::list_member_hook<>,
 	&Buffer::state_item> > state_list_t;
 
-<<<<<<< HEAD
-    mempool::bluestore_meta_other::map<uint32_t, std::unique_ptr<Buffer>>
-      buffer_map;//map,采用offset进行索引的buffer
-=======
     mempool::bluestore_cache_other::map<uint32_t, std::unique_ptr<Buffer>>
-      buffer_map;
->>>>>>> upstream/master
+      buffer_map;//map,采用offset进行索引的buffer
 
     // we use a bare intrusive list here instead of std::map because
     // it uses less memory and we expect this to be very small (very
@@ -279,11 +274,6 @@ public:
       cache->_audit("_add_buffer start");
       buffer_map[b->offset].reset(b);//加入索引
       if (b->is_writing()) {
-<<<<<<< HEAD
-        writing.push_back(*b);//加入writing
-      } else {
-	cache->_add_buffer(b, level, near);//交给cache管理
-=======
 	b->data.reassign_to_mempool(mempool::mempool_bluestore_writing);
         if (writing.empty() || writing.rbegin()->seq <= b->seq) {
           writing.push_back(*b);
@@ -301,7 +291,6 @@ public:
       } else {
 	b->data.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
 	cache->_add_buffer(b, level, near);
->>>>>>> upstream/master
       }
       cache->_audit("_add_buffer end");
     }
@@ -309,14 +298,9 @@ public:
     void _rm_buffer(Cache* cache, Buffer *b) {//移除
       _rm_buffer(cache, buffer_map.find(b->offset));//通过索引定位
     }
-<<<<<<< HEAD
-
     //移除buffer
-    void _rm_buffer(Cache* cache, map<uint32_t, std::unique_ptr<Buffer>>::iterator p) {
-=======
     void _rm_buffer(Cache* cache,
 		    map<uint32_t, std::unique_ptr<Buffer>>::iterator p) {
->>>>>>> upstream/master
       assert(p != buffer_map.end());
       cache->_audit("_rm_buffer start");
       if (p->second->is_writing()) {
@@ -466,12 +450,7 @@ public:
 
     // we use a bare pointer because we don't want to affect the ref
     // count
-<<<<<<< HEAD
-    //按sbid进行索引
-    mempool::bluestore_meta_other::unordered_map<uint64_t,SharedBlob*> sb_map;
-=======
     mempool::bluestore_cache_other::unordered_map<uint64_t,SharedBlob*> sb_map;
->>>>>>> upstream/master
 
     SharedBlobRef lookup(uint64_t sbid) {
       //在sb_map中查找sbid如果找到返回sharedblob，如果找不到，返回null
@@ -574,11 +553,7 @@ public:
 #endif
     }
 
-<<<<<<< HEAD
-    const bluestore_blob_t& get_blob() const {//blob对应的元数据
-=======
     inline const bluestore_blob_t& get_blob() const {
->>>>>>> upstream/master
       return blob;
     }
     inline bluestore_blob_t& dirty_blob() {
@@ -923,13 +898,6 @@ public:
     /// for seek_lextent test
     extent_map_t::iterator find(uint64_t offset);
 
-<<<<<<< HEAD
-    /// find a lextent that includes offset
-    //如上述，定位到包含offset的lextent
-    extent_map_t::iterator find_lextent(uint64_t offset);
-
-=======
->>>>>>> upstream/master
     /// seek to the first lextent including or after offset
     //如上述，定位到offset,要么返回的iter包含offs
     extent_map_t::iterator seek_lextent(uint64_t offset);
@@ -957,13 +925,9 @@ public:
 
     /// put new lextent into lextent_map overwriting existing ones if
     /// any and update references accordingly
-<<<<<<< HEAD
     //创建一个新的区域，如果存在，则移除之前的
-    Extent *set_lextent(uint64_t logical_offset,
-=======
     Extent *set_lextent(CollectionRef &c,
 			uint64_t logical_offset,
->>>>>>> upstream/master
 			uint64_t offset, uint64_t length,
                         BlobRef b,
 			old_extent_map_t *old_extents);
@@ -1091,11 +1055,7 @@ public:
     ghobject_t oid;//对象id
 
     /// key under PREFIX_OBJ where we are stored
-<<<<<<< HEAD
-    mempool::bluestore_meta_other::string key;//存储在db中用的key(可由oid生成）
-=======
-    mempool::bluestore_cache_other::string key;
->>>>>>> upstream/master
+    mempool::bluestore_cache_other::string key;//存储在db中用的key(可由oid生成）
 
     boost::intrusive::list_member_hook<> lru_item;
 
@@ -1141,12 +1101,8 @@ public:
     std::atomic<uint64_t> num_extents = {0};
     std::atomic<uint64_t> num_blobs = {0};
 
-<<<<<<< HEAD
-    size_t last_trim_seq = 0;
 
     //依据不同类型生成相应的cache实例
-=======
->>>>>>> upstream/master
     static Cache *create(CephContext* cct, string type, PerfCounters *logger);
 
     Cache(CephContext* cct) : cct(cct), logger(nullptr) {}
@@ -1179,14 +1135,10 @@ public:
       --num_blobs;
     }
 
-<<<<<<< HEAD
     //回收用
-    void trim(uint64_t target_bytes, float target_meta_ratio,
-=======
     void trim(uint64_t target_bytes,
 	      float target_meta_ratio,
 	      float target_data_ratio,
->>>>>>> upstream/master
 	      float bytes_per_onode);
 
     void trim_all();
@@ -1421,11 +1373,7 @@ public:
     Cache *cache;//利用cache机制，对缓存在onode_map中的onode进行维护
 
     /// forward lookups
-<<<<<<< HEAD
-    mempool::bluestore_meta_other::unordered_map<ghobject_t,OnodeRef> onode_map;//通过oid对应Onode
-=======
     mempool::bluestore_cache_other::unordered_map<ghobject_t,OnodeRef> onode_map;
->>>>>>> upstream/master
 
     friend class Collection; // for split_cache()
 
@@ -1442,15 +1390,9 @@ public:
     }
     void rename(OnodeRef& o, const ghobject_t& old_oid,
 		const ghobject_t& new_oid,
-<<<<<<< HEAD
-		const mempool::bluestore_meta_other::string& new_okey);
+		const mempool::bluestore_cache_other::string& new_okey);
     void clear();//全部移除
     bool empty();//检查是否为空
-=======
-		const mempool::bluestore_cache_other::string& new_okey);
-    void clear();
-    bool empty();
->>>>>>> upstream/master
 
     /// return true if f true for any item
     bool map_any(std::function<bool(OnodeRef)> f);
@@ -1546,10 +1488,6 @@ public:
   class OpSequencer;
   typedef boost::intrusive_ptr<OpSequencer> OpSequencerRef;
 
-<<<<<<< HEAD
-  //事务上下文
-  struct TransContext {
-=======
   struct volatile_statfs{
     enum {
       STATFS_ALLOCATED = 0,
@@ -1610,7 +1548,6 @@ public:
   struct TransContext : public AioContext {
     MEMPOOL_CLASS_HELPERS();
 
->>>>>>> upstream/master
     typedef enum {
       STATE_PREPARE,//起始状态
       STATE_AIO_WAIT,
@@ -1682,12 +1619,8 @@ public:
     OpSequencerRef osr;
     boost::intrusive::list_member_hook<> sequencer_item;
 
-<<<<<<< HEAD
     //事务集中的操作总数，事务集中的字节总数
-    uint64_t ops = 0, bytes = 0;
-=======
     uint64_t bytes = 0, cost = 0;
->>>>>>> upstream/master
 
     //记录哪些onode被更新或者写
     set<OnodeRef> onodes;     ///< these need to be updated/written
@@ -1710,75 +1643,12 @@ public:
     boost::intrusive::list_member_hook<> deferred_queue_item;
     bluestore_deferred_transaction_t *deferred_txn = nullptr; ///< if any
 
-<<<<<<< HEAD
-    interval_set<uint64_t> allocated, released;//记录事务中申请释放的物理磁盘范围
-
-    struct volatile_statfs{
-      enum {
-        STATFS_ALLOCATED = 0,
-        STATFS_STORED,
-        STATFS_COMPRESSED_ORIGINAL,
-        STATFS_COMPRESSED,
-        STATFS_COMPRESSED_ALLOCATED,
-        STATFS_LAST
-      };
-
-      int64_t values[STATFS_LAST];
-      volatile_statfs() {
-        memset(this, 0, sizeof(volatile_statfs));
-      }
-      void reset() {
-        *this = volatile_statfs();
-      }
-      int64_t& allocated() {
-        return values[STATFS_ALLOCATED];
-      }
-      int64_t& stored() {
-        return values[STATFS_STORED];
-      }
-      int64_t& compressed_original() {
-        return values[STATFS_COMPRESSED_ORIGINAL];
-      }
-      int64_t& compressed() {
-        return values[STATFS_COMPRESSED];
-      }
-      int64_t& compressed_allocated() {
-        return values[STATFS_COMPRESSED_ALLOCATED];
-      }
-      bool is_empty() {
-        return values[STATFS_ALLOCATED] == 0 &&
-          values[STATFS_STORED] == 0 &&
-          values[STATFS_COMPRESSED] == 0 &&
-          values[STATFS_COMPRESSED_ORIGINAL] == 0 &&
-          values[STATFS_COMPRESSED_ALLOCATED] == 0;
-      }
-      void decode(bufferlist::iterator& it) {
-        for (size_t i = 0; i < STATFS_LAST; i++) {
-          ::decode(values[i], it);
-        }
-      }
-
-      void encode(bufferlist& bl) {
-        for (size_t i = 0; i < STATFS_LAST; i++) {
-          ::encode(values[i], bl);
-        }
-      }
-    } statfs_delta;//记录统计数据
-
-=======
     interval_set<uint64_t> allocated, released;
     volatile_statfs statfs_delta;
->>>>>>> upstream/master
 
     IOContext ioc;
     bool had_ios = false;  ///< true if we submitted IOs before our kv txn
 
-<<<<<<< HEAD
-    //首个collection
-    CollectionRef first_collection;  ///< first referenced collection
-
-=======
->>>>>>> upstream/master
     uint64_t seq = 0;
     utime_t start;//记录状态起始时间
     utime_t last_stamp;//记录状态起始时间（一直和start同时使用？）
@@ -1875,14 +1745,10 @@ public:
 
     boost::intrusive::list_member_hook<> deferred_osr_queue_item;
 
-<<<<<<< HEAD
-    Sequencer *parent;//指向上层seq
-=======
     DeferredBatch *deferred_running = nullptr;
     DeferredBatch *deferred_pending = nullptr;
 
-    Sequencer *parent;
->>>>>>> upstream/master
+    Sequencer *parent;//指向上层seq
     BlueStore *store;
 
     uint64_t last_seq = 0;//用于分配事务编号
@@ -2045,17 +1911,11 @@ private:
   BlueFS *bluefs = nullptr;//用于db,slow等块设备
   unsigned bluefs_shared_bdev = 0;  ///< which bluefs bdev we are sharing
   bool bluefs_single_shared_device = true;
-<<<<<<< HEAD
+  utime_t bluefs_last_balance;
+
   KeyValueDB *db = nullptr;//指向key-value类数据库
   BlockDevice *bdev = nullptr;//block设备
   std::string freelist_type;//freelist的类型，默认为bitmap
-=======
-  utime_t bluefs_last_balance;
-
-  KeyValueDB *db = nullptr;
-  BlockDevice *bdev = nullptr;
-  std::string freelist_type;
->>>>>>> upstream/master
   FreelistManager *fm = nullptr;
   Allocator *alloc = nullptr;
   uuid_d fsid;//对应的fsid
@@ -2066,12 +1926,8 @@ private:
   bool mounted = false;//是否已挂载
 
   RWLock coll_lock = {"BlueStore::coll_lock"};  ///< rwlock to protect coll_map
-<<<<<<< HEAD
   //记录collection的map,通过cid映射map(启动时截入?)
-  mempool::bluestore_meta_other::unordered_map<coll_t, CollectionRef> coll_map;
-=======
   mempool::bluestore_cache_other::unordered_map<coll_t, CollectionRef> coll_map;
->>>>>>> upstream/master
 
   vector<Cache*> cache_shards;//cache与collection之间是１对多关系，创建collection时，注入
 
@@ -2154,19 +2010,12 @@ private:
   ///< approx cost per io, in bytes
   std::atomic<uint64_t> throttle_cost_per_io = {0};
 
-<<<<<<< HEAD
   //压缩模式
-  std::atomic<Compressor::CompressionMode> comp_mode = {Compressor::COMP_NONE}; ///< compression mode
+  std::atomic<Compressor::CompressionMode> comp_mode =
+    {Compressor::COMP_NONE}; ///< compression mode
   CompressorRef compressor;//依据名称创建的compressor
   std::atomic<uint64_t> comp_min_blob_size = {0};//压缩最小块
   std::atomic<uint64_t> comp_max_blob_size = {0};//压缩最大块
-=======
-  std::atomic<Compressor::CompressionMode> comp_mode =
-    {Compressor::COMP_NONE}; ///< compression mode
-  CompressorRef compressor;
-  std::atomic<uint64_t> comp_min_blob_size = {0};
-  std::atomic<uint64_t> comp_max_blob_size = {0};
->>>>>>> upstream/master
 
   std::atomic<uint64_t> max_blob_size = {0};  ///< maximum blob size
 
@@ -2272,11 +2121,7 @@ private:
   void _txc_state_proc(TransContext *txc);
   void _txc_aio_submit(TransContext *txc);
 public:
-<<<<<<< HEAD
-  void _txc_aio_finish(void *p) {//aio完成后进入（在aio被kernel完成后调用）
-=======
-  void txc_aio_finish(void *p) {
->>>>>>> upstream/master
+  void txc_aio_finish(void *p) {//aio完成后进入（在aio被kernel完成后调用）
     _txc_state_proc(static_cast<TransContext*>(p));
   }
 private:
@@ -2706,12 +2551,8 @@ private:
     old_extent_map_t old_extents;   ///< must deref these blobs
 
     struct write_item {
-<<<<<<< HEAD
-      BlobRef b;//引用的blob
-=======
       uint64_t logical_offset;      ///< write logical offset
-      BlobRef b;
->>>>>>> upstream/master
+      BlobRef b;//引用的blob
       uint64_t blob_length;
       uint64_t b_off;//偏移量
       bufferlist bl;//内容
@@ -2758,12 +2599,6 @@ private:
       uint64_t o,//偏移量
       bufferlist& bl,//要写的数据
       uint64_t o0,
-<<<<<<< HEAD
-      uint64_t len0, bool _mark_unused) {
-      //将write_item加入到writes尾部
-      writes.emplace_back(write_item(b, blob_len, o, bl, o0, len0, _mark_unused));
-    }
-=======
       uint64_t len0,
       bool _mark_unused,
       bool _new_blob) {
@@ -2783,7 +2618,6 @@ private:
       uint64_t loffs,
       uint64_t loffs_end,
       uint64_t min_alloc_size);
->>>>>>> upstream/master
   };
 
   void _do_write_small(

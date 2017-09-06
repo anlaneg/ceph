@@ -40,11 +40,6 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv)
     fs(NULL), aio(false), dio(false),
     debug_lock("KernelDevice::debug_lock"),
     aio_queue(cct->_conf->bdev_aio_max_queue_depth),
-<<<<<<< HEAD
-    aio_callback(cb),//设置回调
-    aio_callback_priv(cbpriv),
-=======
->>>>>>> upstream/master
     aio_stop(false),
     aio_thread(this),
     injecting_crash(0)
@@ -111,9 +106,6 @@ int KernelDevice::open(const string& p)
     derr << __func__ << " fstat got " << cpp_strerror(r) << dendl;
     goto out_fail;
   }
-<<<<<<< HEAD
-  if (S_ISBLK(st.st_mode)) {//检查是否块设备
-=======
 
   // Operate as though the block size is 4 KB.  The backing file
   // blksize doesn't strictly matter except that some file systems may
@@ -126,22 +118,14 @@ int KernelDevice::open(const string& p)
 	    << block_size << " anyway" << dendl;
   }
 
-  if (S_ISBLK(st.st_mode)) {
->>>>>>> upstream/master
+  if (S_ISBLK(st.st_mode)) {//检查是否块设备
     int64_t s;
     r = get_block_device_size(fd_direct, &s);
     if (r < 0) {
       goto out_fail;
     }
-<<<<<<< HEAD
-
-    rotational = block_device_is_rotational(path.c_str());
     size = s;//填充磁盘大小
   } else {//采用规则文件
-=======
-    size = s;
-  } else {
->>>>>>> upstream/master
     size = st.st_size;
   }
 
@@ -208,9 +192,6 @@ void KernelDevice::close()//关闭文件或者块设备
   path.clear();
 }
 
-<<<<<<< HEAD
-int KernelDevice::flush()//实现数据落盘
-=======
 static string get_dev_property(const char *dev, const char *property)
 {
   char val[1024] = {0};
@@ -278,7 +259,6 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
 }
 
 int KernelDevice::flush()
->>>>>>> upstream/master
 {
   // protect flush with a mutex.  note that we are not really protecting
   // data here.  instead, we're ensuring that if any flush() caller
@@ -358,14 +338,9 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
   int inject_crash_count = 0;
   while (!aio_stop) {
     dout(40) << __func__ << " polling" << dendl;
-<<<<<<< HEAD
-    int max = 16;
-    FS::aio_t *aio[max];
-    //获取kernel　aio完成情况
-=======
     int max = cct->_conf->bdev_aio_reap_max;
     aio_t *aio[max];
->>>>>>> upstream/master
+    //获取kernel　aio完成情况
     int r = aio_queue.get_next_completed(cct->_conf->bdev_aio_poll_ms,
 					 aio, max);
     if (r < 0) {
@@ -396,27 +371,13 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 		 << " aios left" << dendl;
 	assert(r >= 0);//必须成功,不成功，挂
 
-<<<<<<< HEAD
-	int left = --ioc->num_running;
-	// NOTE: once num_running is decremented we can no longer
-	// trust aio[] values; they my be freed (e.g., by BlueFS::_fsync)
-	if (left == 0) {
-	  // check waiting count before doing callback (which may
-	  // destroy this ioc).  and avoid ref to ioc after aio_wake()
-	  // in case that triggers destruction.
-	  void *priv = ioc->priv;
-	  ioc->aio_wake();//通知等待者，当前写完成
-	  if (priv) {
-      //执行回调
-	    aio_callback(aio_callback_priv, priv);
-=======
 	// NOTE: once num_running and we either call the callback or
 	// call aio_wake we cannot touch ioc or aio[] as the caller
 	// may free it.
 	if (ioc->priv) {
 	  if (--ioc->num_running == 0) {
+      //执行回调
 	    aio_callback(aio_callback_priv, ioc->priv);
->>>>>>> upstream/master
 	  }
 	} else {
           ioc->try_aio_wake();
@@ -529,14 +490,8 @@ void KernelDevice::aio_submit(IOContext *ioc)
   // move these aside, and get our end iterator position now, as the
   // aios might complete as soon as they are submitted and queue more
   // wal aio's.
-<<<<<<< HEAD
-  list<FS::aio_t>::iterator e = ioc->running_aios.begin();
-  ioc->running_aios.splice(e, ioc->pending_aios);//将pending_aios加入到running_aios中
-  list<FS::aio_t>::iterator p = ioc->running_aios.begin();
-=======
   list<aio_t>::iterator e = ioc->running_aios.begin();
-  ioc->running_aios.splice(e, ioc->pending_aios);
->>>>>>> upstream/master
+  ioc->running_aios.splice(e, ioc->pending_aios);//将pending_aios加入到running_aios中
 
   int pending = ioc->num_pending.load();
   ioc->num_running += pending;
@@ -554,14 +509,6 @@ void KernelDevice::aio_submit(IOContext *ioc)
       std::lock_guard<std::mutex> l(debug_queue_lock);
       debug_aio_link(*p++);
     }
-<<<<<<< HEAD
-    int r = aio_queue.submit(*cur, &retries);//提交一个io
-    if (retries)
-      derr << __func__ << " retries " << retries << dendl;
-    if (r) {
-      derr << " aio submit got " << cpp_strerror(r) << dendl;
-      assert(r == 0);
-=======
   }
 
   void *priv = static_cast<void*>(ioc);
@@ -606,7 +553,6 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered)
       r = -errno;
       derr << __func__ << " sync_file_range error: " << cpp_strerror(r) << dendl;
       return r;
->>>>>>> upstream/master
     }
   }
 
@@ -692,39 +638,10 @@ int KernelDevice::aio_write(//将bl写入到指定fd中，写的位置由offset�
   } else
 #endif
   {
-<<<<<<< HEAD
-    dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
-	    << std::dec << " buffered" << dendl;
-    if (cct->_conf->bdev_inject_crash &&
-	rand() % cct->_conf->bdev_inject_crash == 0) {
-      derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
-	   << off << "~" << len << std::dec << dendl;
-      ++injecting_crash;
-      return 0;
-    }
-    vector<iovec> iov;
-    bl.prepare_iov(&iov);
-    int r = ::pwritev(buffered ? fd_buffered : fd_direct,
-		      &iov[0], iov.size(), off);//采用pwritev写入，offset是这个fd写入时的偏移量，也是这个函数的关键
-=======
     int r = _sync_write(off, bl, buffered);
->>>>>>> upstream/master
     _aio_log_finish(ioc, off, len);
     if (r < 0)
       return r;
-<<<<<<< HEAD
-    }
-    if (buffered) {
-      // initiate IO (but do not wait)
-      r = ::sync_file_range(fd_buffered, off, len, SYNC_FILE_RANGE_WRITE);//直接写入，不刷元数据，且只刷入文件的部分内容
-      if (r < 0) {
-        r = -errno;
-        derr << __func__ << " sync_file_range error: " << cpp_strerror(r) << dendl;
-        return r;
-      }
-    }
-=======
->>>>>>> upstream/master
   }
   return 0;
 }
@@ -737,20 +654,9 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << (buffered ? " (buffered)" : " (direct)")
 	  << dendl;
-<<<<<<< HEAD
-  assert(off % block_size == 0);//off必须对齐
-  assert(len % block_size == 0);//len必须对齐
-  assert(len > 0);
-  assert(off < size);
-  assert(off + len <= size);
-
-  _aio_log_start(ioc, off, len);//调试代码
-  ++ioc->num_reading;
-=======
   assert(is_valid_io(off, len));
 
   _aio_log_start(ioc, off, len);
->>>>>>> upstream/master
 
   bufferptr p = buffer::create_page_aligned(len);
   int r = ::pread(buffered ? fd_buffered : fd_direct,

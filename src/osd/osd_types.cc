@@ -2970,10 +2970,6 @@ void PastIntervals::pg_interval_t::generate_test_instances(list<pg_interval_t*>&
   o.back()->maybe_went_rw = true;
 }
 
-<<<<<<< HEAD
-//检查过去与现在是否处在同一个Interval中，如果不在，返回true,否则返回false
-bool pg_interval_t::is_new_interval(
-=======
 WRITE_CLASS_ENCODER(PastIntervals::pg_interval_t)
 
 
@@ -3249,8 +3245,8 @@ void PastIntervals::generate_test_instances(list<PastIntervals*> &o)
   return;
 }
 
+//检查过去与现在是否处在同一个Interval中，如果不在，返回true,否则返回false
 bool PastIntervals::is_new_interval(
->>>>>>> upstream/master
   int old_acting_primary,
   int new_acting_primary,
   const vector<int> &old_acting,
@@ -3378,12 +3374,9 @@ bool PastIntervals::check_new_interval(
   //  NOTE: a change in the up set primary triggers an interval
   //  change, even though the interval members in the pg_interval_t
   //  do not change.
-<<<<<<< HEAD
-  //检查是否有变化
-=======
   assert(past_intervals);
   assert(past_intervals->past_intervals);
->>>>>>> upstream/master
+  //检查是否有变化
   if (is_new_interval(
 	old_acting_primary,
 	new_acting_primary,
@@ -3396,12 +3389,8 @@ bool PastIntervals::check_new_interval(
 	osdmap,
 	lastmap,
 	pgid)) {
-<<<<<<< HEAD
-	//设置past_intervals(如果有变化,填充变之前的)
-    pg_interval_t& i = (*past_intervals)[same_interval_since];
-=======
+    //设置past_intervals(如果有变化,填充变之前的)
     pg_interval_t i;
->>>>>>> upstream/master
     i.first = same_interval_since;
     i.last = osdmap->get_epoch() - 1;
     assert(i.first <= i.last);
@@ -4201,12 +4190,8 @@ void pg_log_t::copy_up_to(const pg_log_t &other, int max)
   }
 }
 
-<<<<<<< HEAD
 //显示log
-ostream& pg_log_t::print(ostream& out) const 
-=======
 ostream& pg_log_t::print(ostream& out) const
->>>>>>> upstream/master
 {
   out << *this << std::endl;
   for (list<pg_log_entry_t>::const_iterator p = log.begin();

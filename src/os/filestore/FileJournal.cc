@@ -949,13 +949,8 @@ void FileJournal::queue_completions_thru(uint64_t seq)
       logger->tinc(l_filestore_journal_latency, lat);
     }
     if (next.finish)
-<<<<<<< HEAD
       finisher->queue(next.finish);// ---- 将seq对应在的finish加入到finisher对应的对列中.
-    if (next.tracked_op)
-=======
-      finisher->queue(next.finish);
     if (next.tracked_op) {
->>>>>>> upstream/master
       next.tracked_op->mark_event("journaled_completion_queued");
       next.tracked_op->journal_trace.event("queued completion");
       next.tracked_op->journal_trace.keyval("completed through", seq);
@@ -1675,15 +1670,10 @@ void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
       completion_item(
 	seq, oncommit, ceph_clock_now(), osd_op));//构造完成回调加入completions
     if (writeq.empty())
-<<<<<<< HEAD
       writeq_cond.Signal();//如果writeq中之间没有,需要考虑读者是否已等待唤醒
     writeq.push_back(write_item(seq, e, orig_len, osd_op));//将入将要写的的数据.
-=======
-      writeq_cond.Signal();
-    writeq.push_back(write_item(seq, e, orig_len, osd_op));
     if (osd_op)
       osd_op->journal_trace.keyval("queue depth", writeq.size());
->>>>>>> upstream/master
   }
 }
 

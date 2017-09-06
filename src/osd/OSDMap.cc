@@ -1162,9 +1162,6 @@ void OSDMap::count_full_nearfull_osds(int *full, int *backfill, int *nearfull) c
   }
 }
 
-<<<<<<< HEAD
-//找出这个版本所有的osd
-=======
 static bool get_osd_utilization(
   const mempool::pgmap::unordered_map<int32_t,osd_stat_t> &osd_stat,
   int id, int64_t* kb, int64_t* kb_used, int64_t* kb_avail)
@@ -1220,7 +1217,7 @@ void OSDMap::get_full_osd_counts(set<int> *full, set<int> *backfill,
   }
 }
 
->>>>>>> upstream/master
+//找出这个版本所有的osd
 void OSDMap::get_all_osds(set<int32_t>& ls) const
 {
   for (int i=0; i<max_osd; i++)
@@ -1628,30 +1625,16 @@ int OSDMap::apply_incremental(const Incremental &inc)
   if (inc.new_pool_max != -1)
     pool_max = inc.new_pool_max;
 
-<<<<<<< HEAD
   //设置新创建的pool
-  for (map<int64_t,pg_pool_t>::const_iterator p = inc.new_pools.begin();
-       p != inc.new_pools.end();
-       ++p) {
-    pools[p->first] = p->second;
-    pools[p->first].last_change = epoch;
-  }
-
-  //设置pool_name,name_pool,实际上是pool到name,name到pool两个索引表
-  for (map<int64_t,string>::const_iterator p = inc.new_pool_names.begin();
-       p != inc.new_pool_names.end();
-       ++p) {
-	//设置pool_name,name_pool
-    auto pool_name_entry = pool_name.find(p->first);
-=======
   for (const auto &pool : inc.new_pools) {
     pools[pool.first] = pool.second;
     pools[pool.first].last_change = epoch;
   }
 
+  //设置pool_name,name_pool,实际上是pool到name,name到pool两个索引表
   for (const auto &pname : inc.new_pool_names) {
+    //设置pool_name,name_pool
     auto pool_name_entry = pool_name.find(pname.first);
->>>>>>> upstream/master
     if (pool_name_entry != pool_name.end()) {
       name_pool.erase(pool_name_entry->second);
       pool_name_entry->second = pname.second;
@@ -1660,33 +1643,17 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
     name_pool[pname.second] = pname.first;
   }
-<<<<<<< HEAD
-
-  //要删除的pool
-  for (set<int64_t>::const_iterator p = inc.old_pools.begin();
-       p != inc.old_pools.end();
-       ++p) {
-    pools.erase(*p);
-    name_pool.erase(pool_name[*p]);
-    pool_name.erase(*p);
-  }
-
-  //设置权重
-  for (map<int32_t,uint32_t>::const_iterator i = inc.new_weight.begin();
-       i != inc.new_weight.end();
-       ++i) {
-    set_weight(i->first, i->second);
-=======
   
+  //要删除的pool
   for (const auto &pool : inc.old_pools) {
     pools.erase(pool);
     name_pool.erase(pool_name[pool]);
     pool_name.erase(pool);
   }
 
+  //设置权重
   for (const auto &weight : inc.new_weight) {
     set_weight(weight.first, weight.second);
->>>>>>> upstream/master
 
     // if we are marking in, clear the AUTOOUT and NEW bits, and clear
     // xinfo old_weight.
@@ -1696,16 +1663,9 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
   }
 
-<<<<<<< HEAD
   //osd主的亲合性
-  for (map<int32_t,uint32_t>::const_iterator i = inc.new_primary_affinity.begin();
-       i != inc.new_primary_affinity.end();
-       ++i) {
-    set_primary_affinity(i->first, i->second);
-=======
   for (const auto &primary_affinity : inc.new_primary_affinity) {
     set_primary_affinity(primary_affinity.first, primary_affinity.second);
->>>>>>> upstream/master
   }
 
   // erasure_code_profiles
@@ -1716,20 +1676,11 @@ int OSDMap::apply_incremental(const Incremental &inc)
     set_erasure_code_profile(profile.first, profile.second);
   }
   
-  // up/down
-<<<<<<< HEAD
   //明确osd的interval信息
-  for (map<int32_t,uint8_t>::const_iterator i = inc.new_state.begin();
-       i != inc.new_state.end();
-       ++i) {
-    int s = i->second ? i->second : CEPH_OSD_UP;
-    if ((osd_state[i->first] & CEPH_OSD_UP) &&
-=======
   for (const auto &state : inc.new_state) {
     const auto osd = state.first;
     int s = state.second ? state.second : CEPH_OSD_UP;
     if ((osd_state[osd] & CEPH_OSD_UP) &&
->>>>>>> upstream/master
 	(s & CEPH_OSD_UP)) {
       osd_info[osd].down_at = epoch;
       osd_xinfo[osd].down_stamp = modified;
@@ -1751,18 +1702,10 @@ int OSDMap::apply_incremental(const Incremental &inc)
     }
   }
 
-<<<<<<< HEAD
   //地址及osd状态信息
-  for (map<int32_t,entity_addr_t>::const_iterator i = inc.new_up_client.begin();
-       i != inc.new_up_client.end();
-       ++i) {
-    osd_state[i->first] |= CEPH_OSD_EXISTS | CEPH_OSD_UP;
-    osd_addrs->client_addr[i->first].reset(new entity_addr_t(i->second));
-=======
   for (const auto &client : inc.new_up_client) {
     osd_state[client.first] |= CEPH_OSD_EXISTS | CEPH_OSD_UP;
     osd_addrs->client_addr[client.first].reset(new entity_addr_t(client.second));
->>>>>>> upstream/master
     if (inc.new_hb_back_up.empty())
       osd_addrs->hb_back_addr[client.first].reset(new entity_addr_t(client.second)); //this is a backward-compatibility hack
     else
@@ -1955,29 +1898,19 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
     if (removed)
       osds.resize(osds.size() - removed);//减小空间.(移除排已移动的)
   } else {
-<<<<<<< HEAD
-    for (vector<int>::iterator p = osds.begin(); p != osds.end(); ++p) {
-      if (!exists(*p))
-	*p = CRUSH_ITEM_NONE;//由于不能移除，故赋为不存在
-=======
     for (auto& osd : osds) {
       if (!exists(osd))
-	osd = CRUSH_ITEM_NONE;
->>>>>>> upstream/master
+	osd = CRUSH_ITEM_NONE;//由于不能移除，故赋为不存在
     }
   }
 }
 
-<<<<<<< HEAD
 //pool pg对应的pool
 //pg 对应的pg
 //osds 结果集
 //primary 结果集中的主（第一个）
 //ppps 出参，返回pg对应的pps,pps就是pg id与pool id合起来映射的一个32bit的整数
-int OSDMap::_pg_to_raw_osds(
-=======
 void OSDMap::_pg_to_raw_osds(
->>>>>>> upstream/master
   const pg_pool_t& pool, pg_t pg,
   vector<int> *osds,
   ps_t *ppps) const
@@ -1987,30 +1920,13 @@ void OSDMap::_pg_to_raw_osds(
   unsigned size = pool.get_size();
 
   // what crush rule?
-<<<<<<< HEAD
   //先找出对应的规则集
-  int ruleno = crush->find_rule(pool.get_crush_ruleset(), pool.get_type(), size);//找规则
+  int ruleno = crush->find_rule(pool.get_crush_rule(), pool.get_type(), size);//找规则
   if (ruleno >= 0)
-    crush->do_rule(ruleno, pps, *osds, size, osd_weight);//执行此规则
-=======
-  int ruleno = crush->find_rule(pool.get_crush_rule(), pool.get_type(), size);
-  if (ruleno >= 0)
-    crush->do_rule(ruleno, pps, *osds, size, osd_weight, pg.pool());
->>>>>>> upstream/master
+    crush->do_rule(ruleno, pps, *osds, size, osd_weight, pg.pool());//执行此规则
 
   _remove_nonexistent_osds(pool, *osds);//移除掉不存在osd
 
-<<<<<<< HEAD
-  *primary = -1;
-  //将第一个存在的osd定为主.
-  for (unsigned i = 0; i < osds->size(); ++i) {
-    if ((*osds)[i] != CRUSH_ITEM_NONE) {
-      *primary = (*osds)[i];//找到主.
-      break;
-    }
-  }
-=======
->>>>>>> upstream/master
   if (ppps)
     *ppps = pps;
 }
@@ -2025,10 +1941,6 @@ int OSDMap::_pick_primary(const vector<int>& osds) const
   return -1;
 }
 
-<<<<<<< HEAD
-  //返回查找到的数量
-  return osds->size();
-=======
 void OSDMap::_apply_upmap(const pg_pool_t& pi, pg_t raw_pg, vector<int> *raw) const
 {
   pg_t pg = pi.raw_pg_to_pg(raw_pg);
@@ -2061,7 +1973,6 @@ void OSDMap::_apply_upmap(const pg_pool_t& pi, pg_t raw_pg, vector<int> *raw) co
       }
     }
   }
->>>>>>> upstream/master
 }
 
 // pg -> (up osd list)
@@ -2080,10 +1991,6 @@ void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
 	continue;
       up->push_back(raw[i]);//添加up的
     }
-<<<<<<< HEAD
-    *primary = (up->empty() ? -1 : up->front());//如果没有返回-1,如果有,返回首个.
-=======
->>>>>>> upstream/master
   } else {
     // set down/dne devices to NONE
     up->resize(raw.size());
@@ -2091,11 +1998,7 @@ void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
       if (!exists(raw[i]) || is_down(raw[i])) {
 	(*up)[i] = CRUSH_ITEM_NONE;//如果没有,即置为
       } else {
-<<<<<<< HEAD
-	*primary = (*up)[i] = raw[i];//保证up的位置于raw位置相同,保证primary是raw中首个有效的.
-=======
-	(*up)[i] = raw[i];
->>>>>>> upstream/master
+	(*up)[i] = raw[i];//保证up的位置于raw位置相同,保证primary是raw中首个有效的.
       }
     }
   }
@@ -2189,15 +2092,9 @@ void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
       }
     }
   }
-<<<<<<< HEAD
-
   //查看这个pg是否有对应的primary_temp映射
-  map<pg_t,int32_t>::const_iterator pp = primary_temp->find(pg);
-  *temp_primary = -1;//默认认为没有
-=======
   const auto &pp = primary_temp->find(pg);
-  *temp_primary = -1;
->>>>>>> upstream/master
+  *temp_primary = -1;//默认认为没有
   if (pp != primary_temp->end()) {
     *temp_primary = pp->second;
   } else if (!temp_pg->empty()) {
@@ -2212,12 +2109,8 @@ void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
   }
 }
 
-<<<<<<< HEAD
 //由pg生成raw集，及primary
-int OSDMap::pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const
-=======
 void OSDMap::pg_to_raw_osds(pg_t pg, vector<int> *raw, int *primary) const
->>>>>>> upstream/master
 {
   *primary = -1;
   raw->clear();
@@ -2249,10 +2142,7 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   _apply_primary_affinity(pps, *pool, up, primary);
 }
 
-<<<<<<< HEAD
 //获取给定pg的up集，up_primary,acting集，acting_primary
-=======
->>>>>>> upstream/master
 void OSDMap::_pg_to_up_acting_osds(
   const pg_t& pg, vector<int> *up, int *up_primary,
   vector<int> *acting, int *acting_primary,
@@ -2288,19 +2178,14 @@ void OSDMap::_pg_to_up_acting_osds(
   //获知_acting集，_acting_primary集（osdmap中的temp_pg,temp_primary定义此数据）
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
   if (_acting.empty() || up || up_primary) {
-<<<<<<< HEAD
-	//获取规则查找出来的且存在的osds集合，称之为raw,并在其基础上确定_up_primary
-	//同时将pg_id,pool_id映射为一个32bit的整数，并将其称为pps
-    _pg_to_raw_osds(*pool, pg, &raw, &_up_primary, &pps);
-    //将上步获取到的raw集合，排除掉未up的osd后，形成_up集，并在其基础上确定_up_primary
-    _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
-    //将上步获取到的_up集，考虑上osd的亲昵性，再做一次排除
-=======
+    //获取规则查找出来的且存在的osds集合，称之为raw,并在其基础上确定_up_primary
+    //同时将pg_id,pool_id映射为一个32bit的整数，并将其称为pps
     _pg_to_raw_osds(*pool, pg, &raw, &pps);
     _apply_upmap(*pool, pg, &raw);
+    //将上步获取到的raw集合，排除掉未up的osd后，形成_up集，并在其基础上确定_up_primary
     _raw_to_up_osds(*pool, raw, &_up);
     _up_primary = _pick_primary(_up);
->>>>>>> upstream/master
+    //将上步获取到的_up集，考虑上osd的亲昵性，再做一次排除
     _apply_primary_affinity(pps, *pool, &_up, &_up_primary);
 
     //如果不存在temp_pg,则_acting集合和up集合相同
@@ -2789,10 +2674,6 @@ void OSDMap::decode(bufferlist::iterator& bl)
     ::decode(flags, bl);
 
     ::decode(max_osd, bl);
-<<<<<<< HEAD
-    ::decode(osd_state, bl);
-    ::decode(osd_weight, bl);//解析权重
-=======
     if (struct_v >= 5) {
       ::decode(osd_state, bl);
     } else {
@@ -2803,8 +2684,7 @@ void OSDMap::decode(bufferlist::iterator& bl)
 	osd_state[i] = os[i];
       }
     }
-    ::decode(osd_weight, bl);
->>>>>>> upstream/master
+    ::decode(osd_weight, bl);//解析权重
     ::decode(osd_addrs->client_addr, bl);
 
     ::decode(*pg_temp, bl);
@@ -2821,13 +2701,8 @@ void OSDMap::decode(bufferlist::iterator& bl)
     // crush
     bufferlist cbl;
     ::decode(cbl, bl);
-<<<<<<< HEAD
-    bufferlist::iterator cblp = cbl.begin();
-    crush->decode(cblp);//crush规则是由monitor发送过来的
-=======
     auto cblp = cbl.begin();
-    crush->decode(cblp);
->>>>>>> upstream/master
+    crush->decode(cblp);//crush规则是由monitor发送过来的
     if (struct_v >= 3) {
       ::decode(erasure_code_profiles, bl);
     } else {

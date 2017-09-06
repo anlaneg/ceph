@@ -169,25 +169,6 @@ static ostream& _prefix(std::ostream* _dout, int whoami, epoch_t epoch) {
   return *_dout << "osd." << whoami << " " << epoch << " ";
 }
 
-<<<<<<< HEAD
-void PGQueueable::RunVis::operator()(const OpRequestRef &op) {//请求处理入口
-  return osd->dequeue_op(pg, op, handle);
-}
-
-void PGQueueable::RunVis::operator()(const PGSnapTrim &op) {
-  return pg->snap_trimmer(op.epoch_queued);
-}
-
-void PGQueueable::RunVis::operator()(const PGScrub &op) {//清洗入口
-  return pg->scrub(op.epoch_queued, handle);
-}
-
-void PGQueueable::RunVis::operator()(const PGRecovery &op) {//恢复入口
-  return osd->do_recovery(pg.get(), op.epoch_queued, op.reserved_pushes, handle);
-}
-
-=======
->>>>>>> upstream/master
 //Initial features in new superblock.
 //Features here are also automatically upgraded
 CompatSet OSD::get_osd_initial_compat_set() {
@@ -319,10 +300,6 @@ OSDService::~OSDService()
   }
 }
 
-<<<<<<< HEAD
-//设置pending_splits,rev_pending_splits中的数据项
-=======
-
 
 #ifdef PG_DEBUG_REFS
 void OSDService::add_pgid(spg_t pgid, PG *pg){
@@ -357,7 +334,7 @@ void OSDService::dump_live_pgids()
 #endif
 
 
->>>>>>> upstream/master
+//设置pending_splits,rev_pending_splits中的数据项
 void OSDService::_start_split(spg_t parent, const set<spg_t> &children)
 {
   for (set<spg_t>::const_iterator i = children.begin();
@@ -1523,16 +1500,12 @@ bool OSDService::get_inc_map_bl(epoch_t e, bufferlist& bl)
 void OSDService::_add_map_bl(epoch_t e, bufferlist& bl)
 {
   dout(10) << "add_map_bl " << e << " " << bl.length() << " bytes" << dendl;
-<<<<<<< HEAD
-  map_bl_cache.add(e, bl);//osd的bl形式cache
-=======
   // cache a contiguous buffer
   if (bl.get_num_buffers() > 1) {
     bl.rebuild();
   }
   bl.try_assign_to_mempool(mempool::mempool_osd_mapbl);
-  map_bl_cache.add(e, bl);
->>>>>>> upstream/master
+  map_bl_cache.add(e, bl);//osd的bl形式cache
 }
 
 void OSDService::_add_map_inc_bl(epoch_t e, bufferlist& bl)
@@ -2417,16 +2390,10 @@ int OSD::init()
   if (is_stopping())
     return 0;
 
-<<<<<<< HEAD
   tick_timer.init();//为tick_timer启动线程,准备处理事件
   tick_timer_without_osd_lock.init();//为tick_timer_without_osd_lock启动线程
-  service.backfill_request_timer.init();
-=======
-  tick_timer.init();
-  tick_timer_without_osd_lock.init();
   service.recovery_request_timer.init();
   service.recovery_sleep_timer.init();
->>>>>>> upstream/master
 
   // mount.
   dout(2) << "init " << dev_path
@@ -4097,26 +4064,6 @@ void OSD::build_past_intervals_parallel()
         ++i) {
       PG *pg = i->second;//拿出当前osd负责的每一个pg
 
-<<<<<<< HEAD
-      epoch_t start, end;
-      if (!pg->_calc_past_interval_range(&start, &end, superblock.oldest_map)) {//一般start=superblock.oldest_map,end=superblock.newest_map
-        if (pg->info.history.same_interval_since == 0)
-          pg->info.history.same_interval_since = end;//设置end
-        continue;
-      }
-
-      dout(10) << pg->info.pgid << " needs " << start << "-" << end << dendl;
-      pistate& p = pis[pg];//为每一个pg计算它的start_interval,last_interval
-      p.start = start;
-      p.end = end;
-      p.same_interval_since = 0;//加入pis(注same_interval_since未填充)
-
-      //有多个pg,相互之间有start,end不一样,取极值cur_epoch最小,end_epoch最大
-      if (start < cur_epoch)
-        cur_epoch = start;
-      if (end > end_epoch)
-        end_epoch = end;
-=======
       auto rpib = pg->get_required_past_interval_bounds(
 	pg->info,
 	superblock.oldest_map);
@@ -4147,7 +4094,6 @@ void OSD::build_past_intervals_parallel()
         cur_epoch = rpib.first;
       if (rpib.second > end_epoch)
         end_epoch = rpib.second;
->>>>>>> upstream/master
     }
   }
   if (pis.empty()) {
@@ -4196,23 +4142,13 @@ void OSD::build_past_intervals_parallel()
       boost::scoped_ptr<IsPGRecoverablePredicate> recoverable(
         pg->get_is_recoverable_predicate());
       std::stringstream debug;
-<<<<<<< HEAD
-      bool new_interval = pg_interval_t::check_new_interval(//如果产生了新的primary等,返回true,并填充旧的
+      bool new_interval = PastIntervals::check_new_interval(//如果产生了新的primary等,返回true,并填充旧的
 	p.primary,//旧的
 	primary,//新的primary
 	p.old_acting, acting,//旧acting
 	p.up_primary,//旧primary
 	up_primary,//新primary
 	p.old_up, up,//旧up,新up
-=======
-      bool new_interval = PastIntervals::check_new_interval(
-	p.primary,
-	primary,
-	p.old_acting, acting,
-	p.up_primary,
-	up_primary,
-	p.old_up, up,
->>>>>>> upstream/master
 	p.same_interval_since,
 	pg->info.history.last_epoch_clean,
 	cur_map, last_map,
@@ -4331,11 +4267,7 @@ int OSD::handle_pg_peering_evt(
     PG::RecoveryCtx rctx = create_context();//这里我们构造了一个事务,在事务中对coll操作时我们没有写pglog,故都是采用立即生效的方式.
     switch (result) {
     case RES_NONE: {
-<<<<<<< HEAD
       const pg_pool_t* pp = osdmap->get_pg_pool(pgid.pool());//其对应的pool
-      //创建对应的collect,将创建操作添加至事务里
-=======
-      const pg_pool_t* pp = osdmap->get_pg_pool(pgid.pool());
       if (pp->has_flag(pg_pool_t::FLAG_EC_OVERWRITES) &&
 	  store->get_type() != "bluestore") {
 	clog->warn() << "pg " << pgid
@@ -4343,7 +4275,7 @@ int OSD::handle_pg_peering_evt(
 		     << "the pool allows ec overwrites but is not stored in "
 		     << "bluestore, so deep scrubbing will not detect bitrot";
       }
->>>>>>> upstream/master
+      //创建对应的collect,将创建操作添加至事务里
       PG::_create(*rctx.transaction, pgid, pgid.get_split_bits(pp->get_pg_num()));
       PG::_init(*rctx.transaction, pgid, pp);
 
@@ -4459,10 +4391,6 @@ int OSD::handle_pg_peering_evt(
     } else {
       pg->queue_peering_event(evt);
     }
-<<<<<<< HEAD
-    pg->queue_peering_event(evt);//入队进行处理
-=======
->>>>>>> upstream/master
     pg->unlock();
     return -EEXIST;
   }
@@ -6772,12 +6700,8 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
     assert(ms_can_fast_dispatch(op->get_req()));
     const MOSDFastDispatchOp *m = static_cast<const MOSDFastDispatchOp*>(
       op->get_req());
-<<<<<<< HEAD
     //消息中的osdmap版本号要大
-    if (m->get_map_epoch() > osdmap->get_epoch()) {
-=======
     if (m->get_min_epoch() > osdmap->get_epoch()) {
->>>>>>> upstream/master
       break;
     }
     session->waiting_on_map.erase(i++);
@@ -7631,17 +7555,7 @@ void OSD::handle_osd_map(MOSDMap *m)
     rerequest_full_maps();//如果需要请求的下限还不是0,再请求
   }
 
-<<<<<<< HEAD
-  if (last <= superblock.newest_map) {//monitor没有新的了
-    dout(10) << " no new maps here, dropping" << dendl;
-    m->put();
-    return;
-  }
-
   if (superblock.oldest_map) {//需要考虑trim操作
-=======
-  if (superblock.oldest_map) {
->>>>>>> upstream/master
     // make sure we at least keep pace with incoming maps
     trim_maps(m->oldest_map, last - first + 1, skip_maps);
   }
@@ -8008,11 +7922,7 @@ bool OSD::advance_pg(
   epoch_t osd_epoch, PG *pg,//osd_epoch是比当前记录在pg中的osdmap更大的版本
   ThreadPool::TPHandle &handle,
   PG::RecoveryCtx *rctx,
-<<<<<<< HEAD
-  set<boost::intrusive_ptr<PG> > *new_pgs)//new_pgs为出参
-=======
   set<PGRef> *new_pgs)
->>>>>>> upstream/master
 {
   assert(pg->is_locked());
   epoch_t next_epoch = pg->get_osdmap()->get_epoch() + 1;//pg中的osdmap
@@ -8210,9 +8120,6 @@ bool OSD::require_mon_peer(const Message *m)
   return true;
 }
 
-<<<<<<< HEAD
-//如果对端不是osd,则返回false,否则返回true
-=======
 bool OSD::require_mon_or_mgr_peer(const Message *m)
 {
   if (!m->get_connection()->peer_is_mon() &&
@@ -8225,7 +8132,7 @@ bool OSD::require_mon_or_mgr_peer(const Message *m)
   return true;
 }
 
->>>>>>> upstream/master
+//如果对端不是osd,则返回false,否则返回true
 bool OSD::require_osd_peer(const Message *m)
 {
   if (!m->get_connection()->peer_is_osd()) {
@@ -8428,22 +8335,9 @@ void OSD::handle_pg_create(OpRequestRef op)//pg创建处理
     osdmap->pg_to_up_acting_osds(on, &up, &up_primary, &acting, &acting_primary);
     int role = osdmap->calc_pg_role(whoami, acting, acting.size());
 
-<<<<<<< HEAD
-    if (up_primary != whoami) {//这个pg我们恰好不是主
-      dout(10) << "mkpg " << on << "  not primary (role="
-	       << role << "), skipping" << dendl;
-      continue;
-    }
-    if (up != acting) {//up集,acting集不一致,暂不创建
-      dout(10) << "mkpg " << on << "  up " << up
-	       << " != acting " << acting << ", ignoring" << dendl;
-      // we'll get a query soon anyway, since we know the pg
-      // must exist. we can ignore this.
-=======
-    if (acting_primary != whoami) {
+    if (acting_primary != whoami) {//这个pg我们恰好不是主
       dout(10) << "mkpg " << on << "  not acting_primary (" << acting_primary
 	       << "), my role=" << role << ", skipping" << dendl;
->>>>>>> upstream/master
       continue;
     }
 
@@ -8453,22 +8347,7 @@ void OSD::handle_pg_create(OpRequestRef op)//pg创建处理
 
     PastIntervals pi;
     pg_history_t history;
-<<<<<<< HEAD
-    history.epoch_created = created;//设置create时版本
-    history.last_scrub_stamp = ci->second;//清洗参数
-    history.last_deep_scrub_stamp = ci->second;
-    history.last_clean_scrub_stamp = ci->second;
-
-    // project history from created epoch (handle_pg_peering_evt does
-    // it from msg send epoch)
-    bool valid_history = project_pg_history(
-      pgid, history, created, up, up_primary, acting, acting_primary);
-    // the pg creation message must have come from a mon and therefore
-    // cannot be on the other side of a map gap
-    assert(valid_history);
-=======
     build_initial_pg_history(pgid, created, ci->second, &history, &pi);
->>>>>>> upstream/master
 
     // The mon won't resend unless the primary changed, so
     // we ignore same_interval_since.  We'll pass this history
@@ -8483,20 +8362,7 @@ void OSD::handle_pg_create(OpRequestRef op)//pg创建处理
       continue;
     }
 
-<<<<<<< HEAD
-    handle_pg_peering_evt(//构造NullEvt事件,并发送
-      pgid,
-      history,
-      pi,
-      osdmap->get_epoch(),
-      PG::CephPeeringEvtRef(
-	new PG::CephPeeringEvt(
-	  osdmap->get_epoch(),
-	  osdmap->get_epoch(),
-	  PG::NullEvt()))//这个事件不处理,将会被丢掉.
-      );
-=======
-    if (handle_pg_peering_evt(
+    if (handle_pg_peering_evt(//构造NullEvt事件,并发送
           pgid,
           history,
           pi,
@@ -8505,11 +8371,10 @@ void OSD::handle_pg_create(OpRequestRef op)//pg创建处理
 	    new PG::CephPeeringEvt(
 	      osdmap->get_epoch(),
 	      osdmap->get_epoch(),
-	      PG::NullEvt()))
+	      PG::NullEvt()))//这个事件不处理,将会被丢掉.
           ) == -EEXIST) {
       service.send_pg_created(pgid.pgid);
     }
->>>>>>> upstream/master
   }
   last_pg_create_epoch = m->epoch;
 
@@ -9251,9 +9116,6 @@ bool OSDService::_recover_now(uint64_t *available_pushes)
   return true;
 }
 
-<<<<<<< HEAD
-//收到恢复消息,处理恢复(只有主才会收到这个消息;在到过pg状态后,会被入队)
-=======
 
 void OSDService::adjust_pg_priorities(const vector<PGRef>& pgs, int newflags)
 {
@@ -9300,28 +9162,12 @@ void OSDService::adjust_pg_priorities(const vector<PGRef>& pgs, int newflags)
   }
 }
 
->>>>>>> upstream/master
+//收到恢复消息,处理恢复(只有主才会收到这个消息;在到过pg状态后,会被入队)
 void OSD::do_recovery(
   PG *pg, epoch_t queued, uint64_t reserved_pushes,
   ThreadPool::TPHandle &handle)
 {
   uint64_t started = 0;
-<<<<<<< HEAD
-  //如果配置为slepp,则等一定时间
-  if (cct->_conf->osd_recovery_sleep > 0) {
-    handle.suspend_tp_timeout();
-    pg->unlock();
-    utime_t t;
-    t.set_from_double(cct->_conf->osd_recovery_sleep);
-    t.sleep();
-    dout(20) << __func__ << " slept for " << t << dendl;
-    pg->lock();
-    handle.reset_tp_timeout();
-  }
-
-  {
-    if (pg->pg_has_reset_since(queued)) {//已被删除或者queued过期
-=======
 
   /*
    * When the value of osd_recovery_sleep is set greater than zero, recovery
@@ -9359,7 +9205,6 @@ void OSD::do_recovery(
   {
     service.recovery_needs_sleep = true;
     if (pg->pg_has_reset_since(queued)) {
->>>>>>> upstream/master
       goto out;
     }
 
@@ -9394,14 +9239,7 @@ void OSD::do_recovery(
      */
     if (!more && pg->have_unfound()) {//存在对象有未发现位置的,请求全log进行恢复
       pg->discover_all_missing(*rctx.query_map);
-<<<<<<< HEAD
       if (rctx.query_map->empty()) {//现在没办法恢复,因为osd都down了
-	dout(10) << "do_recovery  no luck, giving up on this pg for now" << dendl;
-      } else {
-	dout(10) << "do_recovery  no luck, giving up on this pg for now" << dendl;
-	pg->queue_recovery();//已经准备发送了,先加入队列,一会处理
-=======
-      if (rctx.query_map->empty()) {
 	string action;
         if (pg->state_test(PG_STATE_BACKFILL)) {
 	  auto evt = PG::CephPeeringEvtRef(new PG::CephPeeringEvt(
@@ -9424,7 +9262,6 @@ void OSD::do_recovery(
       } else {
 	dout(10) << __func__ << ": no luck, giving up on this pg for now (queue_recovery)" << dendl;
 	pg->queue_recovery();
->>>>>>> upstream/master
       }
     }
 
@@ -9570,12 +9407,8 @@ struct C_CompleteSplits : public Context {
 	 ++i) {
       osd->pg_map_lock.get_write();
       (*i)->lock();
-<<<<<<< HEAD
-      osd->add_newly_split_pg(&**i, &rctx);//设置split后的pg
-=======
       PG *pg = i->get();
-      osd->add_newly_split_pg(pg, &rctx);
->>>>>>> upstream/master
+      osd->add_newly_split_pg(pg, &rctx);//设置split后的pg
       if (!((*i)->deleting)) {
         set<spg_t> to_complete;
         to_complete.insert((*i)->info.pgid);
@@ -9603,13 +9436,8 @@ void OSD::process_peering_events(
   rctx.handle = &handle;
   for (list<PG*>::const_iterator i = pgs.begin();
        i != pgs.end();
-<<<<<<< HEAD
        ++i) {//针对每个pg处理
-    set<boost::intrusive_ptr<PG> > split_pgs;
-=======
-       ++i) {
     set<PGRef> split_pgs;
->>>>>>> upstream/master
     PG *pg = *i;
     pg->lock_suspend_timeout(handle);
     curmap = service.get_osdmap();
@@ -10177,11 +10005,8 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
     osd->cct->get_heartbeat_map()->reset_timeout(hb,
       osd->cct->_conf->threadpool_default_timeout, 0);
     sdata->sdata_lock.Lock();
-<<<<<<< HEAD
-    //等待一定时间，防止空转
-=======
     sdata->sdata_op_ordering_lock.Unlock();
->>>>>>> upstream/master
+    //等待一定时间，防止空转
     sdata->sdata_cond.WaitInterval(sdata->sdata_lock,
       utime_t(osd->cct->_conf->threadpool_empty_queue_max_wait, 0));
     sdata->sdata_lock.Unlock();

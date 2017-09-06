@@ -48,20 +48,11 @@ class FileJournal :
 public:
   /// Protected by finisher_lock
   struct completion_item {
-<<<<<<< HEAD
     uint64_t seq;//序号
     Context *finish;//回调
     utime_t start;//开始时间
-    TrackedOpRef tracked_op;//?
-    completion_item(uint64_t o, Context *c, utime_t s,
-		    TrackedOpRef opref)
-=======
-    uint64_t seq;
-    Context *finish;
-    utime_t start;
     TrackedOpRef tracked_op;
     completion_item(uint64_t o, Context *c, utime_t s, TrackedOpRef opref)
->>>>>>> upstream/master
       : seq(o), finish(c), start(s), tracked_op(opref) {}
     completion_item() : seq(0), finish(0), start(0) {}
   };

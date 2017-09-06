@@ -509,11 +509,7 @@ private:
 
   //最大osd id
   int32_t max_osd;
-<<<<<<< HEAD
-  vector<uint8_t> osd_state;//记录各osd的状态（状态是几个位的掩码，例如CEPH_OSD_UP）
-=======
-  vector<uint32_t> osd_state;
->>>>>>> upstream/master
+  vector<uint32_t> osd_state;//记录各osd的状态（状态是几个位的掩码，例如CEPH_OSD_UP）
 
   struct addrs_s {
     mempool::osdmap::vector<ceph::shared_ptr<entity_addr_t> > client_addr;
@@ -524,23 +520,8 @@ private:
   };
   ceph::shared_ptr<addrs_s> osd_addrs;
 
-<<<<<<< HEAD
   //用于标记in,out
   vector<__u32>   osd_weight;   // 16.16 fixed point, 0x10000 = "in", 0 = "out"
-  vector<osd_info_t> osd_info;
-  //pg_temp映射，给定一个pg_t,获取其对应的一组osd集
-  ceph::shared_ptr< map<pg_t,vector<int32_t> > > pg_temp;  // temp pg mapping (e.g. while we rebuild)
-  ceph::shared_ptr< map<pg_t,int32_t > > primary_temp;  // temp primary mapping (e.g. while we rebuild)
-  ceph::shared_ptr< vector<__u32> > osd_primary_affinity; ///< 16.16 fixed point, 0x10000 = baseline
-
-  //pool id号与pool之间的映射(osdmap中所有的pool)
-  map<int64_t,pg_pool_t> pools;
-  //pool-id与pool名称之间的映射
-  map<int64_t,string> pool_name;
-  map<string,map<string,string> > erasure_code_profiles;
-  //构造的数据，通过pool_name构造一个反向映射name_pool
-  map<string,int64_t> name_pool;
-=======
   mempool::osdmap::vector<__u32>   osd_weight;   // 16.16 fixed point, 0x10000 = "in", 0 = "out"
   mempool::osdmap::vector<osd_info_t> osd_info;
   ceph::shared_ptr<PGTempMap> pg_temp;  // temp pg mapping (e.g. while we rebuild)
@@ -550,11 +531,13 @@ private:
   // remap (post-CRUSH, pre-up)
   mempool::osdmap::map<pg_t,mempool::osdmap::vector<int32_t>> pg_upmap; ///< remap pg
   mempool::osdmap::map<pg_t,mempool::osdmap::vector<pair<int32_t,int32_t>>> pg_upmap_items; ///< remap osds in up set
->>>>>>> upstream/master
 
+  //pool id号与pool之间的映射(osdmap中所有的pool)
   mempool::osdmap::map<int64_t,pg_pool_t> pools;
+  //pool-id与pool名称之间的映射
   mempool::osdmap::map<int64_t,string> pool_name;
   mempool::osdmap::map<string,map<string,string> > erasure_code_profiles;
+  //构造的数据，通过pool_name构造一个反向映射name_pool
   mempool::osdmap::map<string,int64_t> name_pool;
 
   ceph::shared_ptr< mempool::osdmap::vector<uuid_d> > osd_uuid;
@@ -789,14 +772,11 @@ public:
     return osd >= 0 && osd < max_osd && (osd_state[osd] & CEPH_OSD_EXISTS);
   }
 
-<<<<<<< HEAD
-  //检查当前给定osd是否处理up状态
-=======
   bool is_destroyed(int osd) const {
     return exists(osd) && (osd_state[osd] & CEPH_OSD_DESTROYED);
   }
 
->>>>>>> upstream/master
+  //检查当前给定osd是否处理up状态
   bool is_up(int osd) const {
     return exists(osd) && (osd_state[osd] & CEPH_OSD_UP);
   }
@@ -1174,12 +1154,8 @@ public:
 
   //获取主碎片是哪一个（对副本而言，即为获取主)
   bool get_primary_shard(const pg_t& pgid, spg_t *out) const {
-<<<<<<< HEAD
-	//搞清楚是哪个pool
-    map<int64_t, pg_pool_t>::const_iterator i = get_pools().find(pgid.pool());
-=======
+    //搞清楚是哪个pool
     auto i = get_pools().find(pgid.pool());
->>>>>>> upstream/master
     if (i == get_pools().end()) {
       return false;
     }
@@ -1213,13 +1189,8 @@ public:
   int64_t get_pool_max() const {
     return pool_max;
   }
-<<<<<<< HEAD
-
   //获取所有当前osdmap中的所有pool及其id映射表
-  const map<int64_t,pg_pool_t>& get_pools() const {
-=======
   const mempool::osdmap::map<int64_t,pg_pool_t>& get_pools() const {
->>>>>>> upstream/master
     return pools;
   }
   mempool::osdmap::map<int64_t,pg_pool_t>& get_pools() {
@@ -1256,12 +1227,8 @@ public:
 
   //规范pg值
   pg_t raw_pg_to_pg(pg_t pg) const {
-<<<<<<< HEAD
-	//搞清楚是哪个pool
-    map<int64_t,pg_pool_t>::const_iterator p = pools.find(pg.pool());
-=======
+    //搞清楚是哪个pool
     auto p = pools.find(pg.pool());
->>>>>>> upstream/master
     assert(p != pools.end());
     return p->second.raw_pg_to_pg(pg);
   }
@@ -1330,11 +1297,7 @@ public:
     if (pg_is_ec(pg))
       return false;
 
-<<<<<<< HEAD
-    return calc_pg_role(osd, group, nrep) >= 0;//检查ec是否负责此块.
-=======
-    return calc_pg_role(osd, group, group.size()) >= 0;
->>>>>>> upstream/master
+    return calc_pg_role(osd, group, group.size()) >= 0;//检查ec是否负责此块.
   }
 
   int clean_pg_upmaps(

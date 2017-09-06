@@ -32,34 +32,21 @@ ostream& operator<<(ostream& out, const bluefs_extent_t& e);
 
 
 struct bluefs_fnode_t {
-<<<<<<< HEAD
   uint64_t ino;//inode取值
   uint64_t size;//大小
   utime_t mtime;//修改时间
   uint8_t prefer_bdev;//使用了哪类块设备（当前有三种）
   mempool::bluefs::vector<bluefs_extent_t> extents;//已分配
-=======
-  uint64_t ino;
-  uint64_t size;
-  utime_t mtime;
-  uint8_t prefer_bdev;
-  mempool::bluefs::vector<bluefs_extent_t> extents;
   uint64_t allocated;
->>>>>>> upstream/master
 
   bluefs_fnode_t() : ino(0), size(0), prefer_bdev(0), allocated(0) {}
 
-<<<<<<< HEAD
   uint64_t get_allocated() const {//获取已申请的长度
-    uint64_t r = 0;
-=======
-  uint64_t get_allocated() const {
     return allocated;
   }
 
   void recalc_allocated() {
     allocated = 0;
->>>>>>> upstream/master
     for (auto& p : extents)
       allocated += p.length;
   }

@@ -352,13 +352,8 @@ public:
   // v8 was the move to a per-pg pgmeta object
   // v7 was SnapMapper addition in 86658392516d5175b2756659ef7ffaaf95b0f8ad
   // (first appeared in cuttlefish).
-<<<<<<< HEAD
-  static const __u8 compat_struct_v = 7;
-  bool must_upgrade() {//是否需要升级
-=======
   static const __u8 compat_struct_v = 10;
-  bool must_upgrade() {
->>>>>>> upstream/master
+  bool must_upgrade() {//是否需要升级
     return info_struct_v < cur_struct_v;
   }
   bool can_upgrade() {//能不能升级
@@ -418,12 +413,8 @@ public:
       return i->second.is_delete();
     }
     bool is_unfound(const hobject_t &hoid) const {
-<<<<<<< HEAD
-    //如果需要恢复并且(missing_loc中没有它或者有它但不能恢复.)
-      return needs_recovery(hoid) && (
-=======
+      //如果需要恢复并且(missing_loc中没有它或者有它但不能恢复.)
       return needs_recovery(hoid) && !is_deleted(hoid) && (
->>>>>>> upstream/master
 	!missing_loc.count(hoid) ||
 	!(*is_recoverable)(missing_loc.find(hoid)->second));
     }
@@ -554,13 +545,9 @@ public:
       if (!item)//没有找到,它被恢复了.
 	return; // recovered!
 
-<<<<<<< HEAD
       needs_recovery_map[hoid] = *item;//加入到need_recovery_map表中
-=======
-      needs_recovery_map[hoid] = *item;
       if (item->is_delete())
 	return;
->>>>>>> upstream/master
       auto mliter =
 	missing_loc.insert(make_pair(hoid, set<pg_shard_t>())).first;
       assert(info.last_backfill.is_max());
@@ -758,11 +745,7 @@ protected:
   
   bool        need_up_thru;
   set<pg_shard_t>    stray_set;   // non-acting osds that have PG data.
-<<<<<<< HEAD
-  eversion_t  oldest_update; // acting: lowest (valid) last_update in active set
   //所有对端的信息
-=======
->>>>>>> upstream/master
   map<pg_shard_t, pg_info_t>    peer_info;   // info from peers (stray or prior)
   set<pg_shard_t> peer_purged; // peers purged
   map<pg_shard_t, pg_missing_t> peer_missing;//对端缺少的.
@@ -955,13 +938,8 @@ protected:
   list<OpRequestRef>            waiting_for_active;//等待达到pg active状态后执行
   list<OpRequestRef>            waiting_for_scrub;
 
-<<<<<<< HEAD
   list<OpRequestRef>            waiting_for_cache_not_full;//等待cache full后刷新的操作列表.
-  list<OpRequestRef>            waiting_for_all_missing;
-=======
-  list<OpRequestRef>            waiting_for_cache_not_full;
   list<OpRequestRef>            waiting_for_clean_to_primary_repair;
->>>>>>> upstream/master
   map<hobject_t, list<OpRequestRef>> waiting_for_unreadable_object,
 			     waiting_for_degraded_object,
 			     waiting_for_blocked_object;
@@ -1929,12 +1907,8 @@ public:
     //recovered状态
     struct Recovered : boost::statechart::state< Recovered, Active >, NamedState {
       typedef boost::mpl::list<
-<<<<<<< HEAD
 	boost::statechart::transition< GoClean, Clean >,//转为Clean
-=======
-	boost::statechart::transition< GoClean, Clean >,
 	boost::statechart::transition< DoRecovery, WaitLocalRecoveryReserved >,
->>>>>>> upstream/master
 	boost::statechart::custom_reaction< AllReplicasActivated >
       > reactions;
       explicit Recovered(my_context ctx);

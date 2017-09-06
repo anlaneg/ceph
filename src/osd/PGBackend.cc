@@ -943,12 +943,8 @@ void PGBackend::be_compare_scrubmaps(//这个函数写的非常的乱,向作者�
       be_select_auth_object(*k, maps, &auth_oi, shard_map, object_error);
 
     list<pg_shard_t> auth_list;
-<<<<<<< HEAD
-    if (auth == maps.end()) {//没有选出来.说明没有一个是一致的.
-=======
     set<pg_shard_t> object_errors;
-    if (auth == maps.end()) {
->>>>>>> upstream/master
+    if (auth == maps.end()) {//没有选出来.说明没有一个是一致的.
       object_error.set_version(0);
       object_error.set_auth_missing(*k, maps, shard_map, shallow_errors,
 	deep_errors, get_parent()->whoami_shard());

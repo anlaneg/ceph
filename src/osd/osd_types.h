@@ -558,15 +558,6 @@ struct spg_t {
     DECODE_FINISH(bl);
   }
 
-<<<<<<< HEAD
-  hobject_t make_temp_hobject(const string& name) const {//临时对象是pool < 0 但！=-1的对象
-    return hobject_t(object_t(name), "", CEPH_NOSNAP,
-		     pgid.ps(),
-		     hobject_t::POOL_TEMP_START - pgid.pool(), "");
-  }
-
-=======
->>>>>>> upstream/master
   ghobject_t make_temp_ghobject(const string& name) const {
     return ghobject_t(
       hobject_t(object_t(name), "", CEPH_NOSNAP,
@@ -1286,16 +1277,10 @@ struct pg_pool_t {
   }
 
   uint64_t flags;           ///< FLAG_*
-<<<<<<< HEAD
   __u8 type;                ///< TYPE_* //类型(ec,replication?)
   __u8 size, min_size;      ///< number of osds in each pg //pg中需要的osd数量,最小数量
-  __u8 crush_ruleset;       ///< crush placement rule set //crush规则集.
+  __u8 crush_rule;          ///< crush placement rule //crush规则集.
   //采用哪种hash算法来映射object名称到ps(eg. CEPH_STR_HASH_RJENKINS)
-=======
-  __u8 type;                ///< TYPE_*
-  __u8 size, min_size;      ///< number of osds in each pg
-  __u8 crush_rule;          ///< crush placement rule
->>>>>>> upstream/master
   __u8 object_hash;         ///< hash mapping object name to ps
 private:
   //pool中的pg数，pool中的pgp数
@@ -2163,20 +2148,16 @@ WRITE_CLASS_ENCODER(pg_hit_set_history_t)
  * history they need to worry about.
  */
 struct pg_history_t {
-<<<<<<< HEAD
-	//pg的创建时间
-  epoch_t epoch_created;       // epoch in which PG was created
-  //最后一次进入start的时间
-  epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
-  //上次到达clear状态的时间
-=======
+  //pg的创建时间
   epoch_t epoch_created;       // epoch in which *pg* was created (pool or pg)
   epoch_t epoch_pool_created;  // epoch in which *pool* was created
 			       // (note: may be pg creation epoch for
 			       // pre-luminous clusters)
+  //最后一次进入start的时间
   epoch_t last_epoch_started;  // lower bound on last epoch started (anywhere, not necessarily locally)
   epoch_t last_interval_started; // first epoch of last_epoch_started interval
->>>>>>> upstream/master
+  //上次到达clear状态的时间
+=======
   epoch_t last_epoch_clean;    // lower bound on last epoch the PG was completely clean.
   epoch_t last_interval_clean; // first epoch of last_epoch_clean interval
   epoch_t last_epoch_split;    // as parent or child
@@ -2237,9 +2218,6 @@ struct pg_history_t {
       epoch_created = other.epoch_created;
       modified = true;
     }
-<<<<<<< HEAD
-    if (last_epoch_started < other.last_epoch_started) {//采用更大的
-=======
     if (epoch_pool_created < other.epoch_pool_created) {
       // FIXME: for jewel compat only; this should either be 0 or always the
       // same value across all pg instances.
@@ -2247,7 +2225,6 @@ struct pg_history_t {
       modified = true;
     }
     if (last_epoch_started < other.last_epoch_started) {
->>>>>>> upstream/master
       last_epoch_started = other.last_epoch_started;
       modified = true;
     }
@@ -2324,16 +2301,10 @@ inline ostream& operator<<(ostream& out, const pg_history_t& h) {
  */
 struct pg_info_t {
   spg_t pgid;
-<<<<<<< HEAD
   eversion_t last_update;      ///< last object version applied to store.(写日志时更新)
   eversion_t last_complete;    ///< last version pg was complete through.(如果last_complete与last_update一样时,均在写日志时更新)
   epoch_t last_epoch_started;  ///< last epoch at which this pg started on this osd(每到达一次active,就将此值设置为active状态时的osdmap版本号)
-=======
-  eversion_t last_update;      ///< last object version applied to store.
-  eversion_t last_complete;    ///< last version pg was complete through.
-  epoch_t last_epoch_started;  ///< last epoch at which this pg started on this osd
   epoch_t last_interval_started; ///< first epoch of last_epoch_started interval
->>>>>>> upstream/master
   
   version_t last_user_version; ///< last user object version applied to store(写日志时更新成user_version)
 
@@ -3359,14 +3330,9 @@ struct pg_log_entry_t {
   ObjectModDesc mod_desc;
   bufferlist snaps;   // only for clone entries
   hobject_t  soid;
-<<<<<<< HEAD
   osd_reqid_t reqid;  // caller+tid to uniquely identify request//唯一标记一个请求{一个客户一个编号,由monitor来分?}
-  vector<pair<osd_reqid_t, version_t> > extra_reqids;
-  //当前版本，此对象的前一个版本，？
-=======
-  osd_reqid_t reqid;  // caller+tid to uniquely identify request
   mempool::osd_pglog::vector<pair<osd_reqid_t, version_t> > extra_reqids;
->>>>>>> upstream/master
+  //当前版本，此对象的前一个版本，？
   eversion_t version, prior_version, reverting_to;
   version_t user_version; // the user version for this entry
   utime_t     mtime;  // this is the _user_ mtime, mind you
@@ -3906,35 +3872,6 @@ public:
    */
   //将缺失的日志一条一条添加进来,以此来修改missing表及其查询关系表.
   void add_next_event(const pg_log_entry_t& e) {
-<<<<<<< HEAD
-    if (e.is_update()) {
-      map<hobject_t, item>::iterator missing_it;
-      missing_it = missing.find(e.soid);
-      bool is_missing_divergent_item = missing_it != missing.end();//现有的missing中有没有?
-
-      if (e.prior_version == eversion_t() || e.is_clone()) {//新对象
-	// new object.
-	if (is_missing_divergent_item) {  // use iterator ,新对象,但旧的里有和它一样名称的.
-	  rmissing.erase((missing_it->second).need.version);//删除掉,加这个版本的.
-	  missing_it->second = item(e.version, eversion_t());  // .have = nil
-	} else  // create new element in missing map
-	  missing[e.soid] = item(e.version, eversion_t());     // .have = nil,加入即可
-      } else if (is_missing_divergent_item) {//不是新创建的对象,但旧的missing表里有
-	// already missing (prior).
-	rmissing.erase((missing_it->second).need.version);
-	(missing_it->second).need = e.version;  // leave .have unchanged.//更新它需要的版本至e.version
-      } else if (e.is_backlog()) {//不理解pglog中此操作
-	// May not have prior version
-	assert(0 == "these don't exist anymore");
-      } else {
-	// not missing, we must have prior_version (if any) //在现有missing表里没有,加入即可.
-	assert(!is_missing_divergent_item);
-	missing[e.soid] = item(e.version, e.prior_version);
-      }
-      rmissing[e.version.version] = e.soid;
-    } else if (e.is_delete()) {//删除操作,没有必要恢复它了.
-      rm(e.soid, e.version);
-=======
     map<hobject_t, item>::iterator missing_it;
     missing_it = missing.find(e.soid);
     bool is_missing_divergent_item = missing_it != missing.end();
@@ -3957,7 +3894,6 @@ public:
       // not missing, we must have prior_version (if any)
       assert(!is_missing_divergent_item);
       missing[e.soid] = item(e.version, e.prior_version, e.is_delete());
->>>>>>> upstream/master
     }
     rmissing[e.version.version] = e.soid;
     tracker.changed(e.soid);
@@ -4956,19 +4892,10 @@ ostream& operator<<(ostream& out, const PushOp &op);
  */
 struct ScrubMap {
   struct object {
-<<<<<<< HEAD
     map<string,bufferptr> attrs;//填充的对象的属性
-    set<snapid_t> snapcolls;
     uint64_t size;//对象的size
     __u32 omap_digest;         ///< omap crc32c//omap的crc
     __u32 digest;              ///< data crc32c//对象的crc
-    uint32_t nlinks;//连接数
-=======
-    map<string,bufferptr> attrs;
-    uint64_t size;
-    __u32 omap_digest;         ///< omap crc32c
-    __u32 digest;              ///< data crc32c
->>>>>>> upstream/master
     bool negative:1;
     bool digest_present:1;//标记对象crc有效
     bool omap_digest_present:1;//标记omap crc有效

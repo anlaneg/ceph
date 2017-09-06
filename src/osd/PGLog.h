@@ -103,12 +103,8 @@ public:
      * It's a reverse_iterator because rend() is a natural representation for
      * tail, and rbegin() works nicely for head.
      */
-<<<<<<< HEAD
     //这个总是指向第一个可trimmed的节点(可以简单理解为队头)
-    mempool::osd::list<pg_log_entry_t>::reverse_iterator
-=======
     mempool::osd_pglog::list<pg_log_entry_t>::reverse_iterator
->>>>>>> upstream/master
       rollback_info_trimmed_to_riter;
 
     template <typename F>
@@ -300,14 +296,8 @@ public:
         index_extra_caller_ops();//建立索引
       }
       p = extra_caller_ops.find(r);
-<<<<<<< HEAD
       if (p != extra_caller_ops.end()) {//自extra_caller_ops中查找,感觉为支持一次发送多事务{指批量事务?}
-	for (vector<pair<osd_reqid_t, version_t> >::const_iterator i =
-	       p->second->extra_reqids.begin();
-=======
-      if (p != extra_caller_ops.end()) {
 	for (auto i = p->second->extra_reqids.begin();
->>>>>>> upstream/master
 	     i != p->second->extra_reqids.end();
 	     ++i) {
 	  if (i->first == r) {
@@ -429,14 +419,11 @@ public:
       index(PGLOG_INDEXED_EXTRA_CALLER_OPS);
     }
 
-<<<<<<< HEAD
-    //将e加入索引,相当于增量索引
-=======
     void index_dups() const {
       index(PGLOG_INDEXED_DUPS);
     }
 
->>>>>>> upstream/master
+    //将e加入索引,相当于增量索引
     void index(pg_log_entry_t& e) {
       //如果有object索引,检查是否包启此e,如果无则加,如要有,且版本号于此e亦加
       if ((indexed_data & PGLOG_INDEXED_OBJECTS) && e.object_is_indexed()) {
@@ -461,10 +448,7 @@ public:
       }
     }
 
-<<<<<<< HEAD
     //删除索引
-=======
->>>>>>> upstream/master
     void unindex() {
       objects.clear();
       caller_ops.clear();
@@ -473,12 +457,8 @@ public:
       indexed_data = 0;
     }
 
-<<<<<<< HEAD
     //自索引中删除某e
-    void unindex(pg_log_entry_t& e) {
-=======
     void unindex(const pg_log_entry_t& e) {
->>>>>>> upstream/master
       // NOTE: this only works if we remove from the _tail_ of the log!
       if (indexed_data & PGLOG_INDEXED_OBJECTS) {
         if (objects.count(e.soid) && objects[e.soid]->version == e.version)
@@ -1026,11 +1006,7 @@ protected:
 	ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			   << " missing.have is " << missing.get_items().at(hoid).have
 			   << ", adjusting" << dendl;
-<<<<<<< HEAD
-	missing.revise_need(hoid, prior_version);//如果对象不存在,添加对象,并指明版本,如果对象存在,则指明需要prior_version版本
-=======
-	missing.revise_need(hoid, prior_version, false);
->>>>>>> upstream/master
+	missing.revise_need(hoid, prior_version, false);//如果对象不存在,添加对象,并指明版本,如果对象存在,则指明需要prior_version版本
 	if (prior_version <= info.log_tail) {
 	  ldpp_dout(dpp, 10) << __func__ << ": hoid " << hoid
 			     << " prior_version " << prior_version
