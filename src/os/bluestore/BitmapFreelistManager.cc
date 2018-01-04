@@ -59,9 +59,11 @@ BitmapFreelistManager::BitmapFreelistManager(CephContext* cct,
 }
 
 //创建bfm
-int BitmapFreelistManager::create(uint64_t new_size, KeyValueDB::Transaction txn)
+int BitmapFreelistManager::create(uint64_t new_size, uint64_t min_alloc_size,
+				  KeyValueDB::Transaction txn)
 {
-  bytes_per_block = cct->_conf->bdev_block_size;
+  bytes_per_block = std::max(cct->_conf->bdev_block_size,
+			     (int64_t)min_alloc_size);
   assert(ISP2(bytes_per_block));
   size = P2ALIGN(new_size, bytes_per_block);
   blocks_per_key = cct->_conf->bluestore_freelist_blocks_per_key;//规范size是其按bdev_block_size对齐
@@ -466,8 +468,6 @@ void BitmapFreelistManager::allocate(
 {
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
-  if (cct->_conf->bluestore_debug_freelist)
-    _verify_range(offset, length, 0);//校验这些值均没有被占用
   _xor(offset, length, txn);
 }
 
@@ -478,8 +478,6 @@ void BitmapFreelistManager::release(
 {
   dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   << std::dec << dendl;
-  if (cct->_conf->bluestore_debug_freelist)
-    _verify_range(offset, length, 1);//校验这些值均被占用
   _xor(offset, length, txn);
 }
 

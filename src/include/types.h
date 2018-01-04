@@ -54,12 +54,13 @@ extern "C" {
 #include <string>
 #include <list>
 #include <set>
+#include <boost/container/flat_set.hpp>
+#include <boost/container/flat_map.hpp>
 #include <map>
 #include <vector>
 #include <iostream>
 #include <iomanip>
 
-using namespace std;
 
 #include "include/unordered_map.h"
 
@@ -71,7 +72,7 @@ using namespace std;
 #include "assert.h"
 
 // DARWIN compatibility
-#ifdef DARWIN
+#ifdef __APPLE__
 typedef long long loff_t;
 typedef long long off64_t;
 #define O_DIRECT 00040000
@@ -106,6 +107,10 @@ template<class A, class Alloc>
 inline ostream& operator<<(ostream& out, const list<A,Alloc>& ilist);
 template<class A, class Comp, class Alloc>
 inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset);
+template<class A, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const boost::container::flat_set<A, Comp, Alloc>& iset);
+template<class A, class B, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const boost::container::flat_map<A, B, Comp, Alloc>& iset);
 template<class A, class Comp, class Alloc>
 inline ostream& operator<<(ostream& out, const multiset<A,Comp,Alloc>& iset);
 template<class A, class B, class Comp, class Alloc>
@@ -163,6 +168,28 @@ inline ostream& operator<<(ostream& out, const set<A, Comp, Alloc>& iset) {
        ++it) {
     if (it != iset.begin()) out << ",";
     out << *it;
+  }
+  return out;
+}
+
+template<class A, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const boost::container::flat_set<A, Comp, Alloc>& iset) {
+  for (auto it = iset.begin();
+       it != iset.end();
+       ++it) {
+    if (it != iset.begin()) out << ",";
+    out << *it;
+  }
+  return out;
+}
+
+template<class A, class B, class Comp, class Alloc>
+inline ostream& operator<<(ostream& out, const boost::container::flat_map<A, B, Comp, Alloc>& m) {
+  for (auto it = m.begin();
+       it != m.end();
+       ++it) {
+    if (it != m.begin()) out << ",";
+    out << it->first << "=" << it->second;
   }
   return out;
 }
@@ -439,9 +466,9 @@ struct weightf_t {
 
 inline ostream& operator<<(ostream& out, const weightf_t& w)
 {
-  if (w.v < -0.01) {
+  if (w.v < -0.01F) {
     return out << "-";
-  } else if (w.v < 0.000001) {
+  } else if (w.v < 0.000001F) {
     return out << "0";
   } else {
     std::streamsize p = out.precision();
@@ -471,7 +498,7 @@ WRITE_EQ_OPERATORS_1(shard_id_t, id)
 WRITE_CMP_OPERATORS_1(shard_id_t, id)
 ostream &operator<<(ostream &lhs, const shard_id_t &rhs);
 
-#if defined(__sun) || defined(_AIX) || defined(DARWIN) || defined(__FreeBSD__)
+#if defined(__sun) || defined(_AIX) || defined(__APPLE__) || defined(__FreeBSD__)
 __s32  ceph_to_hostos_errno(__s32 e);
 __s32  hostos_to_ceph_errno(__s32 e);
 #else

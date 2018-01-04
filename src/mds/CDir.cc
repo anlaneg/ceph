@@ -183,7 +183,9 @@ CDir::CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth) :
   cache(mdcache), inode(in), frag(fg),
   first(2),
   dirty_rstat_inodes(member_offset(CInode, dirty_rstat_item)),
-  projected_version(0),  item_dirty(this), item_new(this),
+  projected_version(0),
+  dirty_dentries(member_offset(CDentry, item_dir_dirty)),
+  item_dirty(this), item_new(this),
   num_head_items(0), num_head_null(0),
   num_snap_items(0), num_snap_null(0),
   num_dirty(0), committing_version(0), committed_version(0),
@@ -863,8 +865,10 @@ void CDir::steal_dentry(CDentry *dn)
     dn->dir->adjust_nested_auth_pins(-ap, -dap, NULL);
   }
 
-  if (dn->is_dirty()) 
+  if (dn->is_dirty()) {
+    dirty_dentries.push_back(&dn->item_dir_dirty);
     num_dirty++;
+  }
 
   dn->dir = this;
 }
@@ -932,7 +936,7 @@ void CDir::finish_old_fragment(list<MDSInternalContextBase*>& waiters, bool repl
 
 void CDir::init_fragment_pins()
 {
-  if (!replica_map.empty())
+  if (is_replicated())
     get(PIN_REPLICATED);
   if (state_test(STATE_DIRTY))
     get(PIN_DIRTY);
@@ -976,7 +980,7 @@ void CDir::split(int bits, list<CDir*>& subs, list<MDSInternalContextBase*>& wai
   for (list<frag_t>::iterator p = frags.begin(); p != frags.end(); ++p) {
     CDir *f = new CDir(inode, *p, cache, is_auth());
     f->state_set(state & (MASK_STATE_FRAGMENT_KEPT | STATE_COMPLETE));
-    f->replica_map = replica_map;
+    f->get_replicas() = get_replicas();
     f->dir_auth = dir_auth;
     f->init_fragment_pins();
     f->set_version(get_version());
@@ -1085,12 +1089,10 @@ void CDir::merge(list<CDir*>& subs, list<MDSInternalContextBase*>& waiters, bool
       steal_dentry(dir->items.begin()->second);
     
     // merge replica map
-    for (compact_map<mds_rank_t,unsigned>::iterator p = dir->replicas_begin();
-	 p != dir->replicas_end();
-	 ++p) {
-      unsigned cur = replica_map[p->first];
-      if (p->second > cur)
-	replica_map[p->first] = p->second;
+    for (const auto &p : dir->get_replicas()) {
+      unsigned cur = get_replicas()[p.first];
+      if (p.second > cur)
+	get_replicas()[p.first] = p.second;
     }
 
     // merge version
@@ -1418,7 +1420,7 @@ void CDir::mark_clean()
 // caller should hold auth pin of this
 void CDir::log_mark_dirty()
 {
-  if (is_dirty() || is_projected())
+  if (is_dirty() || projected_version > get_version())
     return; // noop if it is already dirty or will be dirty
 
   version_t pv = pre_dirty();
@@ -2123,11 +2125,7 @@ void CDir::_omap_commit(int op_prio)
     stale_items.clear();
   }
 
-  for (map_t::iterator p = items.begin();
-      p != items.end(); ) {
-    CDentry *dn = p->second;
-    ++p;
-
+  auto write_one = [&](CDentry *dn) {
     string key;
     dn->key().encode(key);
 
@@ -2136,12 +2134,8 @@ void CDir::_omap_commit(int op_prio)
       dout(10) << " rm " << key << dendl;
       write_size += key.length();
       to_remove.insert(key);
-      continue;
+      return;
     }
-
-    if (!dn->is_dirty() &&
-	(!dn->state_test(CDentry::STATE_FRAGMENTING) || dn->get_linkage()->is_null()))
-      continue;  // skip clean dentries
 
     if (dn->get_linkage()->is_null()) {
       dout(10) << " rm " << dn->name << " " << *dn << dendl;
@@ -2175,6 +2169,22 @@ void CDir::_omap_commit(int op_prio)
       write_size = 0;
       to_set.clear();
       to_remove.clear();
+    }
+  };
+
+  if (state_test(CDir::STATE_FRAGMENTING)) {
+    for (auto p = items.begin(); p != items.end(); ) {
+      CDentry *dn = p->second;
+      ++p;
+      if (!dn->is_dirty() && dn->get_linkage()->is_null())
+	continue;
+      write_one(dn);
+    }
+  } else {
+    for (auto p = dirty_dentries.begin(); !p.end(); ) {
+      CDentry *dn = *p;
+      ++p;
+      write_one(dn);
     }
   }
 
@@ -2344,10 +2354,9 @@ void CDir::_committed(int r, version_t v)
     mark_clean();
 
   // dentries clean?
-  for (map_t::iterator it = items.begin();
-       it != items.end(); ) {
-    CDentry *dn = it->second;
-    ++it;
+  for (auto p = dirty_dentries.begin(); !p.end(); ) {
+    CDentry *dn = *p;
+    ++p;
     
     // inode?
     if (dn->linkage.is_primary()) {
@@ -2368,19 +2377,18 @@ void CDir::_committed(int r, version_t v)
 
     // dentry
     if (committed_version >= dn->get_version()) {
-      if (dn->is_dirty()) {
-	dout(15) << " dir " << committed_version << " >= dn " << dn->get_version() << " now clean " << *dn << dendl;
-	dn->mark_clean();
+      dout(15) << " dir " << committed_version << " >= dn " << dn->get_version() << " now clean " << *dn << dendl;
+      dn->mark_clean();
 
-	// drop clean null stray dentries immediately
-	if (stray && 
-	    dn->get_num_ref() == 0 &&
-	    !dn->is_projected() &&
-	    dn->get_linkage()->is_null())
-	  remove_dentry(dn);
-      } 
+      // drop clean null stray dentries immediately
+      if (stray &&
+	  dn->get_num_ref() == 0 &&
+	  !dn->is_projected() &&
+	  dn->get_linkage()->is_null())
+	remove_dentry(dn);
     } else {
       dout(15) << " dir " << committed_version << " < dn " << dn->get_version() << " still dirty " << *dn << dendl;
+      assert(dn->is_dirty());
     }
   }
 
@@ -2432,7 +2440,7 @@ void CDir::encode_export(bufferlist& bl)
   ::encode(pop_auth_subtree, bl);
 
   ::encode(dir_rep_by, bl);  
-  ::encode(replica_map, bl);
+  ::encode(get_replicas(), bl);
 
   get(PIN_TEMPEXPORTING);
 }
@@ -2473,8 +2481,8 @@ void CDir::decode_import(bufferlist::iterator& blp, utime_t now, LogSegment *ls)
   pop_auth_subtree_nested.add(now, cache->decayrate, pop_auth_subtree);
 
   ::decode(dir_rep_by, blp);
-  ::decode(replica_map, blp);
-  if (!replica_map.empty()) get(PIN_REPLICATED);
+  ::decode(get_replicas(), blp);
+  if (is_replicated()) get(PIN_REPLICATED);
 
   replica_nonce = 0;  // no longer defined
 
@@ -3034,6 +3042,28 @@ void CDir::dump(Formatter *f) const
   MDSCacheObject::dump(f);
 }
 
+void CDir::dump_load(Formatter *f, utime_t now, const DecayRate& rate)
+{
+  f->dump_stream("path") << get_path();
+  f->dump_stream("dirfrag") << dirfrag();
+
+  f->open_object_section("pop_me");
+  pop_me.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_nested");
+  pop_nested.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_auth_subtree");
+  pop_auth_subtree.dump(f, now, rate);
+  f->close_section();
+
+  f->open_object_section("pop_auth_subtree_nested");
+  pop_auth_subtree_nested.dump(f, now, rate);
+  f->close_section();
+}
+
 /****** Scrub Stuff *******/
 
 void CDir::scrub_info_create() const
@@ -3295,3 +3325,4 @@ bool CDir::should_split_fast() const
   return effective_size > fast_limit;
 }
 
+MEMPOOL_DEFINE_OBJECT_FACTORY(CDir, co_dir, mds_co);

@@ -58,7 +58,6 @@ public:
 
   void check_recovery_sources(const OSDMapRef& osdmap) override;
 
-  /// @see PGBackend::delay_message_until_active
   bool can_handle_while_inactive(OpRequestRef op) override;
 
   /// @see PGBackend::handle_message
@@ -68,7 +67,6 @@ public:
 
   void on_change() override;
   void clear_recovery_state() override;
-  void on_flushed() override;
 
   //可恢复性检测类
   class RPCRecPred : public IsPGRecoverablePredicate {
@@ -77,7 +75,7 @@ public:
       return !have.empty();
     }
   };
-  IsPGRecoverablePredicate *get_is_recoverable_predicate() override {//幅本可恢复性检查.
+  IsPGRecoverablePredicate *get_is_recoverable_predicate() const override {
     return new RPCRecPred;
   }
 
@@ -90,7 +88,7 @@ public:
       return have.count(whoami);
     }
   };
-  IsPGReadablePredicate *get_is_readable_predicate() override {//幅本可读性检测回调
+  IsPGReadablePredicate *get_is_readable_predicate() const override {
     return new RPCReadPred(get_parent()->whoami_shard());
   }
 
@@ -218,7 +216,7 @@ private:
 
   map<hobject_t, PullInfo> pulling;
 
-  // Reverse mapping from osd peer to objects beging pulled from that peer
+  // Reverse mapping from osd peer to objects being pulled from that peer
   map<pg_shard_t, set<hobject_t> > pull_from_peer;
   void clear_pull(
     map<hobject_t, PullInfo>::iterator piter,
@@ -430,7 +428,6 @@ private:
 
   void repop_applied(RepModifyRef rm);
   void repop_commit(RepModifyRef rm);
-  bool scrub_supported() override { return true; }
   bool auto_repair_supported() const override { return false; }
 
 
@@ -438,7 +435,8 @@ private:
     const hobject_t &obj,
     uint32_t seed,
     ScrubMap::object &o,
-    ThreadPool::TPHandle &handle) override;
+    ThreadPool::TPHandle &handle,
+    ScrubMap* const map = nullptr) override;
   uint64_t be_get_ondisk_size(uint64_t logical_size) override { return logical_size; }
 };
 

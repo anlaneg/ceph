@@ -52,7 +52,7 @@ SnapshotRemoveRequest<I>::SnapshotRemoveRequest(I &image_ctx,
 						const std::string &snap_name,
 						uint64_t snap_id)
   : Request<I>(image_ctx, on_finish), m_snap_namespace(snap_namespace),
-    m_snap_name(snap_name), m_snap_id(snap_id) {
+    m_snap_name(snap_name), m_snap_id(snap_id), m_state(STATE_REMOVE_OBJECT_MAP) {
 }
 
 template <typename I>
@@ -88,7 +88,7 @@ bool SnapshotRemoveRequest<I>::should_complete(int r) {
     finished = true;
     break;
   default:
-    assert(false);
+    ceph_abort();
     break;
   }
 
@@ -107,13 +107,13 @@ void SnapshotRemoveRequest<I>::send_remove_object_map() {
     if (image_ctx.snap_info.find(m_snap_id) == image_ctx.snap_info.end()) {
       lderr(cct) << this << " " << __func__ << ": snapshot doesn't exist"
                  << dendl;
+      m_state = STATE_ERROR;
       this->async_complete(-ENOENT);
       return;
     }
 
     if (image_ctx.object_map != nullptr) {
       ldout(cct, 5) << this << " " << __func__ << dendl;
-      m_state = STATE_REMOVE_OBJECT_MAP;
 
       image_ctx.object_map->snapshot_remove(
         m_snap_id, this->create_callback_context());
@@ -204,7 +204,7 @@ void SnapshotRemoveRequest<I>::send_release_snap_id() {
 
   librados::AioCompletion *rados_completion =
     this->create_callback_completion();
-  image_ctx.md_ctx.aio_selfmanaged_snap_remove(m_snap_id, rados_completion);
+  image_ctx.data_ctx.aio_selfmanaged_snap_remove(m_snap_id, rados_completion);
   rados_completion->release();
 }
 

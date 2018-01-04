@@ -20,7 +20,7 @@
 
 #include "filestore/FileStore.h"
 #include "memstore/MemStore.h"
-#if defined(HAVE_LIBAIO)
+#if defined(WITH_BLUESTORE)
 #include "bluestore/BlueStore.h"
 #endif
 #include "kstore/KStore.h"
@@ -73,7 +73,7 @@ ObjectStore *ObjectStore::create(CephContext *cct,
   if (type == "memstore") {
     return new MemStore(cct, data);
   }
-#if defined(HAVE_LIBAIO)
+#if defined(WITH_BLUESTORE)
   if (type == "bluestore") {
     return new BlueStore(cct, data);
   }
@@ -103,7 +103,7 @@ int ObjectStore::probe_block_device_fsid(
 {
   int r;
 
-#if defined(HAVE_LIBAIO)
+#if defined(WITH_BLUESTORE)
   // first try bluestore -- it has a crc on its header and will fail
   // reliably.
   r = BlueStore::get_block_device_fsid(cct, path, fsid);

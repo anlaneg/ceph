@@ -22,7 +22,6 @@
 
 #include "common/ceph_crypto.h"
 #include "common/perf_counters.h"
-#include "acconfig.h"
 #include "rgw_acl.h"
 #include "rgw_cors.h"
 #include "rgw_iam_policy.h"
@@ -67,6 +66,7 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_EXPIRES	RGW_ATTR_PREFIX "expires"
 #define RGW_ATTR_DELETE_AT 	RGW_ATTR_PREFIX "delete_at"
 #define RGW_ATTR_ID_TAG    	RGW_ATTR_PREFIX "idtag"
+#define RGW_ATTR_TAIL_TAG    	RGW_ATTR_PREFIX "tail_tag"
 #define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
 #define RGW_ATTR_MANIFEST    	RGW_ATTR_PREFIX "manifest"
 #define RGW_ATTR_USER_MANIFEST  RGW_ATTR_PREFIX "user_manifest"
@@ -215,6 +215,7 @@ using ceph::crypto::MD5;
 #define ERR_ZERO_IN_URL          2211
 #define ERR_MALFORMED_ACL_ERROR  2212
 #define ERR_ZONEGROUP_DEFAULT_PLACEMENT_MISCONFIGURATION 2213
+#define ERR_INVALID_ENCRYPTION_ALGORITHM                 2214
 
 #define ERR_BUSY_RESHARDING      2300
 
@@ -261,14 +262,13 @@ enum {
 
 
  /* size should be the required string size + 1 */
-extern int gen_rand_base64(CephContext *cct, char *dest, int size);
-extern int gen_rand_alphanumeric(CephContext *cct, char *dest, int size);
-extern int gen_rand_alphanumeric_lower(CephContext *cct, char *dest, int size);
-extern int gen_rand_alphanumeric_upper(CephContext *cct, char *dest, int size);
-extern int gen_rand_alphanumeric_no_underscore(CephContext *cct, char *dest, int size);
-extern int gen_rand_alphanumeric_plain(CephContext *cct, char *dest, int size);
-
-extern int gen_rand_alphanumeric_lower(CephContext *cct, string *str, int length);
+int gen_rand_base64(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric_lower(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric_upper(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric_no_underscore(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric_plain(CephContext *cct, char *dest, int size);
+void gen_rand_alphanumeric_lower(CephContext *cct, string *str, int length);
 
 enum RGWIntentEvent {
   DEL_OBJ = 0,
@@ -384,38 +384,44 @@ class RGWEnv;
 
 class RGWConf {
   friend class RGWEnv;
-protected:
-  void init(CephContext *cct, RGWEnv* env);
+  int enable_ops_log;
+  int enable_usage_log;
+  uint8_t defer_to_bucket_acls;
+  void init(CephContext *cct);
 public:
   RGWConf()
     : enable_ops_log(1),
       enable_usage_log(1),
       defer_to_bucket_acls(0) {
   }
-
-  int enable_ops_log;
-  int enable_usage_log;
-  uint8_t defer_to_bucket_acls;
 };
 
 class RGWEnv {
   std::map<string, string, ltstr_nocase> env_map;
-public:
   RGWConf conf;
-
+public:
   void init(CephContext *cct);
   void init(CephContext *cct, char **envp);
-  void set(const boost::string_ref& name, const boost::string_ref& val);
+  void set(std::string name, std::string val);
   const char *get(const char *name, const char *def_val = nullptr) const;
   int get_int(const char *name, int def_val = 0) const;
   bool get_bool(const char *name, bool def_val = 0);
   size_t get_size(const char *name, size_t def_val = 0) const;
   bool exists(const char *name) const;
   bool exists_prefix(const char *prefix) const;
-
   void remove(const char *name);
-
   const std::map<string, string, ltstr_nocase>& get_map() const { return env_map; }
+  int get_enable_ops_log() const {
+    return conf.enable_ops_log;
+  }
+
+  int get_enable_usage_log() const {
+    return conf.enable_usage_log;
+  }
+
+  int get_defer_to_bucket_acls() const {
+    return conf.defer_to_bucket_acls;
+  }
 };
 
 enum http_op {
@@ -774,11 +780,12 @@ struct RGWUserInfo
 WRITE_CLASS_ENCODER(RGWUserInfo)
 
 struct rgw_pool {
-  string name;
-  string ns;
+  std::string name;
+  std::string ns;
 
-  rgw_pool() {}
+  rgw_pool() = default;
   rgw_pool(const rgw_pool& _p) : name(_p.name), ns(_p.ns) {}
+  rgw_pool(rgw_pool&&) = default;
   rgw_pool(const string& _s) {
     from_str(_s);
   }
@@ -834,6 +841,8 @@ struct rgw_pool {
     DECODE_FINISH(bl);
   }
 
+  rgw_pool& operator=(const rgw_pool&) = default;
+
   bool operator==(const rgw_pool& p) const {
     return (compare(p) == 0);
   }
@@ -855,10 +864,20 @@ struct rgw_data_placement_target {
   rgw_pool data_extra_pool;
   rgw_pool index_pool;
 
-  rgw_data_placement_target() {}
+  rgw_data_placement_target() = default;
+  rgw_data_placement_target(const rgw_data_placement_target&) = default;
+  rgw_data_placement_target(rgw_data_placement_target&&) = default;
 
-  rgw_data_placement_target(const rgw_pool& _data_pool, const rgw_pool& _data_extra_pool, const rgw_pool& _index_pool) 
-         : data_pool(_data_pool), data_extra_pool(_data_extra_pool), index_pool(_index_pool) {}
+  rgw_data_placement_target(const rgw_pool& data_pool,
+                            const rgw_pool& data_extra_pool,
+                            const rgw_pool& index_pool)
+    : data_pool(data_pool),
+      data_extra_pool(data_extra_pool),
+      index_pool(index_pool) {
+  }
+
+  rgw_data_placement_target&
+  operator=(const rgw_data_placement_target&) = default;
 
   const rgw_pool& get_data_extra_pool() const {
     if (data_extra_pool.empty()) {
@@ -984,6 +1003,8 @@ struct rgw_bucket {
     explicit_placement(b.explicit_placement.data_pool,
                        b.explicit_placement.data_extra_pool,
                        b.explicit_placement.index_pool) {}
+  rgw_bucket(const rgw_bucket&) = default;
+  rgw_bucket(rgw_bucket&&) = default;
 
   void convert(cls_user_bucket *b) const {
     b->name = name;
@@ -1059,7 +1080,8 @@ struct rgw_bucket {
 
   // format a key for the bucket/instance. pass delim=0 to skip a field
   std::string get_key(char tenant_delim = '/',
-                      char id_delim = ':') const;
+                      char id_delim = ':',
+                      size_t reserve = 0) const;
 
   const rgw_pool& get_data_extra_pool() const {
     return explicit_placement.get_data_extra_pool();
@@ -1068,6 +1090,8 @@ struct rgw_bucket {
   void dump(Formatter *f) const;
   void decode_json(JSONObj *obj);
   static void generate_test_instances(list<rgw_bucket*>& o);
+
+  rgw_bucket& operator=(const rgw_bucket&) = default;
 
   bool operator<(const rgw_bucket& b) const {
     if (tenant == b.tenant) {
@@ -1207,7 +1231,7 @@ struct RGWBucketInfo
   bool has_website;
   RGWBucketWebsiteConf website_conf;
 
-  RGWBucketIndexType index_type;
+  RGWBucketIndexType index_type = RGWBIType_Normal;
 
   bool swift_versioning;
   string swift_ver_location;
@@ -1513,6 +1537,10 @@ struct rgw_obj_key {
     instance = i;
   }
 
+  const string& get_instance() const {
+    return instance;
+  }
+
   string get_index_key_name() const {
     if (ns.empty()) {
       if (name.size() < 1 || name[0] != '_') {
@@ -1704,6 +1732,7 @@ struct rgw_obj_key {
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
+  void decode_json(JSONObj *obj);
 };
 WRITE_CLASS_ENCODER(rgw_obj_key)
 
@@ -1775,6 +1804,7 @@ struct req_state {
   string zonegroup_endpoint;
   string bucket_instance_id;
   int bucket_instance_shard_id;
+  string redirect_zone_endpoint;
 
   string redirect;
 
@@ -1866,18 +1896,30 @@ struct RGWBucketEnt {
   rgw_bucket bucket;
   size_t size;
   size_t size_rounded;
-  real_time creation_time;
+  ceph::real_time creation_time;
   uint64_t count;
 
-  RGWBucketEnt() : size(0), size_rounded(0), count(0) {}
+  /* The placement_rule is necessary to calculate per-storage-policy statics
+   * of the Swift API. Although the info available in RGWBucketInfo, we need
+   * to duplicate it here to not affect the performance of buckets listing. */
+  std::string placement_rule;
 
-  explicit RGWBucketEnt(const rgw_user& u, const cls_user_bucket_entry& e)
-    : bucket(u, e.bucket),
+  RGWBucketEnt()
+    : size(0),
+      size_rounded(0),
+      count(0) {
+  }
+  RGWBucketEnt(const RGWBucketEnt&) = default;
+  RGWBucketEnt(RGWBucketEnt&&) = default;
+  explicit RGWBucketEnt(const rgw_user& u, cls_user_bucket_entry&& e)
+    : bucket(u, std::move(e.bucket)),
       size(e.size),
       size_rounded(e.size_rounded),
       creation_time(e.creation_time),
       count(e.count) {
   }
+
+  RGWBucketEnt& operator=(const RGWBucketEnt&) = default;
 
   void convert(cls_user_bucket_entry *b) const {
     bucket.convert(&b->bucket);
@@ -1888,7 +1930,7 @@ struct RGWBucketEnt {
   }
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(6, 5, bl);
+    ENCODE_START(7, 5, bl);
     uint64_t s = size;
     __u32 mt = ceph::real_clock::to_time_t(creation_time);
     string empty_str;  // originally had the bucket name here, but we encode bucket later
@@ -1900,6 +1942,7 @@ struct RGWBucketEnt {
     s = size_rounded;
     ::encode(s, bl);
     ::encode(creation_time, bl);
+    ::encode(placement_rule, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
@@ -1923,6 +1966,8 @@ struct RGWBucketEnt {
     size_rounded = s;
     if (struct_v >= 6)
       ::decode(creation_time, bl);
+    if (struct_v >= 7)
+      ::decode(placement_rule, bl);
     DECODE_FINISH(bl);
   }
   void dump(Formatter *f) const;
@@ -2221,6 +2266,8 @@ bool verify_bucket_permission_no_policy(
   const int perm);
 bool verify_bucket_permission_no_policy(struct req_state * const s,
 					const int perm);
+int verify_bucket_owner_or_policy(struct req_state* const s,
+				  const uint64_t op);
 extern bool verify_object_permission(
   struct req_state * const s,
   const rgw_obj& obj,
@@ -2325,5 +2372,8 @@ static constexpr uint32_t MATCH_POLICY_STRING = 0x08;
 
 extern bool match_policy(boost::string_view pattern, boost::string_view input,
                          uint32_t flag);
+
+extern string camelcase_dash_http_attr(const string& orig);
+extern string lowercase_dash_http_attr(const string& orig);
 
 #endif

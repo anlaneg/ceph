@@ -19,19 +19,30 @@
 
 #include <atomic>
 #include <condition_variable>
-#include <mutex>
 #include <list>
+#include <map>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
 
 #include "acconfig.h"
+#ifdef HAVE_LIBAIO
 #include "aio.h"
+#endif
+#include "include/assert.h"
+#include "include/buffer.h"
 
 #define SPDK_PREFIX "spdk:"
+
+class CephContext;
 
 /// track in-flight io
 struct IOContext {//这个类提供的功能比较简单，仅是一个粘合层，连接两端
 private:
   std::mutex lock;
   std::condition_variable cond;
+  int r = 0;
 
 public:
   CephContext* cct;
@@ -42,14 +53,16 @@ public:
   std::atomic_int total_nseg = {0};
 #endif
 
-
+#ifdef HAVE_LIBAIO
   std::list<aio_t> pending_aios;    ///< not yet submitted//还没有提交的aio
   std::list<aio_t> running_aios;    ///< submitting or submitted//已经提交的或者正在提交的aio
+#endif
   std::atomic_int num_pending = {0};//还没有提交的aio有多少个
   std::atomic_int num_running = {0};//正在提交的aio或者已提提交的aio
+  bool allow_eio;
 
-  explicit IOContext(CephContext* cct, void *p)
-    : cct(cct), priv(p)
+  explicit IOContext(CephContext* cct, void *p, bool allow_eio = false)
+    : cct(cct), priv(p), allow_eio(allow_eio)
     {}
 
   // no copying
@@ -59,8 +72,9 @@ public:
   bool has_pending_aios() {//是否有未绝aio
     return num_pending.load();
   }
-
+  void release_running_aios();
   void aio_wait();//在此等aio
+  uint64_t get_num_ios() const;
 
   void try_aio_wake() {//尝试着唤醒
     if (num_running == 1) {
@@ -76,6 +90,14 @@ public:
     } else {
       --num_running;
     }
+  }
+
+  void set_return_value(int _r) {
+    r = _r;
+  }
+
+  int get_return_value() const {
+    return r;
   }
 };
 
@@ -117,6 +139,17 @@ public:
   uint64_t get_block_size() const { return block_size; }
 
   virtual int collect_metadata(const std::string& prefix, std::map<std::string,std::string> *pm) const = 0;
+
+  virtual int get_devname(std::string *out) {
+    return -ENOENT;
+  }
+  virtual int get_devices(std::set<std::string> *ls) {
+    std::string s;
+    if (get_devname(&s) == 0) {
+      ls->insert(s);
+    }
+    return 0;
+  }
 
   virtual int read(
     uint64_t off,

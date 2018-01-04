@@ -1073,8 +1073,9 @@ def validate_command(sigdict, args, verbose=False):
                 break
 
         if not found:
-            print('no valid command found; 10 closest matches:', file=sys.stderr)
-            for cmdsig in bestcmds[:10]:
+            bestcmds = bestcmds[:10]
+            print('no valid command found; {0} closest matches:'.format(len(bestcmds)), file=sys.stderr)
+            for cmdsig in bestcmds:
                 for (cmdtag, cmd) in cmdsig.items():
                     print(concise_sig(cmd['sig']), file=sys.stderr)
             return None
@@ -1284,9 +1285,7 @@ def send_command(cluster, target=('mon', ''), cmd=None, inbuf=b'', timeout=0,
             except ImportError:
                 raise RuntimeError("CephFS unavailable, have you installed libcephfs?")
 
-            filesystem = LibCephFS(cluster.conf_defaults, cluster.conffile)
-            filesystem.conf_parse_argv(cluster.parsed_args)
-
+            filesystem = LibCephFS(rados_inst=cluster)
             filesystem.init()
             ret, outbuf, outs = \
                 filesystem.mds_command(mds_spec, cmd, inbuf)

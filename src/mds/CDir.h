@@ -46,6 +46,7 @@ class CDir : public MDSCacheObject, public Counter<CDir> {
   friend ostream& operator<<(ostream& out, const class CDir& dir);
 
 public:
+  MEMPOOL_CLASS_HELPERS();
   // -- pins --
   static const int PIN_DNWAITER =     1;
   static const int PIN_INOWAITER =    2;
@@ -173,8 +174,8 @@ protected:
   std::list<fnode_t*> projected_fnode;
 
 public:
+  elist<CDentry*> dirty_dentries;
   elist<CDir*>::item item_dirty, item_new;
-
 
 public:
   version_t get_version() const { return fnode.version; }
@@ -748,6 +749,7 @@ public:
   ostream& print_db_line_prefix(ostream& out) override;
   void print(ostream& out) override;
   void dump(Formatter *f) const;
+  void dump_load(Formatter *f, utime_t now, const DecayRate& rate);
 };
 
 #endif

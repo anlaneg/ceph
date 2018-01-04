@@ -18,9 +18,9 @@
 #include <list>
 #include <atomic>
 #include <string>
-
 #include <pthread.h>
 
+#include "common/ceph_time.h"
 #include "RWLock.h"
 
 class CephContext;
@@ -44,6 +44,7 @@ struct heartbeat_handle_d {
   //线程id号
   pthread_t thread_id;
   //超时极限时间，自杀极限时间
+  // TODO: use atomic<time_point>, once we can ditch GCC 4.8
   std::atomic<unsigned> timeout = { 0 }, suicide_timeout = { 0 };
   //timeout检查间隙，自杀检查间隙
   time_t grace, suicide_grace;
@@ -62,7 +63,9 @@ class HeartbeatMap {
   void remove_worker(const heartbeat_handle_d *h);
 
   // reset the timeout so that it expects another touch within grace amount of time
-  void reset_timeout(heartbeat_handle_d *h, time_t grace, time_t suicide_grace);
+  void reset_timeout(heartbeat_handle_d *h,
+		     ceph::coarse_mono_clock::rep grace,
+		     ceph::coarse_mono_clock::rep suicide_grace);
   // clear the timeout so that it's not checked on
   void clear_timeout(heartbeat_handle_d *h);
 
@@ -84,7 +87,7 @@ class HeartbeatMap {
  private:
   CephContext *m_cct;
   RWLock m_rwlock;
-  time_t m_inject_unhealthy_until;
+  ceph::coarse_mono_clock::time_point m_inject_unhealthy_until;
   //worker队列（存储各线程pthread_id,名称)
   std::list<heartbeat_handle_d*> m_workers;
   //不健康的worker数
@@ -92,7 +95,8 @@ class HeartbeatMap {
   //总worker数
   std::atomic<unsigned> m_total_workers = { 0 };
 
-  bool _check(const heartbeat_handle_d *h, const char *who, time_t now);
+  bool _check(const heartbeat_handle_d *h, const char *who,
+	      ceph::coarse_mono_clock::rep now);
 };
 
 }

@@ -366,7 +366,7 @@ int FileJournal::create()
     goto free_buf;
   }
 
-  needed_space = ((int64_t)cct->_conf->osd_max_write_size) << 20;
+  needed_space = cct->_conf->osd_max_write_size << 20;
   needed_space += (2 * sizeof(entry_header_t)) + get_top();
   if (header.max_size - header.start < needed_space) {
     derr << "FileJournal::create: OSD journal is not large enough to hold "
@@ -1159,7 +1159,7 @@ void FileJournal::do_write(bufferlist& bl)
      * flush disk caches or commits any sort of metadata.
      */
     int ret = 0;
-#if defined(DARWIN) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
     ret = ::fsync(fd);
 #else
     ret = ::fdatasync(fd);
@@ -1473,20 +1473,20 @@ int FileJournal::write_aio_bl(off64_t& pos, bufferlist& bl, uint64_t seq)
 void FileJournal::write_finish_thread_entry()
 {
 #ifdef HAVE_LIBAIO
-  dout(10) << "write_finish_thread_entry enter" << dendl;
+  dout(10) << __func__ << " enter" << dendl;
   while (true) {
     {
       Mutex::Locker locker(aio_lock);
       if (aio_queue.empty()) {
 	if (aio_stop)
 	  break;
-	dout(20) << "write_finish_thread_entry sleeping" << dendl;
+	dout(20) << __func__ << " sleeping" << dendl;
 	write_finish_cond.Wait(aio_lock);
 	continue;
       }
     }
 
-    dout(20) << "write_finish_thread_entry waiting for aio(s)" << dendl;
+    dout(20) << __func__ << " waiting for aio(s)" << dendl;
     io_event event[16];
     int r = io_getevents(aio_ctx, 1, 16, event, NULL);
     if (r < 0) {
@@ -1507,14 +1507,14 @@ void FileJournal::write_finish_thread_entry()
 	       << " returned: " << (int)event[i].res << dendl;
 	  assert(0 == "unexpected aio error");
 	}
-	dout(10) << "write_finish_thread_entry aio " << ai->off
+	dout(10) << __func__ << " aio " << ai->off
 		 << "~" << ai->len << " done" << dendl;
 	ai->done = true;
       }
       check_aio_completion();
     }
   }
-  dout(10) << "write_finish_thread_entry exit" << dendl;
+  dout(10) << __func__ << " exit" << dendl;
 #endif
 }
 
@@ -2001,6 +2001,8 @@ bool FileJournal::read_entry(
         journaled_seq = seq;
       return true;
     }
+  } else {
+    derr << "do_read_entry(" << pos << "): " << ss.str() << dendl;
   }
 
   if (seq && seq < header.committed_up_to) {
@@ -2016,7 +2018,6 @@ bool FileJournal::read_entry(
     }
   }
 
-  dout(25) << ss.str() << dendl;
   dout(2) << "No further valid entries found, journal is most likely valid"
 	  << dendl;
   return false;

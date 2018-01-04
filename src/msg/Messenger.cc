@@ -1,12 +1,11 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include <mutex>
-#include <random>
-
 #include <netdb.h>
 
 #include "include/types.h"
+#include "include/random.h"
+
 #include "Messenger.h"
 
 #include "msg/simple/SimpleMessenger.h"
@@ -19,8 +18,7 @@
 Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
 {
   std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf->get_val<std::string>("ms_type") : cct->_conf->ms_public_type;
-  uint64_t nonce = 0;
-  get_random_bytes((char*)&nonce, sizeof(nonce));
+  auto nonce = ceph::util::generate_random_number<uint64_t>();
   return Messenger::create(cct, public_msgr_type, entity_name_t::CLIENT(),
 			   std::move(lname), nonce, 0);
 }
@@ -32,15 +30,8 @@ Messenger *Messenger::create(CephContext *cct, const string &type,
 {
   int r = -1;
   if (type == "random") {
-	//这个分支非常的没有用。
-    static std::random_device seed;
-    static std::default_random_engine random_engine(seed());
-
-    static std::mutex random_lock;
-    std::lock_guard<std::mutex> lock(random_lock);
-
-    std::uniform_int_distribution<> dis(0, 1);
-    r = dis(random_engine);
+    //这个分支非常的没有用。
+    r = ceph::util::generate_random_number(0, 1);
   }
   //simple消息
   if (r == 0 || type == "simple")

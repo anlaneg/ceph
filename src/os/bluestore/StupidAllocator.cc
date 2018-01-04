@@ -78,7 +78,7 @@ void StupidAllocator::unreserve(uint64_t unused)//取消预留
 /// return the effective length of the extent if we align to alloc_unit
 //返回p接alloc_unit对齐后的实际大小
 uint64_t StupidAllocator::_aligned_len(
-  btree_interval_set<uint64_t,allocator>::iterator p,
+  StupidAllocator::interval_set_t::iterator p,
   uint64_t alloc_unit)
 {
   uint64_t skew = p.get_start() % alloc_unit;
@@ -99,7 +99,7 @@ int64_t StupidAllocator::allocate_int(
 	   	 << " alloc_unit 0x" << alloc_unit
 	   	 << " hint 0x" << hint << std::dec
 	   	 << dendl;
-  uint64_t want = MAX(alloc_unit, want_size);//检查要多大
+  uint64_t want = std::max(alloc_unit, want_size);//检查要多大
   int bin = _choose_bin(want);
   int orig_bin = bin;
 
@@ -169,7 +169,7 @@ int64_t StupidAllocator::allocate_int(
   if (skew)
     skew = alloc_unit - skew;
   *offset = p.get_start() + skew;//清除边角料
-  *length = MIN(MAX(alloc_unit, want_size), P2ALIGN((p.get_len() - skew), alloc_unit));
+  *length = std::min(std::max(alloc_unit, want_size), P2ALIGN((p.get_len() - skew), alloc_unit));
   if (cct->_conf->bluestore_debug_small_allocations) {
     uint64_t max =
       alloc_unit * (rand() % cct->_conf->bluestore_debug_small_allocations);
@@ -235,7 +235,7 @@ int64_t StupidAllocator::allocate(
   ExtentList block_list = ExtentList(extents, 1, max_alloc_size);
 
   while (allocated_size < want_size) {
-    res = allocate_int(MIN(max_alloc_size, (want_size - allocated_size)),
+    res = allocate_int(std::min(max_alloc_size, (want_size - allocated_size)),
        alloc_unit, hint, &offset, &length);
     if (res != 0) {
       /*
@@ -256,13 +256,19 @@ int64_t StupidAllocator::allocate(
 
 //释放时，存入uncommitted的map中
 void StupidAllocator::release(
-  uint64_t offset, uint64_t length)
+  const interval_set<uint64_t>& release_set)
 {
   std::lock_guard<std::mutex> l(lock);
-  ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
-	   	 << std::dec << dendl;
-  _insert_free(offset, length);
-  num_free += length;
+  for (interval_set<uint64_t>::const_iterator p = release_set.begin();
+       p != release_set.end();
+       ++p) {
+    const auto offset = p.get_start();
+    const auto length = p.get_len();
+    ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
+		   << std::dec << dendl;
+    _insert_free(offset, length);
+    num_free += length;
+  }
 }
 
 uint64_t StupidAllocator::get_free()
@@ -302,10 +308,10 @@ void StupidAllocator::init_rm_free(uint64_t offset, uint64_t length)
   std::lock_guard<std::mutex> l(lock);
   ldout(cct, 10) << __func__ << " 0x" << std::hex << offset << "~" << length
 	   	 << std::dec << dendl;
-  btree_interval_set<uint64_t,allocator> rm;
+  interval_set_t rm;
   rm.insert(offset, length);
   for (unsigned i = 0; i < free.size() && !rm.empty(); ++i) {
-    btree_interval_set<uint64_t,allocator> overlap;
+    interval_set_t overlap;
     overlap.intersection_of(rm, free[i]);
     if (!overlap.empty()) {
       ldout(cct, 20) << __func__ << " bin " << i << " rm 0x" << std::hex << overlap

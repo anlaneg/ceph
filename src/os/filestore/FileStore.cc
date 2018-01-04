@@ -38,10 +38,10 @@
 #include "common/xattr.h"
 #include "chain_xattr.h"
 
-#if defined(DARWIN) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/param.h>
 #include <sys/mount.h>
-#endif // DARWIN
+#endif
 
 
 #include <fstream>
@@ -188,7 +188,7 @@ int FileStore::lfn_find(const ghobject_t& oid, const Index& index, IndexedPath *
   if (!path)
     path = &path2;
   int r, exist;
-  assert(NULL != index.index);
+  assert(index.index);
   r = (index.index)->lookup(oid, path, &exist);
   if (r < 0) {
     assert(!m_filestore_fail_eio || r != -EIO);
@@ -225,7 +225,7 @@ int FileStore::lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *b
   if (r < 0)
     return r;
 
-  assert(NULL != index.index);
+  assert(index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
   r = lfn_find(oid, index, &path);
@@ -269,7 +269,7 @@ int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获�
   }
 
   int fd, exist;
-  assert(NULL != (*index).index);
+  assert((*index).index);
   if (need_lock) {
     ((*index).index)->access_lock.get_write();
   }
@@ -380,8 +380,8 @@ int FileStore::lfn_link(const coll_t& c, const coll_t& newcid, const ghobject_t&
       return r;
   }
 
-  assert(NULL != index_old.index);
-  assert(NULL != index_new.index);
+  assert(index_old.index);
+  assert(index_new.index);
 
   if (!index_same) {
 
@@ -464,7 +464,7 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
     return r;
   }
 
-  assert(NULL != index.index);
+  assert(index.index);
   RWLock::WLocker l((index.index)->access_lock);
 
   {
@@ -530,7 +530,7 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   blk_size(0),
   fsid_fd(-1), op_fd(-1),
   basedir_fd(-1), current_fd(-1),
-  backend(NULL),
+  backend(nullptr),
   index_manager(cct, do_update),
   lock("FileStore::lock"),
   force_sync(false),
@@ -549,7 +549,7 @@ FileStore::FileStore(CephContext* cct, const std::string &base,
   op_tp(cct, "FileStore::op_tp", "tp_fstore_op", cct->_conf->filestore_op_threads, "filestore_op_threads"),
   op_wq(this, cct->_conf->filestore_op_thread_timeout,
 	cct->_conf->filestore_op_thread_suicide_timeout, &op_tp),
-  logger(NULL),
+  logger(nullptr),
   trace_endpoint("0.0.0.0", 0, "FileStore"),
   read_error_lock("FileStore::read_error_lock"),
   m_filestore_commit_timeout(cct->_conf->filestore_commit_timeout),
@@ -645,18 +645,19 @@ FileStore::~FileStore()
 {
   for (vector<Finisher*>::iterator it = ondisk_finishers.begin(); it != ondisk_finishers.end(); ++it) {
     delete *it;
-    *it = NULL;
+    *it = nullptr;
   }
   for (vector<Finisher*>::iterator it = apply_finishers.begin(); it != apply_finishers.end(); ++it) {
     delete *it;
-    *it = NULL;
+    *it = nullptr;
   }
   cct->_conf->remove_observer(this);
   cct->get_perfcounters_collection()->remove(logger);
 
   if (journal)
-    journal->logger = NULL;
+    journal->logger = nullptr;
   delete logger;
+  logger = nullptr;
 
   if (m_filestore_do_dump) {
     dump_stop();
@@ -689,8 +690,7 @@ void FileStore::collect_metadata(map<string,string> *pm)
   (*pm)["filestore_f_type"] = ss.str();
 
   if (cct->_conf->filestore_collect_device_partition_information) {
-    rc = get_device_by_uuid(get_fsid(), "PARTUUID", partition_path,
-          dev_node);
+    rc = get_device_by_fd(fsid_fd, partition_path, dev_node, PATH_MAX);
   } else {
     rc = -EINVAL;
   }
@@ -709,6 +709,21 @@ void FileStore::collect_metadata(map<string,string> *pm)
       (*pm)["backend_filestore_partition_path"] = string(partition_path);
       (*pm)["backend_filestore_dev_node"] = string(dev_node);
   }
+}
+
+int FileStore::get_devices(set<string> *ls)
+{
+  char partition_path[PATH_MAX];
+  char dev_node[PATH_MAX];
+  int rc = 0;
+  rc = get_device_by_fd(fsid_fd, partition_path, dev_node, PATH_MAX);
+  if (rc == 0) {
+    ls->insert(dev_node);
+    if (strncmp(dev_node, "dm-", 3) == 0) {
+      get_dm_parents(dev_node, ls);
+    }
+  }
+  return 0;
 }
 
 int FileStore::statfs(struct store_statfs_t *buf0)
@@ -759,6 +774,7 @@ int FileStore::dump_journal(ostream& out)
   FileJournal *journal = new FileJournal(cct, fsid, &finisher, &sync_cond, journalpath.c_str(), m_journal_dio);
   r = journal->dump(out);
   delete journal;
+  journal = nullptr;
   return r;
 }
 
@@ -786,7 +802,7 @@ void FileStore::create_backend(long f_type)
 {
   m_fs_type = f_type;
 
-  assert(backend == NULL);
+  assert(!backend);
   backend = FileStoreBackend::create(f_type, this);
 
   dout(0) << "backend " << backend->get_name()
@@ -947,7 +963,7 @@ int FileStore::mkfs()
 	assert(current_fd >= 0);
 	char s[NAME_MAX];
 	snprintf(s, sizeof(s), COMMIT_SNAP_ITEM, 1ull);
-	ret = backend->create_checkpoint(s, NULL);
+	ret = backend->create_checkpoint(s, nullptr);
 	VOID_TEMP_FAILURE_RETRY(::close(current_fd));
 	if (ret < 0 && ret != -EEXIST) {
 	  VOID_TEMP_FAILURE_RETRY(::close(fd));
@@ -1034,7 +1050,7 @@ int FileStore::mkfs()
  close_basedir_fd:
   VOID_TEMP_FAILURE_RETRY(::close(basedir_fd));
   delete backend;
-  backend = NULL;
+  backend = nullptr;
   return ret;
 }
 
@@ -1072,7 +1088,7 @@ int FileStore::mkjournal()
 	dout(0) << __FUNC__ << ": created journal on " << journalpath << dendl;
     }
     delete journal;
-    journal = 0;
+    journal = nullptr;
   }
   return ret;
 }
@@ -1153,7 +1169,7 @@ bool FileStore::is_rotational()
     create_backend(st.f_type);
     rotational = backend->is_rotational();
     delete backend;
-    backend = NULL;
+    backend = nullptr;
   }
   dout(10) << __func__ << " " << (int)rotational << dendl;
   return rotational;
@@ -1177,7 +1193,7 @@ bool FileStore::is_journal_rotational()
     create_backend(st.f_type);
     journal_rotational = backend->is_journal_rotational();
     delete backend;
-    backend = NULL;
+    backend = nullptr;
   }
   dout(10) << __func__ << " " << (int)journal_rotational << dendl;
   return journal_rotational;
@@ -1661,7 +1677,6 @@ int FileStore::mount()
 
   // check fsid with omap
   // get omap fsid
-  int omap_fsid_fd;
   char omap_fsid_buf[PATH_MAX];
   struct ::stat omap_fsid_stat;
   snprintf(omap_fsid_buf, sizeof(omap_fsid_buf), "%s/osd_uuid", omap_dir.c_str());
@@ -1670,7 +1685,8 @@ int FileStore::mount()
     dout(10) << __FUNC__ << ": osd_uuid not found under omap, "
              << "assume as matched."
              << dendl;
-  }else{
+  } else {
+    int omap_fsid_fd;
     // if osd_uuid exists, compares osd_uuid with fsid
     omap_fsid_fd = ::open(omap_fsid_buf, O_RDONLY, 0644);
     if (omap_fsid_fd < 0) {
@@ -1682,7 +1698,6 @@ int FileStore::mount()
     }
     ret = read_fsid(omap_fsid_fd, &omap_fsid);
     VOID_TEMP_FAILURE_RETRY(::close(omap_fsid_fd));
-    omap_fsid_fd = -1; // defensive 
     if (ret < 0) {
       derr << __FUNC__ << ": error reading omap_fsid_fd"
            << ", omap_fsid = " << omap_fsid
@@ -1705,7 +1720,7 @@ int FileStore::mount()
     KeyValueDB * omap_store = KeyValueDB::create(cct,
 						 superblock.omap_backend,
 						 omap_dir);
-    if (omap_store == NULL)
+    if (!omap_store)
     {
       derr << __FUNC__ << ": Error creating " << superblock.omap_backend << dendl;
       ret = -1;
@@ -1725,6 +1740,7 @@ int FileStore::mount()
     stringstream err;
     if (omap_store->create_and_open(err)) {
       delete omap_store;
+      omap_store = nullptr;
       derr << __FUNC__ << ": Error initializing " << superblock.omap_backend
 	   << " : " << err.str() << dendl;
       ret = -1;
@@ -1735,6 +1751,7 @@ int FileStore::mount()
     ret = dbomap->init(do_update);
     if (ret < 0) {
       delete dbomap;
+      dbomap = nullptr;
       derr << __FUNC__ << ": Error initializing DBObjectMap: " << ret << dendl;
       goto close_current_fd;
     }
@@ -1743,6 +1760,7 @@ int FileStore::mount()
     if (cct->_conf->filestore_debug_omap_check && !dbomap->check(err2)) {
       derr << err2.str() << dendl;
       delete dbomap;
+      dbomap = nullptr;
       ret = -EINVAL;
       goto close_current_fd;
     }
@@ -1803,7 +1821,7 @@ int FileStore::mount()
 	     << " with error: " << ret << dendl;
 	goto close_current_fd;
       }
-      assert(NULL != index.index);
+      assert(index.index);
       RWLock::WLocker l((index.index)->access_lock);
 
       index->cleanup();
@@ -1890,7 +1908,7 @@ close_fsid_fd:
 done:
   assert(!m_filestore_fail_eio || ret != -EIO);
   delete backend;
-  backend = NULL;
+  backend = nullptr;
   object_map.reset();
   return ret;
 }
@@ -1983,7 +2001,7 @@ int FileStore::umount()
   force_sync = false;
 
   delete backend;
-  backend = NULL;
+  backend = nullptr;
 
   object_map.reset();
 
@@ -2124,6 +2142,7 @@ void FileStore::_finish_op(OpSequencer *osr)
     apply_finishers[osr->id % m_apply_finisher_num]->queue(to_queue);
   }
   delete o;
+  o = nullptr;
 }
 
 
@@ -2156,8 +2175,11 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
     dout(0) << __FUNC__ << ": objectstore_blackhole = TRUE, dropping transaction"
 	    << dendl;
     delete ondisk;
+    ondisk = nullptr;
     delete onreadable;
+    onreadable = nullptr;
     delete onreadable_sync;
+    onreadable_sync = nullptr;
     return 0;
   }
 
@@ -2295,6 +2317,7 @@ int FileStore::queue_transactions(Sequencer *posr, vector<Transaction>& tls,
     _op_journal_transactions(tbl, orig_len, op, ondisk, osd_op);//op为操作序号(一会确认),osd_op是什么?
   } else {
     delete ondisk;
+    ondisk = nullptr;
   }
 
   // start on_readable finisher after we queue journal item, as on_readable callback
@@ -3310,8 +3333,8 @@ int FileStore::_do_fiemap(int fd, uint64_t offset, size_t len,
                           map<uint64_t, uint64_t> *m)
 {
   uint64_t i;
-  struct fiemap_extent *extent = NULL;
-  struct fiemap *fiemap = NULL;
+  struct fiemap_extent *extent = nullptr;
+  struct fiemap *fiemap = nullptr;
   int r = 0;
 
 more:
@@ -3563,7 +3586,7 @@ int FileStore::_zero(const coll_t& cid, const ghobject_t& oid, uint64_t offset, 
 
   if (cct->_conf->filestore_punch_hole) {
 #ifdef CEPH_HAVE_FALLOCATE
-# if !defined(DARWIN) && !defined(__FreeBSD__)
+# if !defined(__APPLE__) && !defined(__FreeBSD__)
 #    ifdef FALLOC_FL_KEEP_SIZE
     // first try to punch a hole.
     FDRef fd;
@@ -3586,8 +3609,8 @@ int FileStore::_zero(const coll_t& cid, const ghobject_t& oid, uint64_t offset, 
     if (ret < 0) {
       ret = -errno;
     } else {
-      // ensure we extent file size, if needed
-      if (offset + len > (uint64_t)st.st_size) {
+      // ensure we extend file size, if needed
+      if (len > 0 && offset + len > (uint64_t)st.st_size) {
 	ret = ::ftruncate(**fd, offset + len);
 	if (ret < 0) {
 	  ret = -errno;
@@ -3622,7 +3645,7 @@ int FileStore::_zero(const coll_t& cid, const ghobject_t& oid, uint64_t offset, 
   }
 
 #ifdef CEPH_HAVE_FALLOCATE
-# if !defined(DARWIN) && !defined(__FreeBSD__)
+# if !defined(__APPLE__) && !defined(__FreeBSD__)
 #    ifdef FALLOC_FL_KEEP_SIZE
  out:
 #    endif
@@ -3648,7 +3671,7 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
     if (r < 0) {
       goto out2;
     }
-    assert(NULL != (index.index));
+    assert(index.index);
     RWLock::WLocker l((index.index)->access_lock);
 
     r = lfn_open(cid, newoid, true, &n, &index);
@@ -3801,7 +3824,7 @@ int FileStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, u
     loff_t dstpos = dstoff;
     while (pos < end) {
       int l = MIN(end-pos, buflen);
-      r = safe_splice(from, &pos, pipefd[1], NULL, l, SPLICE_F_NONBLOCK);
+      r = safe_splice(from, &pos, pipefd[1], nullptr, l, SPLICE_F_NONBLOCK);
       dout(10) << "  safe_splice read from " << pos << "~" << l << " got " << r << dendl;
       if (r < 0) {
 	derr << __FUNC__ << ": safe_splice read error at " << pos << "~" << len
@@ -3816,7 +3839,7 @@ int FileStore::_do_copy_range(int from, int to, uint64_t srcoff, uint64_t len, u
 	break;
       }
 
-      r = safe_splice(pipefd[0], NULL, to, &dstpos, r, 0);
+      r = safe_splice(pipefd[0], nullptr, to, &dstpos, r, 0);
       dout(10) << " safe_splice write to " << to << " len " << r
 	<< " got " << r << dendl;
       if (r < 0) {
@@ -3960,6 +3983,7 @@ public:
     bt->print(*_dout);
     *_dout << dendl;
     delete bt;
+    bt = nullptr;
     ceph_abort();
   }
 private:
@@ -4268,7 +4292,7 @@ int FileStore::snapshot(const string& name)
   char s[NAME_MAX];
   snprintf(s, sizeof(s), CLUSTER_SNAP_ITEM, name.c_str());
 
-  int r = backend->create_checkpoint(s, NULL);
+  int r = backend->create_checkpoint(s, nullptr);
   if (r) {
     derr << __FUNC__ << ": " << name << " failed: " << cpp_strerror(r) << dendl;
   }
@@ -4893,12 +4917,12 @@ int FileStore::collection_empty(const coll_t& c, bool *empty)
     return r;
   }
 
-  assert(NULL != index.index);
+  assert(index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
   vector<ghobject_t> ls;
   r = index->collection_list_partial(ghobject_t(), ghobject_t::get_max(),
-				     1, &ls, NULL);
+				     1, &ls, nullptr);
   if (r < 0) {
     derr << __FUNC__ << ": collection_list_partial returned: "
          << cpp_strerror(r) << dendl;
@@ -5018,7 +5042,7 @@ int FileStore::collection_list(const coll_t& c,
   if (r < 0)
     return r;
 
-  assert(NULL != index.index);
+  assert(index.index);
   RWLock::RLocker l((index.index)->access_lock);
 
   //列出start,end之间所有的对象,最多max个.ls是返回的对象,next是下次遍历时需要起点
@@ -5031,7 +5055,7 @@ int FileStore::collection_list(const coll_t& c,
   dout(20) << "objects: " << *ls << dendl;
 
   // HashIndex doesn't know the pool when constructing a 'next' value
-  if (next && !next->is_max()) {
+  if (!next->is_max()) {
     next->hobj.pool = pool;
     next->set_shard(shard);
     dout(20) << "  next " << *next << dendl;
@@ -5052,7 +5076,7 @@ int FileStore::omap_get(const coll_t& _c, const ghobject_t &hoid,
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5081,7 +5105,7 @@ int FileStore::omap_get_header(
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5106,7 +5130,7 @@ int FileStore::omap_get_keys(const coll_t& _c, const ghobject_t &hoid, set<strin
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5136,7 +5160,7 @@ int FileStore::omap_get_values(const coll_t& _c, const ghobject_t &hoid,
     goto out;
   }
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0) {
@@ -5171,7 +5195,7 @@ int FileStore::omap_check_keys(const coll_t& _c, const ghobject_t &hoid,
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5200,7 +5224,7 @@ ObjectMap::ObjectMapIterator FileStore::get_omap_iterator(const coll_t& _c,
     return ObjectMap::ObjectMapIterator();
   }
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0) {
@@ -5289,7 +5313,7 @@ int FileStore::_destroy_collection(const coll_t& c)
     r = get_index(c, &from);
     if (r < 0)
       goto out;
-    assert(NULL != from.index);
+    assert(from.index);
     RWLock::WLocker l((from.index)->access_lock);
 
     r = from->prep_delete();
@@ -5495,7 +5519,7 @@ int FileStore::_omap_clear(const coll_t& cid, const ghobject_t &hoid,
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5523,7 +5547,7 @@ int FileStore::_omap_setkeys(const coll_t& cid, const ghobject_t &hoid,
     return r;
   }
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0) {
@@ -5556,7 +5580,7 @@ int FileStore::_omap_rmkeys(const coll_t& cid, const ghobject_t &hoid,
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5596,7 +5620,7 @@ int FileStore::_omap_setheader(const coll_t& cid, const ghobject_t &hoid,
   if (r < 0)
     return r;
   {
-    assert(NULL != index.index);
+    assert(index.index);
     RWLock::RLocker l((index.index)->access_lock);
     r = lfn_find(hoid, index);
     if (r < 0)
@@ -5645,10 +5669,10 @@ int FileStore::_split_collection(const coll_t& cid,
       r = get_index(dest, &to);
 
     if (!r) {
-      assert(NULL != from.index);
+      assert(from.index);
       RWLock::WLocker l1((from.index)->access_lock);
 
-      assert(NULL != to.index);
+      assert(to.index);
       RWLock::WLocker l2((to.index)->access_lock);
 
       r = from->split(rem, bits, to.index);
@@ -5972,9 +5996,10 @@ uint64_t FileStore::estimate_objects_overhead(uint64_t num_objects)
   return res;
 }
 
-int FileStore::apply_layout_settings(const coll_t &cid)
+int FileStore::apply_layout_settings(const coll_t &cid, int target_level)
 {
-  dout(20) << __FUNC__ << ": " << cid << dendl;
+  dout(20) << __FUNC__ << ": " << cid << " target level: " 
+           << target_level << dendl;
   Index index;
   int r = get_index(cid, &index);
   if (r < 0) {
@@ -5983,7 +6008,7 @@ int FileStore::apply_layout_settings(const coll_t &cid)
     return r;
   }
 
-  return index->apply_layout_settings();
+  return index->apply_layout_settings(target_level);
 }
 
 

@@ -26,7 +26,6 @@
 #include "global/signal_handler.h"
 #include "include/compat.h"
 #include "include/str_list.h"
-#include "common/admin_socket.h"
 
 #include <pwd.h>
 #include <grp.h>
@@ -89,15 +88,14 @@ static int chown_path(const std::string &pathname, const uid_t owner, const gid_
 void global_pre_init(std::vector < const char * > *alt_def_args,
 		     std::vector < const char* >& args,
 		     uint32_t module_type, code_environment_t code_env,
-		     int flags,
-		     const char *data_dir_option)
+		     int flags)
 {
   std::string conf_file_list;//配置文件列表
   std::string cluster = "";//cluster名称
   //分析模块名称，所属集群，以及要读取的配置文件（也会处理版本号并退出进程）
   CephInitParameters iparams = ceph_argparse_early_args(args, module_type,
-							&cluster, &conf_file_list)//模块类型及id;
-  CephContext *cct = common_preinit(iparams, code_env, flags, data_dir_option);//构造cephcontext并设置部分conf
+							&cluster, &conf_file_list);//模块类型及id
+  CephContext *cct = common_preinit(iparams, code_env, flags);//构造cephcontext并设置部分conf
   cct->_conf->cluster = cluster;//设置cluster
   //设置全局变量（配置及context)
   global_init_set_globals(cct);

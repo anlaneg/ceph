@@ -116,6 +116,10 @@ void LogMonitor::update_from_paxos(bool *need_bootstrap)
       if (channel.empty()) // keep retrocompatibility
         channel = CLOG_CHANNEL_CLUSTER;
 
+      if (g_conf->get_val<bool>("mon_cluster_log_to_stderr")) {
+	cerr << channel << " " << le << std::endl;
+      }
+
       if (channels.do_log_to_syslog(channel)) {
         string level = channels.get_level(channel);
         string facility = channels.get_facility(channel);
@@ -234,7 +238,7 @@ void LogMonitor::encode_full(MonitorDBStore::TransactionRef t)
   put_version_latest_full(t, summary.version);
 }
 
-version_t LogMonitor::get_trim_to()
+version_t LogMonitor::get_trim_to() const
 {
   if (!mon->is_leader())
     return 0;
@@ -429,23 +433,24 @@ bool LogMonitor::preprocess_command(MonOpRequestRef op)
     };
 
     auto rp = summary.tail.rbegin();
-    while (num > 0 && rp != summary.tail.rend()) {
+    for (; num > 0 && rp != summary.tail.rend(); ++rp) {
       if (match(*rp)) {
         num--;
       }
-      ++rp;
+    }
+    if (rp == summary.tail.rend()) {
+      --rp;
     }
     ostringstream ss;
-    auto p = summary.tail.begin();
-    for ( ; p != summary.tail.end(); ++p) {
-      if (!match(*p)) {
+    for (; rp != summary.tail.rbegin(); --rp) {
+      if (!match(*rp)) {
         continue;
       }
 
       if (f) {
-	f->dump_object("entry", *p);
+	f->dump_object("entry", *rp);
       } else {
-	ss << *p << "\n";
+	ss << *rp << "\n";
       }
     }
     if (f) {
@@ -811,7 +816,7 @@ ceph::logging::Graylog::Ref LogMonitor::log_channel_info::get_graylog(
   if (graylogs.count(channel) == 0) {
     auto graylog(std::make_shared<ceph::logging::Graylog>("mon"));
 
-    graylog->set_fsid(g_conf->fsid);
+    graylog->set_fsid(g_conf->get_val<uuid_d>("fsid"));
     graylog->set_hostname(g_conf->host);
     graylog->set_destination(get_str_map_key(log_to_graylog_host, channel,
 					     &CLOG_CONFIG_DEFAULT_KEY),

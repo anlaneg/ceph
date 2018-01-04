@@ -24,8 +24,7 @@
 #define STRINGIFY(x) _STR(x)
 
 CephContext *common_preinit(const CephInitParameters &iparams,
-			    enum code_environment_t code_env, int flags,
-			    const char *data_dir_option)
+			    enum code_environment_t code_env, int flags)
 {
   // set code environment
   ANNOTATE_BENIGN_RACE_SIZED(&g_code_env, sizeof(g_code_env), "g_code_env");
@@ -41,10 +40,6 @@ CephContext *common_preinit(const CephInitParameters &iparams,
   // Set up our entity name.
   conf->name = iparams.name;//设置模块名称
 
-  //设置部分conf选项.
-  if (data_dir_option)
-    conf->data_dir_option = data_dir_option;
-
   // different default keyring locations for osd and mds.  this is
   // for backward compatibility.  moving forward, we want all keyrings
   // in these locations.  the mon already forces $mon_data/keyring.
@@ -59,6 +54,10 @@ CephContext *common_preinit(const CephInitParameters &iparams,
     conf->set_val_or_die("log_to_stderr", "false");
     conf->set_val_or_die("err_to_stderr", "false");
     conf->set_val_or_die("log_flush_on_exit", "false");
+  }
+  if (code_env != CODE_ENVIRONMENT_DAEMON) {
+    // NOTE: disable ms subsystem gathering in clients by default
+    conf->set_val_or_die("debug_ms", "0/0");
   }
 
   return cct;

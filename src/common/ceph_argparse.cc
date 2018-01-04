@@ -84,16 +84,22 @@ bool split_dashdash(const std::vector<const char*>& args,
   return dashdash;
 }
 
+static std::mutex g_str_vec_lock;
+static vector<string> g_str_vec;
+
+void clear_g_str_vec()
+{
+  g_str_vec_lock.lock();
+  g_str_vec.clear();
+  g_str_vec_lock.unlock();
+}
+
 //传入时args中包含了option和argemnt(用--划分),这个函数负责将name环境
 //变量中的option,argment进行区分(用--划分),然后再将args与env中的option,argment进行合并.(仍以--划分)
 void env_to_vec(std::vector<const char*>& args, const char *name)
 {
   if (!name)
     name = "CEPH_ARGS";
-  char *p = getenv(name);
-  if (!p)
-	//不存在'CEPH_ARGS‘环境变量，跳出
-    return;
 
   bool dashdash = false;
   std::vector<const char*> options;
@@ -104,15 +110,26 @@ void env_to_vec(std::vector<const char*>& args, const char *name)
 
   std::vector<const char*> env_options;
   std::vector<const char*> env_arguments;
-  static vector<string> str_vec;
   std::vector<const char*> env;
-  str_vec.clear();
-  //按空格划分p对应的字符串，将划分结果存入vector中
-  get_str_vec(p, " ", str_vec);
-  for (vector<string>::iterator i = str_vec.begin();
-       i != str_vec.end();
-       ++i)
-	//向env中加入str_vec集中的字符串指针.
+
+  /*
+   * We can only populate str_vec once. Other threads could hold pointers into
+   * it, so clearing it out and replacing it is not currently safe.
+   */
+  g_str_vec_lock.lock();
+  if (g_str_vec.empty()) {
+    char *p = getenv(name);
+    if (!p) {
+      g_str_vec_lock.unlock();
+      return;
+    }
+    //按空格划分p对应的字符串，将划分结果存入vector中
+    get_str_vec(p, " ", g_str_vec);
+  }
+  g_str_vec_lock.unlock();
+
+  vector<string>::iterator i;
+  for (i = g_str_vec.begin(); i != g_str_vec.end(); ++i)
     env.push_back(i->c_str());
   //在env中查找'--'，将env分解为options及arguments
   if (split_dashdash(env, env_options, env_arguments))

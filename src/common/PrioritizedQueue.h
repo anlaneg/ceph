@@ -105,31 +105,30 @@ class PrioritizedQueue : public OpQueue <T, K> {
     }
 
     //按cl进行分类，分类后形成一个list,将花费与item一起保存（加入到队尾）
-    void enqueue(K cl, unsigned cost, T item) {
-      q[cl].push_back(std::make_pair(cost, item));
+    void enqueue(K cl, unsigned cost, T &&item) {
+      q[cl].push_back(std::make_pair(cost, std::move(item)));
       if (cur == q.end())
 	cur = q.begin();
       size++;
     }
 
     //按cl进行分类，分类后形成一个list,将花费与item一起保存（加入到队头）
-    void enqueue_front(K cl, unsigned cost, T item) {
-      q[cl].push_front(std::make_pair(cost, item));
+    void enqueue_front(K cl, unsigned cost, T &&item) {
+      q[cl].push_front(std::make_pair(cost, std::move(item)));
       if (cur == q.end())
 	cur = q.begin();
       size++;
     }
-
-    std::pair<unsigned, T> front() const {
+    std::pair<unsigned, T> &front() const {
       assert(!(q.empty()));
       assert(cur != q.end());
       return cur->second.front();
     }
-
-    void pop_front() {
-    	  //断言，一定不为空
+    T pop_front() {
+      //断言，一定不为空
       assert(!(q.empty()));
       assert(cur != q.end());
+      T ret = std::move(cur->second.front().second);
       cur->second.pop_front();
       if (cur->second.empty()) {
 	q.erase(cur++);
@@ -140,6 +139,7 @@ class PrioritizedQueue : public OpQueue <T, K> {
 	cur = q.begin();
       }
       size--;
+      return ret;
     }
 
     //返回队列长度
@@ -170,8 +170,8 @@ class PrioritizedQueue : public OpQueue <T, K> {
 	       i->second.rbegin();
 	     j != i->second.rend();
 	     ++j) {
-		//要移除i,将i队列中所有元素，逆序加入到out中
-	  out->push_front(j->second);
+	  //要移除i,将i队列中所有元素，逆序加入到out中
+	  out->push_front(std::move(j->second));
 	}
       }
       //移除i
@@ -290,32 +290,32 @@ public:
   }
 
   //入队到high_queue队列
-  void enqueue_strict(K cl, unsigned priority, T item) final {
-    high_queue[priority].enqueue(cl, 0, item);
+  void enqueue_strict(K cl, unsigned priority, T&& item) final {
+    high_queue[priority].enqueue(cl, 0, std::move(item));
   }
 
   //入队到high_queue队列，且入队至front
-  void enqueue_strict_front(K cl, unsigned priority, T item) final {
-    high_queue[priority].enqueue_front(cl, 0, item);
+  void enqueue_strict_front(K cl, unsigned priority, T&& item) final {
+    high_queue[priority].enqueue_front(cl, 0, std::move(item));
   }
 
   //入队到queue队列
-  void enqueue(K cl, unsigned priority, unsigned cost, T item) final {
+  void enqueue(K cl, unsigned priority, unsigned cost, T&& item) final {
     if (cost < min_cost)
       cost = min_cost;//规范最小花费
     if (cost > max_tokens_per_subqueue)
-      cost = max_tokens_per_subqueue;//规范最大花费
+    cost = max_tokens_per_subqueue;//规范最大花费
     //创建指定优先队列，并入队
-    create_queue(priority)->enqueue(cl, cost, item);
+    create_queue(priority)->enqueue(cl, cost, std::move(item));
   }
 
   //入队queue,且在队头位置
-  void enqueue_front(K cl, unsigned priority, unsigned cost, T item) final {
+  void enqueue_front(K cl, unsigned priority, unsigned cost, T&& item) final {
     if (cost < min_cost)
       cost = min_cost;
     if (cost > max_tokens_per_subqueue)
       cost = max_tokens_per_subqueue;
-    create_queue(priority)->enqueue_front(cl, cost, item);
+    create_queue(priority)->enqueue_front(cl, cost, std::move(item));
   }
 
   //队列是否为空
@@ -332,8 +332,8 @@ public:
     //如果high_queue不为空时，取优先级最高的SubQueue的中的第一个
     //每个SubQueue中的花费是一样的
     if (!(high_queue.empty())) {
-    	  //返回优先级最高的
-      T ret = high_queue.rbegin()->second.front().second;
+      //返回优先级最高的
+      T ret = std::move(high_queue.rbegin()->second.front().second);
       high_queue.rbegin()->second.pop_front();//移除优先级最高的
       //如果此SubQueue已为空，则移除此优先级队列
       if (high_queue.rbegin()->second.empty()) {
@@ -353,11 +353,10 @@ public:
       assert(!(i->second.empty()));
       //如果花费比token值小，则可以出队
       if (i->second.front().first < i->second.num_tokens()) {
-	T ret = i->second.front().second;
 	unsigned cost = i->second.front().first;
 	i->second.take_tokens(cost);//消费cost
+	T ret = std::move(i->second.front().second);
 	i->second.pop_front();//弹出
-
 	//考虑出队后队列为空的情况
 	if (i->second.empty()) {
 	  remove_queue(i->first);
@@ -371,9 +370,9 @@ public:
 
     // if no subqueues have sufficient tokens, we behave like a strict
     // priority queue.
-    //按token没有可以出队的，改变方式，按优先级出队
-    T ret = queue.rbegin()->second.front().second;
     unsigned cost = queue.rbegin()->second.front().first;
+    //按token没有可以出队的，改变方式，按优先级出队
+    T ret = std::move(queue.rbegin()->second.front().second);
     queue.rbegin()->second.pop_front();
     if (queue.rbegin()->second.empty()) {
       remove_queue(queue.rbegin()->first);

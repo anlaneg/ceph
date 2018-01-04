@@ -638,7 +638,8 @@ int cls_cxx_list_watchers(cls_method_context_t hctx,
 
 int cls_gen_random_bytes(char *buf, int size)
 {
-  return get_random_bytes(buf, size);
+  ch->cct->random()->get_bytes(buf, size);
+  return 0;
 }
 
 int cls_gen_rand_base64(char *dest, int size) /* size should be the required string size + 1 */
@@ -670,7 +671,7 @@ uint64_t cls_current_version(cls_method_context_t hctx)
 {
   PrimaryLogPG::OpContext *ctx = *(PrimaryLogPG::OpContext **)hctx;
 
-  return ctx->pg->info.last_user_version;
+  return ctx->pg->get_last_user_version();
 }
 
 
@@ -678,7 +679,7 @@ int cls_current_subop_num(cls_method_context_t hctx)
 {
   PrimaryLogPG::OpContext *ctx = *(PrimaryLogPG::OpContext **)hctx;
 
-  return ctx->current_osd_subop_num;
+  return ctx->processed_subop_count;
 }
 
 uint64_t cls_get_features(cls_method_context_t hctx)

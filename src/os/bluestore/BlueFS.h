@@ -253,9 +253,7 @@ private:
   vector<BlockDevice*> bdev;                  ///< block devices we can use //指出哪些块设备我们可以用
   vector<IOContext*> ioc;                     ///< IOContexts for bdevs
   vector<interval_set<uint64_t> > block_all;  ///< extents in bdev we own //记录每块dev的可用范围（每个块设备占用一项，内层为一个set列表）
-
-  vector<uint64_t> block_total;               ///< sum of block_all //记录每块dev的最block数目（每个块设备占用一项）
-  vector<Allocator*> alloc;                   ///< allocators for bdevs //记录分配内容(每个块设备占一项）
+  vector<Allocator*> alloc;                   ///< allocators for bdevs   //记录分配内容(每个块设备占一项）
   vector<interval_set<uint64_t>> pending_release; ///< extents to release
 
   void _init_logger();
@@ -271,13 +269,15 @@ private:
   void _drop_link(FileRef f);
 
   int _allocate(uint8_t bdev, uint64_t len,
-		mempool::bluefs::vector<bluefs_extent_t> *ev);
+		bluefs_fnode_t* node);
   int _flush_range(FileWriter *h, uint64_t offset, uint64_t length);
   int _flush(FileWriter *h, bool force);
   int _fsync(FileWriter *h, std::unique_lock<std::mutex>& l);
 
+#ifdef HAVE_LIBAIO
   void _claim_completed_aios(FileWriter *h, list<aio_t> *ls);
   void wait_for_aio(FileWriter *h);  // safe to call without a lock
+#endif
 
   int _flush_and_sync_log(std::unique_lock<std::mutex>& l,
 			  uint64_t want_seq = 0,
@@ -313,7 +313,7 @@ private:
 
   int _open_super();
   int _write_super();
-  int _replay(bool noop); ///< replay journal
+  int _replay(bool noop, bool to_stdout = false); ///< replay journal
 
   FileWriter *_create_writer(FileRef f);
   void _close_writer(FileWriter *h);
@@ -335,8 +335,14 @@ public:
   int mkfs(uuid_d osd_uuid);
   int mount();
   void umount();
+  
+  int log_dump(
+    CephContext *cct,
+    const string& path,
+    const vector<string>& devs);
 
-  void collect_metadata(map<string,string> *pm);
+  void collect_metadata(map<string,string> *pm, unsigned skip_bdev_id);
+  void get_devices(set<string> *ls);
   int fsck();
 
   uint64_t get_fs_usage();
@@ -344,6 +350,8 @@ public:
   uint64_t get_free(unsigned id);
   void get_usage(vector<pair<uint64_t,uint64_t>> *usage); // [<free,total> ...]
   void dump_perf_counters(Formatter *f);
+
+  void dump_block_extents(ostream& out);
 
   /// get current extents that we own for given block device
   int get_block_extents(unsigned id, interval_set<uint64_t> *extents);

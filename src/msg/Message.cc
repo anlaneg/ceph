@@ -7,7 +7,6 @@
 #endif
 
 #include <iostream>
-using namespace std;
 
 #include "include/types.h"
 
@@ -96,7 +95,6 @@ using namespace std;
 #include "messages/MMonGetMap.h"
 #include "messages/MMonGetVersion.h"
 #include "messages/MMonGetVersionReply.h"
-#include "messages/MMonHealth.h"
 #include "messages/MMonHealthChecks.h"
 #include "messages/MMonMetadata.h"
 #include "messages/MDataPing.h"
@@ -783,10 +781,6 @@ Message *decode_message(CephContext *cct, int crcflags,
 
   case MSG_TIMECHECK:
     m = new MTimeCheck();
-    break;
-
-  case MSG_MON_HEALTH:
-    m = new MMonHealth();
     break;
 
   case MSG_MON_HEALTH_CHECKS:
