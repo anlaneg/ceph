@@ -34,6 +34,8 @@
 #include "messages/MMonCommand.h"
 #include "messages/MMonCommandAck.h"
 #include "messages/MMonPaxos.h"
+#include "messages/MConfig.h"
+#include "messages/MGetConfig.h"
 
 #include "messages/MMonProbe.h"
 #include "messages/MMonJoin.h"
@@ -95,6 +97,7 @@
 #include "messages/MMonGetMap.h"
 #include "messages/MMonGetVersion.h"
 #include "messages/MMonGetVersionReply.h"
+#include "messages/MMonHealth.h"
 #include "messages/MMonHealthChecks.h"
 #include "messages/MMonMetadata.h"
 #include "messages/MDataPing.h"
@@ -227,7 +230,7 @@ void Message::encode(uint64_t features, int crcflags)
 
 #ifdef ENCODE_DUMP
     bufferlist bl;
-    ::encode(get_header(), bl);
+    encode(get_header(), bl);
 
     // dump the old footer format
     ceph_msg_footer_old old_footer;
@@ -235,11 +238,11 @@ void Message::encode(uint64_t features, int crcflags)
     old_footer.middle_crc = footer.middle_crc;
     old_footer.data_crc = footer.data_crc;
     old_footer.flags = footer.flags;
-    ::encode(old_footer, bl);
+    encode(old_footer, bl);
 
-    ::encode(get_payload(), bl);
-    ::encode(get_middle(), bl);
-    ::encode(get_data(), bl);
+    encode(get_payload(), bl);
+    encode(get_middle(), bl);
+    encode(get_data(), bl);
 
     // this is almost an exponential backoff, except because we count
     // bits we tend to sample things we encode later, which should be
@@ -359,6 +362,12 @@ Message *decode_message(CephContext *cct, int crcflags,
     break;
   case MSG_MON_PAXOS:
     m = new MMonPaxos;
+    break;
+  case MSG_CONFIG:
+    m = new MConfig;
+    break;
+  case MSG_GET_CONFIG:
+    m = new MGetConfig;
     break;
 
   case MSG_MON_PROBE:
@@ -783,6 +792,10 @@ Message *decode_message(CephContext *cct, int crcflags,
     m = new MTimeCheck();
     break;
 
+  case MSG_MON_HEALTH:
+    m = new MMonHealth();
+    break;
+
   case MSG_MON_HEALTH_CHECKS:
     m = new MMonHealthChecks();
     break;
@@ -841,7 +854,8 @@ Message *decode_message(CephContext *cct, int crcflags,
       lderr(cct) << "failed to decode message of type " << type
 		 << " v" << header.version
 		 << ": " << e.what() << dendl;
-      ldout(cct, cct->_conf->ms_dump_corrupt_message_level) << "dump: \n";
+      ldout(cct, ceph::dout::need_dynamic(
+	cct->_conf->ms_dump_corrupt_message_level)) << "dump: \n";
       m->get_payload().hexdump(*_dout);
       *_dout << dendl;
       if (cct->_conf->ms_die_on_bad_msg)
@@ -857,18 +871,19 @@ Message *decode_message(CephContext *cct, int crcflags,
 
 void Message::encode_trace(bufferlist &bl, uint64_t features) const
 {
+  using ceph::encode;
   auto p = trace.get_info();
   static const blkin_trace_info empty = { 0, 0, 0 };
   if (!p) {
     p = &empty;
   }
-  ::encode(*p, bl);
+  encode(*p, bl);
 }
 
 void Message::decode_trace(bufferlist::iterator &p, bool create)
 {
   blkin_trace_info info = {};
-  ::decode(info, p);
+  decode(info, p);
 
 #ifdef WITH_BLKIN
   if (!connection)
@@ -904,7 +919,7 @@ void encode_message(Message *msg, uint64_t features, bufferlist& payload)
   ceph_msg_footer_old old_footer;
   ceph_msg_footer footer;
   msg->encode(features, MSG_CRC_ALL);
-  ::encode(msg->get_header(), payload);
+  encode(msg->get_header(), payload);
 
   // Here's where we switch to the old footer format.  PLR
 
@@ -913,11 +928,11 @@ void encode_message(Message *msg, uint64_t features, bufferlist& payload)
   old_footer.middle_crc = footer.middle_crc;   
   old_footer.data_crc = footer.data_crc;   
   old_footer.flags = footer.flags;   
-  ::encode(old_footer, payload);
+  encode(old_footer, payload);
 
-  ::encode(msg->get_payload(), payload);
-  ::encode(msg->get_middle(), payload);
-  ::encode(msg->get_data(), payload);
+  encode(msg->get_payload(), payload);
+  encode(msg->get_middle(), payload);
+  encode(msg->get_data(), payload);
 }
 
 // See above for somewhat bogus use of the old message footer.  We switch to the current footer
@@ -931,16 +946,15 @@ Message *decode_message(CephContext *cct, int crcflags, bufferlist::iterator& p)
   ceph_msg_footer_old fo;
   ceph_msg_footer f;
   bufferlist fr, mi, da;
-  ::decode(h, p);
-  ::decode(fo, p);
+  decode(h, p);
+  decode(fo, p);
   f.front_crc = fo.front_crc;
   f.middle_crc = fo.middle_crc;
   f.data_crc = fo.data_crc;
   f.flags = fo.flags;
   f.sig = 0;
-  ::decode(fr, p);
-  ::decode(mi, p);
-  ::decode(da, p);
+  decode(fr, p);
+  decode(mi, p);
+  decode(da, p);
   return decode_message(cct, crcflags, h, f, fr, mi, da, nullptr);
 }
-

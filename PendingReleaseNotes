@@ -1,9 +1,5 @@
-13.0.0
+13.0.1
 ------
-
-* The RBD C API's rbd_discard method now enforces a maximum length of
-  2GB to match the C++ API's Image::discard method. This restriction
-  prevents overflow of the result code.
 
 * *CephFS*:
 
@@ -25,15 +21,68 @@
     mds_session_timeout, mds_session_autoclose, and mds_max_file_size are now
     obsolete.
 
-  * The JSON format of `ceph fs status` and `ceph mds stat` has changed
-    for the "up" and "info" sections of the mds_map.
+* *RBD*
 
->= 12.2.2
+  * The RBD C API's rbd_discard method now enforces a maximum length of
+    2GB to match the C++ API's Image::discard method. This restriction
+    prevents overflow of the result code.
+
+  * The rbd CLI's "lock list" JSON and XML output has changed.
+
+  * The rbd CLI's "showmapped" JSON and XML output has changed.
+
+  * RBD now optionally supports simplified image clone semantics where
+    non-protected snapshots can be cloned; and snapshots with linked clones
+    can be removed and the space automatically reclaimed once all remaining
+    linked clones are detached. This feature is enabled by default if
+    the OSD "require-min-compat-client" flag is set to mimic or later; or can be
+    overridden via the "rbd_default_clone_format" configuration option.
+
+* The sample ``crush-location-hook`` script has been removed.  Its output is
+  equivalent to the built-in default behavior, so it has been replaced with an
+  example in the CRUSH documentation.
+
+* The "rcceph" script (systemd/ceph in the source code tree, shipped as
+  /usr/sbin/rcceph in the ceph-base package for CentOS and SUSE) has been
+  dropped. This script was used to perform admin operations (start, stop,
+  restart, etc.) on all OSD and/or MON daemons running on a given machine.
+  This functionality is provided by the systemd target units (ceph-osd.target,
+  ceph-mon.target, etc.).
+
+* The python-ceph-compat package is declared deprecated, and will be dropped
+  when all supported distros have completed the move to Python 3. It has
+  already been dropped from those supported distros where Python 3 is standard
+  and Python 2 is optional (currently only SUSE).
+
+* The -f option of the rados tool now means "--format" instead of "--force",
+  for consistency with the ceph tool.
+
+
+>= 13.0.2
 ---------
 
-- *CephFS*:
+The ceph-rest-api command-line tool (obsoleted by the MGR "restful" module and
+deprecated since v12.2.5) has been dropped.
 
-  * The CephFS client now catches failures to clear dentries during startup
-    and refuses to start as consistency and untrimmable cache issues may
-    develop. The new option client_die_on_failed_dentry_invalidate (default:
-    true) may be turned off to allow the client to proceed (dangerous!).
+There is a MGR module called "restful" which provides similar functionality
+via a "pass through" method. See http://docs.ceph.com/docs/master/mgr/restful
+for details.
+
+
+>= 12.2.5
+---------
+
+The ceph-rest-api command-line tool included in the ceph-mon package has been
+obsoleted by the MGR "restful" module. The ceph-rest-api tool is hereby
+declared deprecated and will be dropped in Mimic.
+
+The MGR "restful" module provides similar functionality via a "pass through"
+method. See http://docs.ceph.com/docs/luminous/mgr/restful for details.
+
+
+13.0.2
+------
+
+* The format of the 'config diff' output via the admin socket has changed.  It
+  now reflects the source of each config option (e.g., default, config file,
+  command line) as well as the final (active) value.

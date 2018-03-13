@@ -4,6 +4,7 @@
 #include "tools/rbd_mirror/image_replayer/PrepareRemoteImageRequest.h"
 #include "include/rados/librados.hpp"
 #include "cls/rbd/cls_rbd_client.h"
+#include "common/debug.h"
 #include "common/errno.h"
 #include "common/WorkQueue.h"
 #include "journal/Journaler.h"
@@ -107,7 +108,7 @@ void PrepareRemoteImageRequest<I>::get_client() {
   journal::Settings settings;
   settings.commit_interval = g_ceph_context->_conf->get_val<double>(
     "rbd_mirror_journal_commit_age");
-  settings.max_fetch_bytes = g_ceph_context->_conf->get_val<uint64_t>(
+  settings.max_fetch_bytes = g_ceph_context->_conf->get_val<Option::size_t>(
     "rbd_mirror_journal_max_fetch_bytes");
 
   assert(*m_remote_journaler == nullptr);
@@ -153,7 +154,7 @@ void PrepareRemoteImageRequest<I>::register_client() {
 
   librbd::journal::ClientData client_data{mirror_peer_client_meta};
   bufferlist client_data_bl;
-  ::encode(client_data, client_data_bl);
+  encode(client_data, client_data_bl);
 
   Context *ctx = create_async_context_callback(
     m_threads->work_queue, create_context_callback<
@@ -187,7 +188,7 @@ bool PrepareRemoteImageRequest<I>::decode_client_meta() {
   librbd::journal::ClientData client_data;
   bufferlist::iterator it = m_client.data.begin();
   try {
-    ::decode(client_data, it);
+    decode(client_data, it);
   } catch (const buffer::error &err) {
     derr << "failed to decode client meta data: " << err.what() << dendl;
     return false;

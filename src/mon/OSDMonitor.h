@@ -435,8 +435,6 @@ private:
   bool preprocess_remove_snaps(MonOpRequestRef op);
   bool prepare_remove_snaps(MonOpRequestRef op);
 
-  OpTracker op_tracker;
-
   int load_metadata(int osd, map<string, string>& m, ostream *err);
   void count_metadata(const string& field, Formatter *f);
 public:
@@ -464,9 +462,8 @@ protected:
   creating_pgs_t creating_pgs;
   mutable std::mutex creating_pgs_lock;
 
-  creating_pgs_t update_pending_pgs(const OSDMap::Incremental& inc);
-  void trim_creating_pgs(creating_pgs_t *creating_pgs,
-			 const ceph::unordered_map<pg_t,pg_stat_t>& pgm);
+  creating_pgs_t update_pending_pgs(const OSDMap::Incremental& inc,
+				    const OSDMap& nextmap);
   unsigned scan_for_creating_pgs(
     const mempool::osdmap::map<int64_t,pg_pool_t>& pools,
     const mempool::osdmap::set<int64_t>& removed_pools,
@@ -486,7 +483,7 @@ public:
 
   bool preprocess_command(MonOpRequestRef op);
   bool prepare_command(MonOpRequestRef op);
-  bool prepare_command_impl(MonOpRequestRef op, map<string,cmd_vartype>& cmdmap);
+  bool prepare_command_impl(MonOpRequestRef op, const cmdmap_t& cmdmap);
 
   int validate_osd_create(
       const int32_t id,
@@ -499,7 +496,9 @@ public:
       const uuid_d& uuid,
       int32_t* existing_id,
       stringstream& ss);
-  void do_osd_create(const int32_t id, const uuid_d& uuid, int32_t* new_id);
+  void do_osd_create(const int32_t id, const uuid_d& uuid,
+		     const string& device_class,
+		     int32_t* new_id);
   int prepare_command_osd_purge(int32_t id, stringstream& ss);
   int prepare_command_osd_destroy(int32_t id, stringstream& ss);
   int _prepare_command_osd_crush_remove(
@@ -518,15 +517,15 @@ public:
   int prepare_command_osd_remove(int32_t id);
   int prepare_command_osd_new(
       MonOpRequestRef op,
-      const map<string,cmd_vartype>& cmdmap,
+      const cmdmap_t& cmdmap,
       const map<string,string>& secrets,
       stringstream &ss,
       Formatter *f);
 
-  int prepare_command_pool_set(map<string,cmd_vartype> &cmdmap,
+  int prepare_command_pool_set(const cmdmap_t& cmdmap,
                                stringstream& ss);
   int prepare_command_pool_application(const string &prefix,
-                                       map<string,cmd_vartype> &cmdmap,
+                                       const cmdmap_t& cmdmap,
                                        stringstream& ss);
 
   bool handle_osd_timeouts(const utime_t &now,

@@ -171,7 +171,7 @@ void librados::ObjectOperation::cmpxattr(const char *name, uint8_t op, uint64_t 
 {
   ::ObjectOperation *o = &impl->o;
   bufferlist bl;
-  ::encode(v, bl);
+  encode(v, bl);
   o->cmpxattr(name, op, CEPH_OSD_CMPXATTR_MODE_U64, bl);
 }
 
@@ -623,6 +623,12 @@ void librados::ObjectWriteOperation::set_chunk(uint64_t src_offset,
   ::ObjectOperation *o = &impl->o;
   o->set_chunk(src_offset, src_length, 
 	       tgt_ioctx.io_ctx_impl->oloc, object_t(tgt_oid), tgt_offset);
+}
+
+void librados::ObjectWriteOperation::tier_promote()
+{
+  ::ObjectOperation *o = &impl->o;
+  o->tier_promote();
 }
 
 void librados::ObjectWriteOperation::tmap_put(const bufferlist &bl)
@@ -2317,6 +2323,13 @@ uint64_t librados::Rados::get_instance_id()
   return client->get_instance_id();
 }
 
+int librados::Rados::get_min_compatible_client(int8_t* min_compat_client,
+                                               int8_t* require_min_compat_client)
+{
+  return client->get_min_compatible_client(min_compat_client,
+                                           require_min_compat_client);
+}
+
 int librados::Rados::conf_read_file(const char * const path) const
 {
   return rados_conf_read_file((rados_t)client, path);
@@ -2533,7 +2546,7 @@ int librados::Rados::get_pool_stats(std::list<string>& v,
        ++p) {
     pool_stat_t& pv = result[p->first];
     object_stat_sum_t *sum = &p->second.stats.sum;
-    pv.num_kb = SHIFT_ROUND_UP(sum->num_bytes, 10);
+    pv.num_kb = shift_round_up(sum->num_bytes, 10);
     pv.num_bytes = sum->num_bytes;
     pv.num_objects = sum->num_objects;
     pv.num_object_clones = sum->num_object_clones;
@@ -2890,6 +2903,15 @@ extern "C" uint64_t rados_get_instance_id(rados_t cluster)
   return retval;
 }
 
+extern "C" int rados_get_min_compatible_client(rados_t cluster,
+                                               int8_t* min_compat_client,
+                                               int8_t* require_min_compat_client)
+{
+  librados::RadosClient *client = (librados::RadosClient *)cluster;
+  return client->get_min_compatible_client(min_compat_client,
+                                           require_min_compat_client);
+}
+
 extern "C" void rados_version(int *major, int *minor, int *extra)
 {
   tracepoint(librados, rados_version_enter, major, minor, extra);
@@ -2989,13 +3011,7 @@ extern "C" int rados_conf_parse_env(rados_t cluster, const char *env)
   tracepoint(librados, rados_conf_parse_env_enter, cluster, env);
   librados::RadosClient *client = (librados::RadosClient *)cluster;
   md_config_t *conf = client->cct->_conf;
-  vector<const char*> args;
-  env_to_vec(args, env);
-  int ret = conf->parse_argv(args);
-  if (ret) {
-    tracepoint(librados, rados_conf_parse_env_exit, ret);
-    return ret;
-  }
+  conf->parse_env(env);
   conf->apply_changes(NULL);
   tracepoint(librados, rados_conf_parse_env_exit, 0);
   return 0;
@@ -3660,7 +3676,7 @@ extern "C" int rados_ioctx_pool_stat(rados_ioctx_t io, struct rados_pool_stat_t 
   }
 
   ::pool_stat_t& r = rawresult[pool_name];
-  stats->num_kb = SHIFT_ROUND_UP(r.stats.sum.num_bytes, 10);
+  stats->num_kb = shift_round_up(r.stats.sum.num_bytes, 10);
   stats->num_bytes = r.stats.sum.num_bytes;
   stats->num_objects = r.stats.sum.num_objects;
   stats->num_object_clones = r.stats.sum.num_object_clones;
@@ -4257,8 +4273,6 @@ extern "C" int rados_getxattrs(rados_ioctx_t io, const char *oid,
   }
   it->i = it->attrset.begin();
 
-  librados::RadosXattrsIter **iret = (librados::RadosXattrsIter**)iter;
-  *iret = it;
   *iter = it;
   tracepoint(librados, rados_getxattrs_exit, 0, *iter);
   return 0;
@@ -4269,6 +4283,10 @@ extern "C" int rados_getxattrs_next(rados_xattrs_iter_t iter,
 {
   tracepoint(librados, rados_getxattrs_next_enter, iter);
   librados::RadosXattrsIter *it = static_cast<librados::RadosXattrsIter*>(iter);
+  if (it->val) {
+    free(it->val);
+    it->val = NULL;
+  }
   if (it->i == it->attrset.end()) {
     *name = NULL;
     *val = NULL;
@@ -4276,7 +4294,6 @@ extern "C" int rados_getxattrs_next(rados_xattrs_iter_t iter,
     tracepoint(librados, rados_getxattrs_next_exit, 0, NULL, NULL, 0);
     return 0;
   }
-  free(it->val);
   const std::string &s(it->i->first);
   *name = s.c_str();
   bufferlist &bl(it->i->second);

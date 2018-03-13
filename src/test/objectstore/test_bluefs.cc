@@ -30,11 +30,11 @@ string get_temp_bdev(uint64_t size)
   return fn;
 }
 
-char* gen_buffer(uint64_t size)
+std::unique_ptr<char[]> gen_buffer(uint64_t size)
 {
-    char *buffer = new char[size];
+    std::unique_ptr<char[]> buffer = std::make_unique<char[]>(size);
     boost::random::random_device rand;
-    rand.generate(buffer, buffer + size);
+    rand.generate(buffer.get(), buffer.get() + size);
     return buffer;
 }
 
@@ -156,8 +156,8 @@ void write_data(BlueFS &fs, uint64_t rationed_bytes)
       ASSERT_NE(nullptr, h);
       auto sg = make_scope_guard([&fs, h] { fs.close_writer(h); });
       bufferlist bl;
-      char *buf = gen_buffer(ALLOC_SIZE);
-      bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf);
+      std::unique_ptr<char[]> buf = gen_buffer(ALLOC_SIZE);
+      bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf.get());
       bl.push_back(bp);
       h->append(bl.c_str(), bl.length());
       r = fs.fsync(h);
@@ -181,8 +181,8 @@ void create_single_file(BlueFS &fs)
     string file = "testfile";
     ASSERT_EQ(0, fs.open_for_write(dir, file, &h, false));
     bufferlist bl;
-    char *buf = gen_buffer(ALLOC_SIZE);
-    bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf);
+    std::unique_ptr<char[]> buf = gen_buffer(ALLOC_SIZE);
+    bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf.get());
     bl.push_back(bp);
     h->append(bl.c_str(), bl.length());
     fs.fsync(h);
@@ -202,8 +202,8 @@ void write_single_file(BlueFS &fs, uint64_t rationed_bytes)
       ASSERT_NE(nullptr, h);
       auto sg = make_scope_guard([&fs, h] { fs.close_writer(h); });
       bufferlist bl;
-      char *buf = gen_buffer(ALLOC_SIZE);
-      bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf);
+      std::unique_ptr<char[]> buf = gen_buffer(ALLOC_SIZE);
+      bufferptr bp = buffer::claim_char(ALLOC_SIZE, buf.get());
       bl.push_back(bp);
       h->append(bl.c_str(), bl.length());
       int r = fs.fsync(h);
@@ -370,8 +370,8 @@ TEST(BlueFS, test_simple_compaction_sync) {
           ASSERT_NE(nullptr, h);
           auto sg = make_scope_guard([&fs, h] { fs.close_writer(h); });
           bufferlist bl;
-          char *buf = gen_buffer(4096);
-	  bufferptr bp = buffer::claim_char(4096, buf);
+          std::unique_ptr<char[]> buf = gen_buffer(4096);
+	  bufferptr bp = buffer::claim_char(4096, buf.get());
 	  bl.push_back(bp);
           h->append(bl.c_str(), bl.length());
           fs.fsync(h);
@@ -423,8 +423,8 @@ TEST(BlueFS, test_simple_compaction_async) {
           ASSERT_NE(nullptr, h);
           auto sg = make_scope_guard([&fs, h] { fs.close_writer(h); });
           bufferlist bl;
-          char *buf = gen_buffer(4096);
-	  bufferptr bp = buffer::claim_char(4096, buf);
+          std::unique_ptr<char[]> buf = gen_buffer(4096);
+	  bufferptr bp = buffer::claim_char(4096, buf.get());
 	  bl.push_back(bp);
           h->append(bl.c_str(), bl.length());
           fs.fsync(h);
@@ -570,15 +570,15 @@ TEST(BlueFS, test_replay) {
 int main(int argc, char **argv) {
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
-  env_to_vec(args);
 
-  vector<const char *> def_args;
-  def_args.push_back("--debug-bluefs=1/20");
-  def_args.push_back("--debug-bdev=1/20");
+  map<string,string> defaults = {
+    { "debug_bluefs", "1/20" },
+    { "debug_bdev", "1/20" }
+  };
 
-  auto cct = global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto cct = global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY,
-			 0);
+			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   common_init_finish(g_ceph_context);
   g_ceph_context->_conf->set_val(
     "enable_experimental_unrecoverable_data_corrupting_features",

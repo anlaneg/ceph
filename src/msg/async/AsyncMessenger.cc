@@ -171,6 +171,8 @@ void Processor::accept()
     Worker *w = worker;
     if (!msgr->get_stack()->support_local_listen_table())
       w = msgr->get_stack()->get_worker();
+    else
+      ++w->references;
     int r = listen_socket.accept(&cli_socket, opts, &addr, w);
     if (r == 0) {
       ldout(msgr->cct, 10) << __func__ << " accepted incoming on sd " << cli_socket.fd() << dendl;
@@ -257,8 +259,8 @@ AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
   else if (type.find("dpdk") != std::string::npos)
     transport_type = "dpdk";
 
-  StackSingleton *single;
-  cct->lookup_or_create_singleton_object<StackSingleton>(single, "AsyncMessenger::NetworkStack::"+transport_type);
+  auto single = &cct->lookup_or_create_singleton_object<StackSingleton>(
+    "AsyncMessenger::NetworkStack::" + transport_type, true, cct);
   single->ready(transport_type);
   stack = single->stack.get();
   stack->start();

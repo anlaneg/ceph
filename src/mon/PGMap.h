@@ -29,10 +29,6 @@
 #include "mon/health_check.h"
 #include <sstream>
 
-// FIXME: don't like including this here to get OSDMap::Incremental, maybe
-// PGMapUpdater needs its own header.
-#include "osd/OSDMap.h"
-
 namespace ceph { class Formatter; }
 
 class PGMapDigest {
@@ -58,14 +54,16 @@ public:
     int32_t up = 0;
     int32_t primary = 0;
     void encode(bufferlist& bl) const {
-      ::encode(acting, bl);
-      ::encode(up, bl);
-      ::encode(primary, bl);
+      using ceph::encode;
+      encode(acting, bl);
+      encode(up, bl);
+      encode(primary, bl);
     }
     void decode(bufferlist::iterator& p) {
-      ::decode(acting, p);
-      ::decode(up, p);
-      ::decode(primary, p);
+      using ceph::decode;
+      decode(acting, p);
+      decode(up, p);
+      decode(primary, p);
     }
   };
   mempool::pgmap::unordered_map<int32_t,pg_count> num_pg_by_osd;
@@ -99,7 +97,7 @@ public:
   void print_oneline_summary(Formatter *f, ostream *out) const;
 
   void recovery_summary(Formatter *f, list<string> *psl,
-                        const pool_stat_t& delta_sum) const;
+                        const pool_stat_t& pool_sum) const;
   void overall_recovery_summary(Formatter *f, list<string> *psl) const;
   void pool_recovery_summary(Formatter *f, list<string> *psl,
                              uint64_t poolid) const;
@@ -456,7 +454,7 @@ inline ostream& operator<<(ostream& out, const PGMapDigest& m) {
 
 int process_pg_map_command(
   const string& prefix,
-  const map<string,cmd_vartype>& cmdmap,
+  const cmdmap_t& cmdmap,
   const PGMap& pg_map,
   const OSDMap& osdmap,
   Formatter *f,

@@ -155,6 +155,11 @@ static int do_disk_usage(librbd::RBD &rbd, librados::IoCtx &io_ctx,
       continue;
     }
 
+    snap_list.erase(remove_if(snap_list.begin(),
+                              snap_list.end(),
+                              boost::bind(utils::is_not_user_snap_namespace, &image, _1)),
+                    snap_list.end());
+
     bool found_from_snap = (from_snapname == nullptr);
     std::string last_snap_name;
     std::sort(snap_list.begin(), snap_list.end(),
@@ -245,7 +250,8 @@ void get_arguments(po::options_description *positional,
      "snapshot starting point");
 }
 
-int execute(const po::variables_map &vm) {
+int execute(const po::variables_map &vm,
+            const std::vector<std::string> &ceph_global_init_args) {
   size_t arg_index = 0;
   std::string pool_name;
   std::string image_name;
@@ -278,7 +284,7 @@ int execute(const po::variables_map &vm) {
 
   librbd::RBD rbd;
   r = do_disk_usage(rbd, io_ctx,
-                    image_name.empty() ? nullptr: image_name.c_str() ,
+                    image_name.empty() ? nullptr: image_name.c_str(),
                     snap_name.empty() ? nullptr : snap_name.c_str(),
                     from_snap_name.empty() ? nullptr : from_snap_name.c_str(),
                     formatter.get());
@@ -290,7 +296,7 @@ int execute(const po::variables_map &vm) {
 }
 
 Shell::Action action(
-  {"disk-usage"}, {"du"}, "Show disk usage stats for pool, image or snapshot",
+  {"disk-usage"}, {"du"}, "Show disk usage stats for pool, image or snapshot.",
   "", &get_arguments, &execute);
 
 } // namespace disk_usage

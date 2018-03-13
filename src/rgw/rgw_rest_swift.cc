@@ -521,6 +521,10 @@ static void dump_container_metadata(struct req_state *s,
   if (ws_conf.listing_enabled) {
     dump_header(s, "X-Container-Meta-Web-Listings", "true");
   }
+
+  /* Dump bucket's modification time. Compliance with the Swift API really
+   * needs that. */
+  dump_last_modified(s, s->bucket_mtime);
 }
 
 void RGWStatAccount_ObjStore_SWIFT::execute()
@@ -572,20 +576,12 @@ static int get_swift_container_settings(req_state * const s,
                                         RGWCORSConfiguration * const cors_config,
                                         bool * const has_cors)
 {
-  string read_list, write_list;
-
-  const char * const read_attr = s->info.env->get("HTTP_X_CONTAINER_READ");
-  if (read_attr) {
-    read_list = read_attr;
-  }
-  const char * const write_attr = s->info.env->get("HTTP_X_CONTAINER_WRITE");
-  if (write_attr) {
-    write_list = write_attr;
-  }
+  const char * const read_list = s->info.env->get("HTTP_X_CONTAINER_READ");
+  const char * const write_list = s->info.env->get("HTTP_X_CONTAINER_WRITE");
 
   *has_policy = false;
 
-  if (read_attr || write_attr) {
+  if (read_list || write_list) {
     RGWAccessControlPolicy_SWIFT swift_policy(s->cct);
     const auto r = swift_policy.create(store,
                                        s->user->user_id,
@@ -715,7 +711,7 @@ static inline int handle_metadata_errors(req_state* const s, const int op_ret)
      * (stored as xattr) size. */
     const auto error_message = boost::str(
       boost::format("Metadata value longer than %lld")
-        % s->cct->_conf->get_val<size_t>("rgw_max_attr_size"));
+        % s->cct->_conf->get_val<Option::size_t>("rgw_max_attr_size"));
     set_req_state_err(s, EINVAL, error_message);
     return -EINVAL;
   } else if (op_ret == -E2BIG) {
@@ -889,7 +885,7 @@ int RGWPutObj_ObjStore_SWIFT::get_params()
     MD5 etag_sum;
     uint64_t total_size = 0;
     for (const auto& entry : slo_info->entries) {
-      etag_sum.Update((const byte *)entry.etag.c_str(),
+      etag_sum.Update((const unsigned char *)entry.etag.c_str(),
                       entry.etag.length());
       total_size += entry.size_bytes;
 
@@ -1052,7 +1048,6 @@ int RGWPutMetadataObject_ObjStore_SWIFT::get_params()
     return r;
   }
 
-  placement_rule = s->info.env->get("HTTP_X_STORAGE_POLICY", "");
   dlo_manifest = s->info.env->get("HTTP_X_OBJECT_MANIFEST");
 
   return 0;
@@ -1221,7 +1216,7 @@ static void dump_object_metadata(struct req_state * const s,
     if (aiter != std::end(rgw_to_http_attrs)) {
       response_attrs[aiter->second] = kv.second.c_str();
     } else if (strcmp(name, RGW_ATTR_SLO_UINDICATOR) == 0) {
-      // this attr has an extra length prefix from ::encode() in prior versions
+      // this attr has an extra length prefix from encode() in prior versions
       dump_header(s, "X-Object-Meta-Static-Large-Object", "True");
     } else if (strncmp(name, RGW_ATTR_META_PREFIX,
 		       sizeof(RGW_ATTR_META_PREFIX)-1) == 0) {
@@ -1253,7 +1248,7 @@ static void dump_object_metadata(struct req_state * const s,
   if (iter != std::end(attrs)) {
     utime_t delete_at;
     try {
-      ::decode(delete_at, iter->second);
+      decode(delete_at, iter->second);
       if (!delete_at.is_zero()) {
         dump_header(s, "X-Delete-At", delete_at.sec());
       }
@@ -1784,7 +1779,7 @@ void RGWInfo_ObjStore_SWIFT::list_swift_data(Formatter& formatter,
     formatter.dump_int("max_meta_name_length", meta_name_limit);
   }
 
-  const size_t meta_value_limit = g_conf->get_val<size_t>("rgw_max_attr_size");
+  const size_t meta_value_limit = g_conf->get_val<Option::size_t>("rgw_max_attr_size");
   if (meta_value_limit) {
     formatter.dump_int("max_meta_value_length", meta_value_limit);
   }
@@ -2030,7 +2025,7 @@ int RGWFormPost::get_params()
       return ret;
     }
 
-    if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
+    if (s->cct->_conf->subsys.should_gather<ceph_subsys_rgw, 20>()) {
       ldout(s->cct, 20) << "read part header -- part.name="
                         << part.name << dendl;
 
@@ -2910,8 +2905,9 @@ int RGWHandler_REST_SWIFT::init(RGWRados* store, struct req_state* s,
 
   s->dialect = "swift";
 
-  const char *copy_source = s->info.env->get("HTTP_X_COPY_FROM");
-  if (copy_source) {
+  std::string copy_source =
+    url_decode(s->info.env->get("HTTP_X_COPY_FROM", ""));
+  if (! copy_source.empty()) {
     bool result = RGWCopyObj::parse_copy_location(copy_source, t->src_bucket,
 						  s->src_object);
     if (!result)
@@ -2919,11 +2915,12 @@ int RGWHandler_REST_SWIFT::init(RGWRados* store, struct req_state* s,
   }
 
   if (s->op == OP_COPY) {
-    const char *req_dest = s->info.env->get("HTTP_DESTINATION");
-    if (!req_dest)
+    std::string req_dest =
+      url_decode(s->info.env->get("HTTP_DESTINATION", ""));
+    if (req_dest.empty())
       return -ERR_BAD_URL;
 
-    string dest_bucket_name;
+    std::string dest_bucket_name;
     rgw_obj_key dest_obj_key;
     bool result =
       RGWCopyObj::parse_copy_location(req_dest, dest_bucket_name,
@@ -2931,7 +2928,7 @@ int RGWHandler_REST_SWIFT::init(RGWRados* store, struct req_state* s,
     if (!result)
        return -ERR_BAD_URL;
 
-    string dest_object = dest_obj_key.name;
+    std::string dest_object = dest_obj_key.name;
 
     /* convert COPY operation into PUT */
     t->src_bucket = t->url_bucket;

@@ -157,9 +157,6 @@ ObjectCacher::BufferHead *ObjectCacher::Object::split(BufferHead *left,
 void ObjectCacher::Object::merge_left(BufferHead *left, BufferHead *right)
 {
   assert(oc->lock.is_locked());
-  assert(left->end() == right->start());
-  assert(left->get_state() == right->get_state());
-  assert(left->can_merge_journal(right));
 
   ldout(oc->cct, 10) << "merge_left " << *left << " + " << *right << dendl;
   if (left->get_journal_tid() == 0) {
@@ -196,6 +193,17 @@ void ObjectCacher::Object::merge_left(BufferHead *left, BufferHead *right)
   ldout(oc->cct, 10) << "merge_left result " << *left << dendl;
 }
 
+bool ObjectCacher::Object::can_merge_bh(BufferHead *left, BufferHead *right)
+{
+  if (left->end() != right->start() ||
+      left->get_state() != right->get_state() ||
+      !left->can_merge_journal(right))
+    return false;
+  if (left->is_tx() && left->last_write_tid != right->last_write_tid)
+    return false;
+  return true;
+}
+
 void ObjectCacher::Object::try_merge_bh(BufferHead *bh)
 {
   assert(oc->lock.is_locked());
@@ -210,9 +218,7 @@ void ObjectCacher::Object::try_merge_bh(BufferHead *bh)
   assert(p->second == bh);
   if (p != data.begin()) {
     --p;
-    if (p->second->end() == bh->start() &&
-	p->second->get_state() == bh->get_state() &&
-	p->second->can_merge_journal(bh)) {
+    if (can_merge_bh(p->second, bh)) {
       merge_left(p->second, bh);
       bh = p->second;
     } else {
@@ -222,10 +228,7 @@ void ObjectCacher::Object::try_merge_bh(BufferHead *bh)
   // to the right?
   assert(p->second == bh);
   ++p;
-  if (p != data.end() &&
-      p->second->start() == bh->end() &&
-      p->second->get_state() == bh->get_state() &&
-      p->second->can_merge_journal(bh))
+  if (p != data.end() && can_merge_bh(bh, p->second))
     merge_left(bh, p->second);
 }
 
@@ -660,9 +663,9 @@ void ObjectCacher::perf_start()
   plb.add_u64_counter(l_objectcacher_cache_ops_miss,
 		      "cache_ops_miss", "Miss operations");
   plb.add_u64_counter(l_objectcacher_cache_bytes_hit,
-		      "cache_bytes_hit", "Hit data");
+		      "cache_bytes_hit", "Hit data", NULL, 0, unit_t(BYTES));
   plb.add_u64_counter(l_objectcacher_cache_bytes_miss,
-		      "cache_bytes_miss", "Miss data");
+		      "cache_bytes_miss", "Miss data", NULL, 0, unit_t(BYTES));
   plb.add_u64_counter(l_objectcacher_data_read,
 		      "data_read", "Read data");
   plb.add_u64_counter(l_objectcacher_data_written,
@@ -676,7 +679,7 @@ void ObjectCacher::perf_start()
 		      "Write operations, delayed due to dirty limits");
   plb.add_u64_counter(l_objectcacher_write_bytes_blocked,
 		      "write_bytes_blocked",
-		      "Write data blocked on dirty limit");
+		      "Write data blocked on dirty limit", NULL, 0, unit_t(BYTES));
   plb.add_time(l_objectcacher_write_time_blocked, "write_time_blocked",
 	       "Time spent blocking a write due to dirty limits");
 
@@ -1149,14 +1152,8 @@ void ObjectCacher::bh_write_commit(int64_t poolid, sobject_t oid,
 	 ++p) {
       BufferHead *bh = p->second;
 
-      if (bh->start() > start+(loff_t)length)
+      if (bh->start() >= start+(loff_t)length)
 	break;
-
-      if (bh->start() < start &&
-	  bh->end() > start+(loff_t)length) {
-	ldout(cct, 20) << "bh_write_commit skipping " << *bh << dendl;
-	continue;
-      }
 
       // make sure bh is tx
       if (!bh->is_tx()) {
@@ -1170,6 +1167,10 @@ void ObjectCacher::bh_write_commit(int64_t poolid, sobject_t oid,
 	ldout(cct, 10) << "bh_write_commit newer tid on " << *bh << dendl;
 	continue;
       }
+
+      // we don't merge tx buffers. tx buffer should be within the range
+      assert(bh->start() >= start);
+      assert(bh->end() <= start+(loff_t)length);
 
       if (r >= 0) {
 	// ok!  mark bh clean and error-free

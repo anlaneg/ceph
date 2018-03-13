@@ -78,7 +78,7 @@ void Throttle::_reset_max(int64_t m)
 {
   // lock must be held.
   //检查是否有必要变更max取值
-  if (static_cast<int64_t>(max) == m)
+  if (max == m)
     return;
   //cond队列不为空，取第一个条件变量，并唤醒第一个等待此条件变量的
   if (!conds.empty())
@@ -247,7 +247,7 @@ int64_t Throttle::put(int64_t c)
       conds.front().notify_one();
     // if count goes negative, we failed somewhere!
     //count一定大于等于c
-    assert(static_cast<int64_t>(count) >= c);
+    assert(count >= c);
     count -= c;//归还占用量
     if (logger) {
       logger->inc(l_throttle_put);

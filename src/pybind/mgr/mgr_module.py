@@ -1,13 +1,11 @@
 
 import ceph_module  # noqa
-#import ceph_osdmap  #noqa
-#import ceph_osdmap_incremental  #noqa
-#import ceph_crushmap  #noqa
 
 import json
 import logging
 import threading
 from collections import defaultdict
+import rados
 
 
 class CPlusPlusHandler(logging.Handler):
@@ -127,6 +125,7 @@ class OSDMapIncremental(ceph_module.BasePyOSDMapIncremental):
 
 class CRUSHMap(ceph_module.BasePyCRUSH):
     ITEM_NONE = 0x7fffffff
+    DEFAULT_CHOOSE_ARGS = '-1'
 
     def dump(self):
         return self._dump()
@@ -144,13 +143,22 @@ class CRUSHMap(ceph_module.BasePyCRUSH):
         uglymap = self._get_take_weight_osd_map(root)
         return { int(k): v for k, v in uglymap.get('weights', {}).iteritems() }
 
+    @staticmethod
+    def have_default_choose_args(dump):
+        return CRUSHMap.DEFAULT_CHOOSE_ARGS in dump.get('choose_args', {})
+
+    @staticmethod
+    def get_default_choose_args(dump):
+        return dump.get('choose_args').get(CRUSHMap.DEFAULT_CHOOSE_ARGS, [])
+
+
 class MgrStandbyModule(ceph_module.BaseMgrStandbyModule):
     """
     Standby modules only implement a serve and shutdown method, they
     are not permitted to implement commands and they do not receive
     any notifications.
 
-    They only have access to the mgrmap (for acecssing service URI info
+    They only have access to the mgrmap (for accessing service URI info
     from their active peer), and to configuration settings (read only).
     """
 
@@ -176,8 +184,20 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule):
     def get_mgr_id(self):
         return self._ceph_get_mgr_id()
 
-    def get_config(self, key):
-        return self._ceph_get_config(key)
+    def get_config(self, key, default=None):
+        """
+        Retrieve the value of a persistent configuration setting
+
+        :param str key:
+        :param default: the default value of the config if it is not found
+        :return: str
+        """
+        r = self._ceph_get_config(key)
+        if r is None:
+            return default
+        else:
+            return r
+
 
     def get_active_uri(self):
         return self._ceph_get_active_uri()
@@ -211,6 +231,10 @@ class MgrModule(ceph_module.BaseMgrModule):
     PERFCOUNTER_HISTOGRAM = 0x10
     PERFCOUNTER_TYPE_MASK = ~2
 
+    # units supported
+    BYTES = 0
+    NONE = 1
+    
     def __init__(self, module_name, py_modules_ptr, this_ptr):
         self.module_name = module_name
 
@@ -224,6 +248,9 @@ class MgrModule(ceph_module.BaseMgrModule):
         self._version = self._ceph_get_version()
 
         self._perf_schema_cache = None
+
+        # Keep a librados instance for those that need it.
+        self._rados = None
 
     def __del__(self):
         unconfigure_logger(self, self.module_name)
@@ -278,7 +305,8 @@ class MgrModule(ceph_module.BaseMgrModule):
 
         :return: None
         """
-        pass
+        if self._rados:
+            self._rados.shutdown()
 
     def get(self, data_name):
         """
@@ -294,6 +322,27 @@ class MgrModule(ceph_module.BaseMgrModule):
         """
         return self._ceph_get(data_name)
 
+    def _stattype_to_str(self, stattype):
+        
+        typeonly = stattype & self.PERFCOUNTER_TYPE_MASK
+        if typeonly == 0:
+            return 'gauge'
+        if typeonly == self.PERFCOUNTER_LONGRUNAVG:
+            # this lie matches the DaemonState decoding: only val, no counts
+            return 'counter'
+        if typeonly == self.PERFCOUNTER_COUNTER:
+            return 'counter'
+        if typeonly == self.PERFCOUNTER_HISTOGRAM:
+            return 'histogram'
+        
+        return ''
+
+    def _unit_to_str(self, unit):
+        if unit == self.NONE:
+            return "/s"
+        elif unit == self.BYTES:
+            return "B/s"  
+    
     def get_server(self, hostname):
         """
         Called by the plugin to fetch metadata about a particular hostname from
@@ -604,3 +653,34 @@ class MgrModule(ceph_module.BaseMgrModule):
         """
 
         return self._ceph_have_mon_connection()
+
+    @property
+    def rados(self):
+        """
+        A librados instance to be shared by any classes within
+        this mgr module that want one.
+        """
+        if self._rados:
+            return self._rados
+
+        ctx_capsule = self.get_context()
+        self._rados = rados.Rados(context=ctx_capsule)
+        self._rados.connect()
+
+        return self._rados
+
+    @staticmethod
+    def can_run():
+        """
+        Implement this function to report whether the module's dependencies
+        are met.  For example, if the module needs to import a particular
+        dependency to work, then use a try/except around the import at
+        file scope, and then report here if the import failed.
+
+        This will be called in a blocking way from the C++ code, so do not
+        do any I/O that could block in this function.
+
+        :return a 2-tuple consisting of a boolean and explanatory string
+        """
+
+        return True, ""

@@ -82,10 +82,10 @@ void usage(ostream& out)
 "   rmsnap <snap-name>               remove snap <snap-name>\n"
 "\n"
 "OBJECT COMMANDS\n"
-"   get <obj-name> [outfile]         fetch object\n"
-"   put <obj-name> [infile] [--offset offset]\n"
+"   get <obj-name> <outfile>         fetch object\n"
+"   put <obj-name> <infile> [--offset offset]\n"
 "                                    write object with start offset (default:0)\n"
-"   append <obj-name> [infile]       append object\n"
+"   append <obj-name> <infile>       append object\n"
 "   truncate <obj-name> length       truncate object\n"
 "   create <obj-name>                create object\n"
 "   rm <obj-name> ...[--force-full]  [force no matter full or not]remove object(s)\n"
@@ -115,6 +115,7 @@ void usage(ostream& out)
 "                                    in the object's object map\n"
 "   setomapval <obj-name> <key> <val>\n"
 "   rmomapkey <obj-name> <key>\n"
+"   clearomap <obj-name> [obj-name2 obj-name3...] clear all the omap keys for the specified objects\n"
 "   getomapheader <obj-name> [file]\n"
 "   setomapheader <obj-name> <val>\n"
 "   tmap-to-omap <obj-name>          convert tmap keys/values to omap\n"
@@ -127,6 +128,7 @@ void usage(ostream& out)
 "                                    set redirect target\n"
 "   set-chunk <object A> <offset> <length> --target-pool <caspool> <target object A> <taget-offset>\n"
 "                                    convert an object to chunked object\n"
+"   tier-promote <obj-name>	     promote the object to the base tier\n"
 "\n"
 "IMPORT AND EXPORT\n"
 "   export [filename]\n"
@@ -171,6 +173,8 @@ void usage(ostream& out)
 "        select given pool by name\n"
 "   --target-pool=pool\n"
 "        select target pool by name\n"
+"   -f [--format plain|json|json-pretty]\n"
+"   --format=[--format plain|json|json-pretty]\n"
 "   -b op_size\n"
 "        set the block size for put/get ops and for write benchmarking\n"
 "   -o object_size\n"
@@ -180,7 +184,6 @@ void usage(ostream& out)
 "   -s name\n"
 "   --snap name\n"
 "        select given snap name for (read) IO\n"
-"   -i infile\n"
 "   --create\n"
 "        create the pool or directory that was specified\n"
 "   -N namespace\n"
@@ -1373,8 +1376,18 @@ static void dump_shard(const shard_info_t& shard,
     map<std::string, ceph::bufferlist>::iterator k = (const_cast<shard_info_t&>(shard)).attrs.find(OI_ATTR);
     assert(k != shard.attrs.end()); // Can't be missing
     bufferlist::iterator bliter = k->second.begin();
-    ::decode(oi, bliter);  // Can't be corrupted
+    decode(oi, bliter);  // Can't be corrupted
     f.dump_stream("object_info") << oi;
+  }
+  if (!shard.has_ss_attr_missing() && !shard.has_ss_attr_corrupted() &&
+      inc.has_snapset_inconsistency()) {
+    SnapSet ss;
+    bufferlist bl;
+    map<std::string, ceph::bufferlist>::iterator k = (const_cast<shard_info_t&>(shard)).attrs.find(SS_ATTR);
+    assert(k != shard.attrs.end()); // Can't be missing
+    bufferlist::iterator bliter = k->second.begin();
+    decode(ss, bliter);  // Can't be corrupted
+    f.dump_stream("snapset") << ss;
   }
   if (inc.has_attr_name_mismatch() || inc.has_attr_value_mismatch()
      || inc.union_shards.has_oi_attr_missing()
@@ -1409,6 +1422,8 @@ static void dump_obj_errors(const obj_err_t &err, Formatter &f)
     f.dump_string("error", "attr_value_mismatch");
   if (err.has_attr_name_mismatch())
     f.dump_string("error", "attr_name_mismatch");
+  if (err.has_snapset_inconsistency())
+    f.dump_string("error", "snapset_inconsistency");
   f.close_section();
 }
 
@@ -1449,7 +1464,7 @@ static void dump_inconsistent(const inconsistent_obj_t& inc,
       auto k = shard.attrs.find(OI_ATTR);
       assert(k != shard.attrs.end()); // Can't be missing
       bufferlist::iterator bliter = k->second.begin();
-      ::decode(oi, bliter);  // Can't be corrupted
+      decode(oi, bliter);  // Can't be corrupted
       f.dump_stream("selected_object_info") << oi;
       break;
     }
@@ -2593,6 +2608,21 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     } else {
       ret = 0;
     }
+  } else if (strcmp(nargs[0], "clearomap") == 0) {
+    if (!pool_name || nargs.size() < 2) {
+      usage_exit();
+    }
+
+    for (unsigned i=1; i < nargs.size(); i++){
+      string oid(nargs[i]);
+      ret = io_ctx.omap_clear(oid);
+      if (ret < 0) {
+        cerr << "error clearing omap keys " << pool_name << "/" << oid << "/"
+             << cpp_strerror(ret) << std::endl;
+        goto out;
+      }
+    }
+    ret = 0;
   } else if (strcmp(nargs[0], "listomapvals") == 0) {
     if (!pool_name || nargs.size() < 2)
       usage_exit();
@@ -2726,8 +2756,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       bufferlist header;
       map<string, bufferlist> kv;
       try {
-	::decode(header, p);
-	::decode(kv, p);
+	decode(header, p);
+	decode(kv, p);
       }
       catch (buffer::error& e) {
 	cerr << "error decoding tmap " << pool_name << "/" << oid << std::endl;
@@ -2753,9 +2783,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       string v(nargs[4]);
       bufferlist bl;
       char c = (strcmp(nargs[1], "set") == 0) ? CEPH_OSD_TMAP_SET : CEPH_OSD_TMAP_CREATE;
-      ::encode(c, bl);
-      ::encode(k, bl);
-      ::encode(v, bl);
+      encode(c, bl);
+      encode(k, bl);
+      encode(v, bl);
       ret = io_ctx.tmap_update(oid, bl);
     }
   }
@@ -2777,8 +2807,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     map<string, bufferlist> kv;
     bufferlist::iterator p = bl.begin();
     try {
-      ::decode(hdr, p);
-      ::decode(kv, p);
+      decode(hdr, p);
+      decode(kv, p);
     }
     catch (buffer::error& e) {
       cerr << "error decoding tmap " << pool_name << "/" << oid << std::endl;
@@ -2888,10 +2918,12 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = rados.pool_delete(nargs[1]);
     if (ret >= 0) {
       cout << "successfully deleted pool " << nargs[1] << std::endl;
-    } else { //error
+    } else {
       cerr << "pool " << nargs[1] << " could not be removed" << std::endl;
-      cerr << "Check your monitor configuration - `mon allow pool delete` is set to false by default,"
-     << " change it to true to allow deletion of pools" << std::endl;
+      if (ret == -EPERM) {
+	cerr << "Check your monitor configuration - `mon allow pool delete` is set to false by default,"
+	     << " change it to true to allow deletion of pools" << std::endl;
+      }
     }
   }
   else if (strcmp(nargs[0], "purge") == 0) {
@@ -3099,7 +3131,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     string oid(nargs[1]);
     string msg(nargs[2]);
     bufferlist bl, replybl;
-    ::encode(msg, bl);
+    encode(msg, bl);
     ret = io_ctx.notify2(oid, bl, 10000, &replybl);
     if (ret != 0)
       cerr << "error calling notify: " << cpp_strerror(ret) << std::endl;
@@ -3107,8 +3139,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       map<pair<uint64_t,uint64_t>,bufferlist> rm;
       set<pair<uint64_t,uint64_t> > missed;
       bufferlist::iterator p = replybl.begin();
-      ::decode(rm, p);
-      ::decode(missed, p);
+      decode(rm, p);
+      decode(missed, p);
       for (map<pair<uint64_t,uint64_t>,bufferlist>::iterator p = rm.begin();
 	   p != rm.end();
 	   ++p) {
@@ -3564,6 +3596,19 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	    << "tgt_offset: " << tgt_offset << " : " << cpp_strerror(ret) << std::endl;
       goto out;
     }
+  } else if (strcmp(nargs[0], "tier-promote") == 0) {
+    if (!pool_name || nargs.size() < 2)
+      usage_exit();
+    string oid(nargs[1]);
+
+    ObjectWriteOperation op;
+    op.tier_promote();
+    ret = io_ctx.operate(oid, &op);
+    if (ret < 0) {
+      cerr << "error tier-promote " << pool_name << "/" << oid << " : " 
+	   << cpp_strerror(ret) << std::endl;
+      goto out;
+    }
   } else if (strcmp(nargs[0], "export") == 0) {
     // export [filename]
     if (!pool_name || nargs.size() > 2) {
@@ -3662,7 +3707,6 @@ int main(int argc, const char **argv)
 {
   vector<const char*> args;
   argv_to_vec(argc, argv, args);
-  env_to_vec(args);
 
   std::map < std::string, std::string > opts;
   std::string val;
@@ -3701,8 +3745,6 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_flag(args, i, "-h", "--help", (char*)NULL)) {
       usage(cout);
       exit(0);
-    } else if (ceph_argparse_flag(args, i, "-f", "--force", (char*)NULL)) {
-      opts["force"] = "true";
     } else if (ceph_argparse_flag(args, i, "--force-full", (char*)NULL)) {
       opts["force-full"] = "true";
     } else if (ceph_argparse_flag(args, i, "-d", "--delete-after", (char*)NULL)) {
@@ -3776,7 +3818,7 @@ int main(int argc, const char **argv)
       opts["run-length"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--workers", (char*)NULL)) {
       opts["workers"] = val;
-    } else if (ceph_argparse_witharg(args, i, &val, "--format", (char*)NULL)) {
+    } else if (ceph_argparse_witharg(args, i, &val, "-f", "--format", (char*)NULL)) {
       opts["format"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--lock-tag", (char*)NULL)) {
       opts["lock-tag"] = val;

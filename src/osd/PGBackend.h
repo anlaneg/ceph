@@ -132,6 +132,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 					eversion_t v,
 					Context *on_complete) = 0;
 
+
      /**
       * Bless a context
       *
@@ -216,9 +217,6 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual void release_locks(ObcLockManager &manager) = 0;
 
-     virtual void op_applied(
-       const eversion_t &applied_version) = 0;
-
      virtual bool should_send_op(
        pg_shard_t peer,
        const hobject_t &hoid) = 0;
@@ -291,6 +289,7 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
 
      virtual bool check_osdmap_full(const set<pg_shard_t> &missing_on) = 0;
 
+     virtual bool maybe_preempt_replica_scrub(const hobject_t& oid) = 0;
      virtual ~Listener() {}
    };
    //针对pg的后端而言，这里的parent指的是pg(这里如果用fontend的话就好理解了）
@@ -440,8 +439,6 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
      const vector<pg_log_entry_t> &log_entries, ///< [in] log entries for t
      /// [in] hitset history (if updated with this transaction)
      boost::optional<pg_hit_set_history_t> &hset_history,
-     Context *on_local_applied_sync,      ///< [in] called when applied locally
-     Context *on_all_applied,             ///< [in] called when all acked
      Context *on_all_commit,              ///< [in] called when all commit
      ceph_tid_t tid,                      ///< [in] tid
      osd_reqid_t reqid,                   ///< [in] reqid
@@ -561,9 +558,9 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
      Context *on_complete, bool fast_read = false) = 0;
 
    virtual bool auto_repair_supported() const = 0;
-   void be_scan_list(
-     ScrubMap &map, const vector<hobject_t> &ls, bool deep, uint32_t seed,
-     ThreadPool::TPHandle &handle);
+   int be_scan_list(
+     ScrubMap &map,
+     ScrubMapBuilder &pos);
    bool be_compare_scrub_objects(
      pg_shard_t auth_shard,
      const ScrubMap::object &auth,
@@ -594,12 +591,11 @@ typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
      ostream &errorstream);
    virtual uint64_t be_get_ondisk_size(
      uint64_t logical_size) = 0;
-   virtual void be_deep_scrub(
-     const hobject_t &poid,
-     uint32_t seed,
-     ScrubMap::object &o,
-     ThreadPool::TPHandle &handle,
-     ScrubMap* const map = nullptr) = 0;
+   virtual int be_deep_scrub(
+     const hobject_t &oid,
+     ScrubMap &map,
+     ScrubMapBuilder &pos,
+     ScrubMap::object &o) = 0;
    void be_large_omap_check(
      const map<pg_shard_t,ScrubMap*> &maps,
      const set<hobject_t> &master_set,

@@ -115,7 +115,6 @@ protected:
   RGWQuotaInfo bucket_quota;
   RGWQuotaInfo user_quota;
   int op_ret;
-
   int do_aws4_auth_completion();
 
   virtual int init_quota();
@@ -920,17 +919,17 @@ struct rgw_slo_entry {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(path, bl);
-    ::encode(etag, bl);
-    ::encode(size_bytes, bl);
+    encode(path, bl);
+    encode(etag, bl);
+    encode(size_bytes, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-     ::decode(path, bl);
-     ::decode(etag, bl);
-     ::decode(size_bytes, bl);
+     decode(path, bl);
+     decode(etag, bl);
+     decode(size_bytes, bl);
      DECODE_FINISH(bl);
   }
 
@@ -953,15 +952,15 @@ struct RGWSLOInfo {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(entries, bl);
-    ::encode(total_size, bl);
+    encode(entries, bl);
+    encode(total_size, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-     ::decode(entries, bl);
-     ::decode(total_size, bl);
+     decode(entries, bl);
+     decode(total_size, bl);
      DECODE_FINISH(bl);
   }
 };
@@ -978,7 +977,7 @@ protected:
   const char *supplied_etag;
   const char *if_match;
   const char *if_nomatch;
-  const char *copy_source;
+  std::string copy_source;
   const char *copy_source_range;
   RGWBucketInfo copy_source_bucket_info;
   string copy_source_tenant_name;
@@ -1009,7 +1008,6 @@ public:
                 supplied_etag(NULL),
                 if_match(NULL),
                 if_nomatch(NULL),
-                copy_source(NULL),
                 copy_source_range(NULL),
                 copy_source_range_fst(0),
                 copy_source_range_lst(0),
@@ -1208,7 +1206,6 @@ public:
 class RGWPutMetadataObject : public RGWOp {
 protected:
   RGWAccessControlPolicy policy;
-  string placement_rule;
   boost::optional<ceph::real_time> delete_at;
   const char *dlo_manifest;
 
@@ -1270,6 +1267,9 @@ protected:
   const char *if_unmod;
   const char *if_match;
   const char *if_nomatch;
+  const char *copy_source = nullptr;
+  const char *md_directive = nullptr;
+
   off_t ofs;
   off_t len;
   off_t end;
@@ -1321,7 +1321,7 @@ public:
     copy_if_newer = false;
   }
 
-  static bool parse_copy_location(const string& src,
+  static bool parse_copy_location(const boost::string_view& src,
                                   string& bucket_name,
                                   rgw_obj_key& object);
 
@@ -2018,7 +2018,7 @@ static inline int rgw_get_request_metadata(CephContext* const cct,
       /* Similar remarks apply to the check for value size. We're veryfing
        * it early at the RGW's side as it's being claimed in /info. */
       const size_t max_attr_size = \
-        cct->_conf->get_val<size_t>("rgw_max_attr_size");
+        cct->_conf->get_val<Option::size_t>("rgw_max_attr_size");
       if (max_attr_size && xattr.length() > max_attr_size) {
         return -EFBIG;
       }
@@ -2052,7 +2052,7 @@ static inline void encode_delete_at_attr(boost::optional<ceph::real_time> delete
   } 
 
   bufferlist delatbl;
-  ::encode(*delete_at, delatbl);
+  encode(*delete_at, delatbl);
   attrs[RGW_ATTR_DELETE_AT] = delatbl;
 } /* encode_delete_at_attr */
 
@@ -2091,7 +2091,7 @@ static inline void complete_etag(MD5& hash, string *etag)
   char etag_buf[CEPH_CRYPTO_MD5_DIGESTSIZE];
   char etag_buf_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
 
-  hash.Final((byte *)etag_buf);
+  hash.Final((unsigned char *)etag_buf);
   buf_to_hex((const unsigned char *)etag_buf, CEPH_CRYPTO_MD5_DIGESTSIZE,
 	    etag_buf_str);
 
@@ -2251,5 +2251,23 @@ public:
   virtual RGWOpType delete_type() { return RGW_OP_DEL_BUCKET_META_SEARCH; }
   virtual uint32_t op_mask() { return RGW_OP_TYPE_WRITE; }
 };
+
+class RGWGetClusterStat : public RGWOp {
+protected:
+  struct rados_cluster_stat_t stats_op;
+public:
+  RGWGetClusterStat() {}
+
+  void init(RGWRados *store, struct req_state *s, RGWHandler *h) override {
+    RGWOp::init(store, s, h);
+  }
+  int verify_permission() override {return 0;}
+  virtual void send_response() = 0;
+  virtual int get_params() = 0;
+  void execute() override;
+  virtual const string name() { return "get_cluster_stat"; }
+};
+
+
 
 #endif /* CEPH_RGW_OP_H */

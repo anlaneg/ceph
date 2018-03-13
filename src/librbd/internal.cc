@@ -12,9 +12,11 @@
 #include "common/errno.h"
 #include "common/Throttle.h"
 #include "common/event_socket.h"
-#include "cls/lock/cls_lock_client.h"
+#include "common/perf_counters.h"
+#include "osdc/Striper.h"
 #include "include/stringify.h"
 
+#include "cls/lock/cls_lock_client.h"
 #include "cls/rbd/cls_rbd.h"
 #include "cls/rbd/cls_rbd_types.h"
 #include "cls/rbd/cls_rbd_client.h"
@@ -40,6 +42,8 @@
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ImageRequestWQ.h"
+#include "librbd/io/ObjectDispatcher.h"
+#include "librbd/io/ObjectDispatchSpec.h"
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
 #include "librbd/journal/Types.h"
@@ -271,9 +275,9 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
   {
     bufferlist cmdbl, emptybl;
     __u8 c = CEPH_OSD_TMAP_SET;
-    ::encode(c, cmdbl);
-    ::encode(imgname, cmdbl);
-    ::encode(emptybl, cmdbl);
+    encode(c, cmdbl);
+    encode(imgname, cmdbl);
+    encode(emptybl, cmdbl);
     return io_ctx.tmap_update(RBD_DIRECTORY, cmdbl);
   }
 
@@ -281,8 +285,8 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
   {
     bufferlist cmdbl;
     __u8 c = CEPH_OSD_TMAP_RM;
-    ::encode(c, cmdbl);
-    ::encode(imgname, cmdbl);
+    encode(c, cmdbl);
+    encode(imgname, cmdbl);
     return io_ctx.tmap_update(RBD_DIRECTORY, cmdbl);
   }
 
@@ -528,8 +532,8 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
       bufferlist::iterator p = bl.begin();
       bufferlist header;
       map<string,bufferlist> m;
-      ::decode(header, p);
-      ::decode(m, p);
+      decode(header, p);
+      decode(m, p);
       for (map<string,bufferlist>::iterator q = m.begin(); q != m.end(); ++q) {
 	names.push_back(q->first);
       }
@@ -594,6 +598,14 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
 	  return r;
 	}
 
+        if ((imctx->features & RBD_FEATURE_DEEP_FLATTEN) == 0 &&
+            !imctx->snaps.empty()) {
+          lderr(cct) << "snapshot in-use by " << pool << "/" << imctx->name
+                     << dendl;
+          imctx->state->close();
+          return -EBUSY;
+        }
+
 	librbd::NoOpProgressContext prog_ctx;
 	r = imctx->operations->flatten(prog_ctx);
 	if (r < 0) {
@@ -601,21 +613,6 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
 		     << cpp_strerror(r) << dendl;
           imctx->state->close();
 	  return r;
-	}
-
-	if ((imctx->features & RBD_FEATURE_DEEP_FLATTEN) == 0 &&
-	    !imctx->snaps.empty()) {
-	  imctx->parent_lock.get_read();
-	  ParentInfo parent_info = imctx->parent_md;
-	  imctx->parent_lock.put_read();
-
-	  r = cls_client::remove_child(&imctx->md_ctx, RBD_CHILDREN,
-				       parent_info.spec, imctx->id);
-	  if (r < 0 && r != -ENOENT) {
-	    lderr(cct) << "error removing child from children list" << dendl;
-	    imctx->state->close();
-	    return r;
-	  }
 	}
 
 	r = imctx->state->close();
@@ -2155,7 +2152,8 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
 		       int (*cb)(uint64_t, size_t, const char *, void *),
 		       void *arg)
   {
-    utime_t start_time, elapsed;
+    coarse_mono_time start_time;
+    ceph::timespan elapsed;
 
     ldout(ictx->cct, 20) << "read_iterate " << ictx << " off = " << off
 			 << " len = " << len << dendl;
@@ -2181,7 +2179,7 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
     }
 
     RWLock::RLocker owner_locker(ictx->owner_lock);
-    start_time = ceph_clock_now();
+    start_time = coarse_mono_clock::now();
     while (left > 0) {
       uint64_t period_off = off - (off % period);
       uint64_t read_len = min(period_off + period - off, left);
@@ -2209,7 +2207,7 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
       off += ret;
     }
 
-    elapsed = ceph_clock_now() - start_time;
+    elapsed = coarse_mono_clock::now() - start_time;
     ictx->perfcounter->tinc(l_librbd_rd_latency, elapsed);
     ictx->perfcounter->inc(l_librbd_rd);
     ictx->perfcounter->inc(l_librbd_rd_bytes, mylen);
@@ -2251,8 +2249,12 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
       return r;
     }
 
-    RWLock::RLocker owner_locker(ictx->owner_lock);
-    r = ictx->invalidate_cache(false);
+    C_SaferCond ctx;
+    {
+      RWLock::RLocker owner_locker(ictx->owner_lock);
+      ictx->io_object_dispatcher->invalidate_cache(&ctx);
+    }
+    r = ctx.wait();
     ictx->perfcounter->inc(l_librbd_invalidate_cache);
     return r;
   }
@@ -2305,10 +2307,18 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
     object_t oid;
     uint64_t offset;
     uint64_t length;
+
+    bufferlist read_data;
+    io::ExtentMap extent_map;
+
     C_RBD_Readahead(ImageCtx *ictx, object_t oid, uint64_t offset, uint64_t length)
-      : ictx(ictx), oid(oid), offset(offset), length(length) { }
+      : ictx(ictx), oid(oid), offset(offset), length(length) {
+      ictx->readahead.inc_pending();
+    }
+
     void finish(int r) override {
-      ldout(ictx->cct, 20) << "C_RBD_Readahead on " << oid << ": " << offset << "+" << length << dendl;
+      ldout(ictx->cct, 20) << "C_RBD_Readahead on " << oid << ": "
+                           << offset << "~" << length << dendl;
       ictx->readahead.dec_pending();
     }
   };
@@ -2322,7 +2332,7 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
 	 ++p) {
       total_bytes += p->second;
     }
-    
+
     ictx->md_lock.get_write();
     bool abort = ictx->readahead_disable_after_bytes != 0 &&
       ictx->total_bytes_read > ictx->readahead_disable_after_bytes;
@@ -2333,9 +2343,10 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
     ictx->total_bytes_read += total_bytes;
     ictx->snap_lock.get_read();
     uint64_t image_size = ictx->get_image_size(ictx->snap_id);
+    auto snap_id = ictx->snap_id;
     ictx->snap_lock.put_read();
     ictx->md_lock.put_write();
- 
+
     pair<uint64_t, uint64_t> readahead_extent = ictx->readahead.update(image_extents, image_size);
     uint64_t readahead_offset = readahead_extent.first;
     uint64_t readahead_length = readahead_extent.second;
@@ -2349,11 +2360,13 @@ bool compare_by_name(const child_info_t& c1, const child_info_t& c2)
 	for (vector<ObjectExtent>::iterator q = p->second.begin(); q != p->second.end(); ++q) {
 	  ldout(ictx->cct, 20) << "(readahead) oid " << q->oid << " " << q->offset << "~" << q->length << dendl;
 
-	  Context *req_comp = new C_RBD_Readahead(ictx, q->oid, q->offset, q->length);
-	  ictx->readahead.inc_pending();
-	  ictx->aio_read_from_cache(q->oid, q->objectno, NULL,
-				    q->length, q->offset,
-				    req_comp, 0, nullptr);
+	  auto req_comp = new C_RBD_Readahead(ictx, q->oid, q->offset,
+                                              q->length);
+          auto req = io::ObjectDispatchSpec::create_read(
+            ictx, io::OBJECT_DISPATCH_LAYER_NONE, q->oid.name, q->objectno,
+            q->offset, q->length, snap_id, 0, {}, &req_comp->read_data,
+            &req_comp->extent_map, req_comp);
+          req->send();
 	}
       }
       ictx->perfcounter->inc(l_librbd_readahead);

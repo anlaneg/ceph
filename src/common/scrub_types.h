@@ -18,8 +18,10 @@ struct object_id_wrapper : public librados::object_id_t {
 
 WRITE_CLASS_ENCODER(object_id_wrapper)
 
-inline void decode(librados::object_id_t& obj, bufferlist::iterator& bp) {
+namespace librados {
+inline void decode(object_id_t& obj, bufferlist::iterator& bp) {
   reinterpret_cast<object_id_wrapper&>(obj).decode(bp);
+}
 }
 
 struct osd_shard_wrapper : public librados::osd_shard_t {
@@ -114,6 +116,9 @@ struct inconsistent_obj_wrapper : librados::inconsistent_obj_t {
   }
   void set_attr_name_mismatch() {
     errors |= obj_err_t::ATTR_NAME_MISMATCH;
+  }
+  void set_snapset_inconsistency() {
+    errors |= obj_err_t::SNAPSET_INCONSISTENCY;
   }
   void add_shard(const pg_shard_t& pgs, const shard_info_wrapper& shard);
   void set_auth_missing(const hobject_t& hoid,

@@ -572,58 +572,53 @@ PGBackend *PGBackend::build_pg_backend(
   }
 }
 
-/*
- * pg lock may or may not be held
- */
-void PGBackend::be_scan_list(
-  ScrubMap &map, const vector<hobject_t> &ls, bool deep, uint32_t seed,
-  ThreadPool::TPHandle &handle)
+int PGBackend::be_scan_list(
+  ScrubMap &map,
+  ScrubMapBuilder &pos)
 {
-  dout(10) << __func__ << " scanning " << ls.size() << " objects"
-           << (deep ? " deeply" : "") << dendl;
-  int i = 0;
-  for (vector<hobject_t>::const_iterator p = ls.begin();
-       p != ls.end();
-       ++p, i++) {
-    handle.reset_tp_timeout();
-    hobject_t poid = *p;
+  dout(10) << __func__ << " " << pos << dendl;
+  assert(!pos.done());
+  assert(pos.pos < pos.ls.size());
+  hobject_t& poid = pos.ls[pos.pos];
 
-    struct stat st;
-    int r = store->stat(
+  struct stat st;
+  int r = store->stat(
+    ch,
+    ghobject_t(
+      poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+    &st,
+    true);
+  if (r == 0) {
+    ScrubMap::object &o = map.objects[poid];
+    o.size = st.st_size;
+    assert(!o.negative);
+    store->getattrs(
       ch,
       ghobject_t(
 	poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-      &st,
-      true);
-    if (r == 0) {
-      ScrubMap::object &o = map.objects[poid];
-      o.size = st.st_size;//填充对象大小到size
-      assert(!o.negative);
-      store->getattrs(
-	ch,
-	ghobject_t(
-	  poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-	o.attrs);//填充属性到o.attrs中
+      o.attrs);
 
-      // calculate the CRC32 on deep scrubs
-      if (deep) {
-	be_deep_scrub(*p, seed, o, handle, &map);
-      }
-
-      dout(25) << __func__ << "  " << poid << dendl;
-    } else if (r == -ENOENT) {
-      dout(25) << __func__ << "  " << poid << " got " << r
-	       << ", skipping" << dendl;//如果对象不存在,则跳过,对于对象不存在的,由恢复机制保证,清洗不能考虑这个问题.
-    } else if (r == -EIO) {
-      dout(25) << __func__ << "  " << poid << " got " << r
-	       << ", stat_error" << dendl;
-      ScrubMap::object &o = map.objects[poid];//在map.objects中置入.
-      o.stat_error = true;
-    } else {//未知错误,挂
-      derr << __func__ << " got: " << cpp_strerror(r) << dendl;
-      ceph_abort();
+    if (pos.deep) {
+      r = be_deep_scrub(poid, map, pos, o);
     }
+    dout(25) << __func__ << "  " << poid << dendl;
+  } else if (r == -ENOENT) {
+    dout(25) << __func__ << "  " << poid << " got " << r
+	     << ", skipping" << dendl;
+  } else if (r == -EIO) {
+    dout(25) << __func__ << "  " << poid << " got " << r
+	     << ", stat_error" << dendl;
+    ScrubMap::object &o = map.objects[poid];
+    o.stat_error = true;
+  } else {
+    derr << __func__ << " got: " << cpp_strerror(r) << dendl;
+    ceph_abort();
   }
+  if (r == -EINPROGRESS) {
+    return -EINPROGRESS;
+  }
+  pos.next_object();
+  return 0;
 }
 
 bool PGBackend::be_compare_scrub_objects(
@@ -768,7 +763,7 @@ map<pg_shard_t, ScrubMap *>::const_iterator
   inconsistent_obj_wrapper &object_error)
 {
   eversion_t auth_version;
-  bufferlist first_bl;
+  bufferlist first_oi_bl, first_ss_bl;
 
   // Create list of shards with primary first so it will be auth copy all
   // other things being equal.
@@ -832,7 +827,13 @@ map<pg_shard_t, ScrubMap *>::const_iterator
         ss_bl.push_back(k->second);
         try {
 	  bufferlist::iterator bliter = ss_bl.begin();
-	  ::decode(ss, bliter);
+	  decode(ss, bliter);
+	  if (first_ss_bl.length() == 0) {
+	    first_ss_bl.append(ss_bl);
+	  } else if (!object_error.has_snapset_inconsistency() && !ss_bl.contents_equal(first_ss_bl)) {
+	    object_error.set_snapset_inconsistency();
+	    error_string += " snapset_inconsistency";
+	  }
         } catch (...) {
 	  // invalid snapset, probably corrupt
 	  shard_info.set_ss_attr_corrupted();
@@ -851,7 +852,7 @@ map<pg_shard_t, ScrubMap *>::const_iterator
     bl.push_back(k->second);
     try {
       bufferlist::iterator bliter = bl.begin();
-      ::decode(oi, bliter);
+      decode(oi, bliter);
     } catch (...) {
       // invalid object info, probably corrupt
       shard_info.set_oi_attr_corrupted();
@@ -862,9 +863,9 @@ map<pg_shard_t, ScrubMap *>::const_iterator
     // This is automatically corrected in PG::_repair_oinfo_oid()
     assert(oi.soid == obj);
 
-    if (first_bl.length() == 0) {
-      first_bl.append(bl);
-    } else if (!object_error.has_object_info_inconsistency() && !bl.contents_equal(first_bl)) {
+    if (first_oi_bl.length() == 0) {
+      first_oi_bl.append(bl);
+    } else if (!object_error.has_object_info_inconsistency() && !bl.contents_equal(first_oi_bl)) {
       object_error.set_object_info_inconsistency();
       error_string += " object_info_inconsistency";
     }

@@ -236,8 +236,8 @@ int cls_cxx_stat(cls_method_context_t hctx, uint64_t *size, time_t *mtime)
   utime_t ut;
   uint64_t s;
   try {
-    ::decode(s, iter);
-    ::decode(ut, iter);
+    decode(s, iter);
+    decode(ut, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -261,8 +261,8 @@ int cls_cxx_stat2(cls_method_context_t hctx, uint64_t *size, ceph::real_time *mt
   real_time ut;
   uint64_t s;
   try {
-    ::decode(s, iter);
-    ::decode(ut, iter);
+    decode(s, iter);
+    decode(ut, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -372,7 +372,7 @@ int cls_cxx_getxattrs(cls_method_context_t hctx, map<string, bufferlist> *attrse
 
   bufferlist::iterator iter = op.outdata.begin();
   try {
-    ::decode(*attrset, iter);
+    decode(*attrset, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -419,9 +419,9 @@ int cls_cxx_map_get_all_vals(cls_method_context_t hctx, map<string, bufferlist>*
   string filter_prefix;
   uint64_t max = (uint64_t)-1;
 
-  ::encode(start_after, op.indata);
-  ::encode(max, op.indata);
-  ::encode(filter_prefix, op.indata);
+  encode(start_after, op.indata);
+  encode(max, op.indata);
+  encode(filter_prefix, op.indata);
 
   op.op.op = CEPH_OSD_OP_OMAPGETVALS;
   
@@ -431,8 +431,8 @@ int cls_cxx_map_get_all_vals(cls_method_context_t hctx, map<string, bufferlist>*
 
   bufferlist::iterator iter = op.outdata.begin();
   try {
-    ::decode(*vals, iter);
-    ::decode(*more, iter);
+    decode(*vals, iter);
+    decode(*more, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -448,8 +448,8 @@ int cls_cxx_map_get_keys(cls_method_context_t hctx, const string &start_obj,
   OSDOp& op = ops[0];
   int ret;
 
-  ::encode(start_obj, op.indata);
-  ::encode(max_to_get, op.indata);
+  encode(start_obj, op.indata);
+  encode(max_to_get, op.indata);
 
   op.op.op = CEPH_OSD_OP_OMAPGETKEYS;
 
@@ -459,8 +459,8 @@ int cls_cxx_map_get_keys(cls_method_context_t hctx, const string &start_obj,
 
   bufferlist::iterator iter = op.outdata.begin();
   try {
-    ::decode(*keys, iter);
-    ::decode(*more, iter);
+    decode(*keys, iter);
+    decode(*more, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -476,9 +476,9 @@ int cls_cxx_map_get_vals(cls_method_context_t hctx, const string &start_obj,
   OSDOp& op = ops[0];
   int ret;
 
-  ::encode(start_obj, op.indata);
-  ::encode(max_to_get, op.indata);
-  ::encode(filter_prefix, op.indata);
+  encode(start_obj, op.indata);
+  encode(max_to_get, op.indata);
+  encode(filter_prefix, op.indata);
 
   op.op.op = CEPH_OSD_OP_OMAPGETVALS;
   
@@ -488,8 +488,8 @@ int cls_cxx_map_get_vals(cls_method_context_t hctx, const string &start_obj,
 
   bufferlist::iterator iter = op.outdata.begin();
   try {
-    ::decode(*vals, iter);
-    ::decode(*more, iter);
+    decode(*vals, iter);
+    decode(*more, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -522,7 +522,7 @@ int cls_cxx_map_get_val(cls_method_context_t hctx, const string &key,
 
   set<string> k;
   k.insert(key);
-  ::encode(k, op.indata);
+  encode(k, op.indata);
 
   op.op.op = CEPH_OSD_OP_OMAPGETVALSBYKEYS;
   ret = (*pctx)->pg->do_osd_ops(*pctx, ops);
@@ -533,7 +533,7 @@ int cls_cxx_map_get_val(cls_method_context_t hctx, const string &key,
   try {
     map<string, bufferlist> m;
 
-    ::decode(m, iter);
+    decode(m, iter);
     map<string, bufferlist>::iterator iter = m.begin();
     if (iter == m.end())
       return -ENOENT;
@@ -554,7 +554,7 @@ int cls_cxx_map_set_val(cls_method_context_t hctx, const string &key,
   bufferlist& update_bl = op.indata;
   map<string, bufferlist> m;
   m[key] = *inbl;
-  ::encode(m, update_bl);
+  encode(m, update_bl);
 
   op.op.op = CEPH_OSD_OP_OMAPSETVALS;
 
@@ -568,7 +568,7 @@ int cls_cxx_map_set_vals(cls_method_context_t hctx,
   vector<OSDOp> ops(1);
   OSDOp& op = ops[0];
   bufferlist& update_bl = op.indata;
-  ::encode(*map, update_bl);
+  encode(*map, update_bl);
 
   op.op.op = CEPH_OSD_OP_OMAPSETVALS;
 
@@ -607,7 +607,7 @@ int cls_cxx_map_remove_key(cls_method_context_t hctx, const string &key)
   set<string> to_rm;
   to_rm.insert(key);
 
-  ::encode(to_rm, update_bl);
+  encode(to_rm, update_bl);
 
   op.op.op = CEPH_OSD_OP_OMAPRMKEYS;
 
@@ -629,7 +629,7 @@ int cls_cxx_list_watchers(cls_method_context_t hctx,
 
   bufferlist::iterator iter = op.outdata.begin();
   try {
-    ::decode(*watchers, iter);
+    decode(*watchers, iter);
   } catch (buffer::error& err) {
     return -EIO;
   }
@@ -719,7 +719,7 @@ int cls_log(int level, const char *format, ...)
      va_end(ap);
 #define MAX_SIZE 8196
      if ((n > -1 && n < size) || size > MAX_SIZE) {
-       ldout(ch->cct, level) << buf << dendl;
+       ldout(ch->cct, ceph::dout::need_dynamic(level)) << buf << dendl;
        return n;
      }
      size *= 2;

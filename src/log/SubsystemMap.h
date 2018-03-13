@@ -6,69 +6,104 @@
 
 #include <string>
 #include <vector>
+#include <algorithm>
+
+#include "common/subsys_types.h"
 
 #include "include/assert.h"
 
 namespace ceph {
 namespace logging {
 
-struct Subsystem {
-  //log级别，收集级别（越小越容易被收集）
-  int log_level, gather_level;
-  std::string name;//子系统名称(none时指默认模块）
-  
-  Subsystem() : log_level(0), gather_level(0) {}     
-};
-
 class SubsystemMap {
-  std::vector<Subsystem> m_subsys;//所有子系统的日志收集情况
-  unsigned m_max_name_len;//子系统中名称最大长度
+  // Access to the current gathering levels must be *FAST* as they are
+  // read over and over from all places in the code (via should_gather()
+  // by i.e. dout).
+  std::array<uint8_t, ceph_subsys_get_num()> m_gather_levels;
+
+  // The rest. Should be as small as possible to not unnecessarily
+  // enlarge md_config_t and spread it other elements across cache
+  // lines. Access can be slow.
+  std::vector<ceph_subsys_item_t> m_subsys;
 
   friend class Log;
 
 public:
-  SubsystemMap() : m_max_name_len(0) {}
+  SubsystemMap() {
+    constexpr auto s = ceph_subsys_get_as_array();
+    m_subsys.reserve(s.size());
 
-  //获取子系统数目
-  size_t get_num() const {
-    return m_subsys.size();
+    std::size_t i = 0;
+    for (const ceph_subsys_item_t& item : s) {
+      m_subsys.emplace_back(item);
+      m_gather_levels[i++] = std::max(item.log_level, item.gather_level);
+    }
   }
 
-  //获取subsys中子系统名称的最大长度
-  int get_max_subsys_len() const {
-    return m_max_name_len;
+  constexpr static std::size_t get_num() {
+    return ceph_subsys_get_num();
   }
 
-  void add(unsigned subsys, std::string name, int log, int gather);  
-  void set_log_level(unsigned subsys, int log);
-  void set_gather_level(unsigned subsys, int gather);
+  constexpr static std::size_t get_max_subsys_len() {
+    return ceph_subsys_max_name_length();
+  }
 
   //获取某个subsys的log_level
   int get_log_level(unsigned subsys) const {
-    if (subsys >= m_subsys.size())
+    if (subsys >= get_num())
       subsys = 0;
     return m_subsys[subsys].log_level;
   }
 
   //获取某个subsys的gather_level
   int get_gather_level(unsigned subsys) const {
-    if (subsys >= m_subsys.size())
+    if (subsys >= get_num())
       subsys = 0;
     return m_subsys[subsys].gather_level;
   }
 
   //获取某个subsys的name
-  const std::string& get_name(unsigned subsys) const {
-    if (subsys >= m_subsys.size())
+  // TODO(rzarzynski): move to string_view?
+  constexpr const char* get_name(unsigned subsys) const {
+    if (subsys >= get_num())
       subsys = 0;
-    return m_subsys[subsys].name;
+    return ceph_subsys_get_as_array()[subsys].name;
   }
 
   //检查sub是否可收集(level小于gather_level或者log_level)时可收集
-  bool should_gather(unsigned sub, int level) {
+  template <unsigned SubV, int LvlV>
+  bool should_gather() {
+    static_assert(SubV < get_num(), "wrong subsystem ID");
+    static_assert(LvlV >= -1 && LvlV <= 200);
+
+    if constexpr (LvlV <= 0) {
+      // handle the -1 and 0 levels entirely at compile-time.
+      // Such debugs are intended be gathered regardless even
+      // of the user configuration.
+      return true;
+    } else {
+      return LvlV <= static_cast<int>(m_gather_levels[SubV]);
+    }
+  }
+  bool should_gather(const unsigned sub, int level) {
     assert(sub < m_subsys.size());
-    return level <= m_subsys[sub].gather_level ||
-      level <= m_subsys[sub].log_level;
+    return level <= static_cast<int>(m_gather_levels[sub]);
+  }
+
+  void set_log_level(unsigned subsys, uint8_t log)
+  {
+    assert(subsys < m_subsys.size());
+    m_subsys[subsys].log_level = log;
+    m_gather_levels[subsys] = \
+      std::max(log, m_subsys[subsys].gather_level);
+  }
+
+  void set_gather_level(unsigned subsys, uint8_t gather)
+  {
+    assert(subsys < m_subsys.size());
+    m_subsys[subsys].gather_level = gather;
+    m_gather_levels[subsys] = \
+      std::max(m_subsys[subsys].log_level, gather);
   }
 };
 

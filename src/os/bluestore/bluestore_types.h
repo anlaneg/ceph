@@ -17,6 +17,7 @@
 
 #include <ostream>
 #include <bitset>
+#include <type_traits>
 #include "include/types.h"
 #include "include/interval_set.h"
 #include "include/utime.h"
@@ -64,97 +65,27 @@ struct bluestore_cnode_t {
 };
 WRITE_CLASS_DENC(bluestore_cnode_t)
 
-class AllocExtent;
-typedef mempool::bluestore_alloc::vector<AllocExtent> AllocExtentVector;
-class AllocExtent {
-public:
-  uint64_t offset;//本块数据起始位置在物理磁盘上的偏移量
-  uint32_t length;//本块数据长度
-
-  AllocExtent() { 
-    offset = 0;
-    length = 0;
-  }
-
-  AllocExtent(int64_t off, int32_t len) : offset(off), length(len) { }
-
-  //本块数据结束时，在物理磁盘上的偏移量
-  uint64_t end() const {
-    return offset + length;
-  }
-
-  //是否为同一范围
-  bool operator==(const AllocExtent& other) const {
-    return offset == other.offset && length == other.length;
-  }
-};
-
-inline static ostream& operator<<(ostream& out, const AllocExtent& e) {
-  return out << "0x" << std::hex << e.offset << "~" << e.length << std::dec;
-}
-
-class ExtentList {
-  AllocExtentVector *m_extents;//存储结果用
-  int64_t m_block_size;//块大小
-  int64_t m_max_blocks;//最多需要申请多少块
-
-public:
-  void init(AllocExtentVector *extents, int64_t block_size,
-	    uint64_t max_alloc_size) {
-    m_extents = extents;
-    m_block_size = block_size;
-    m_max_blocks = max_alloc_size / block_size;
-    assert(m_extents->empty());//存储用的结果集一定为空
-  }
-
-  ExtentList(AllocExtentVector *extents, int64_t block_size) {
-    init(extents, block_size, 0);
-  }
-
-  ExtentList(AllocExtentVector *extents, int64_t block_size,
-	     uint64_t max_alloc_size) {
-    init(extents, block_size, max_alloc_size);
-  }
-
-  void reset() {
-    m_extents->clear();
-  }
-
-  void add_extents(int64_t start, int64_t count);
-
-  AllocExtentVector *get_extents() {
-    return m_extents;
-  }
-
-  std::pair<int64_t, int64_t> get_nth_extent(int index) {
-      return std::make_pair
-            ((*m_extents)[index].offset / m_block_size,
-             (*m_extents)[index].length / m_block_size);
-  }
-
-  int64_t get_extent_count() {
-    return m_extents->size();
-  }
-};
-
-
 /// pextent: physical extent
-struct bluestore_pextent_t : public AllocExtent {
-  const static uint64_t INVALID_OFFSET = ~0ull;
+struct bluestore_pextent_t {
+  static const uint64_t INVALID_OFFSET = ~0ull;
 
-  bluestore_pextent_t() : AllocExtent() {}
-  bluestore_pextent_t(uint64_t o, uint64_t l) : AllocExtent(o, l) {}
-  bluestore_pextent_t(const AllocExtent &ext) :
-    AllocExtent(ext.offset, ext.length) { }
+  uint64_t offset = 0;
+  uint32_t length = 0;
 
-  bluestore_pextent_t& operator=(const AllocExtent &ext) {
-    offset = ext.offset;
-    length = ext.length;
-    return *this;
-  }
-  //如果已设置值，则为有效的
+  bluestore_pextent_t() {}
+  bluestore_pextent_t(uint64_t o, uint64_t l) : offset(o), length(l) {}
+  bluestore_pextent_t(const bluestore_pextent_t &ext) :
+    offset(ext.offset), length(ext.length) {}
+
   bool is_valid() const {
     return offset != INVALID_OFFSET;
+  }
+  uint64_t end() const {
+    return offset != INVALID_OFFSET ? offset + length : INVALID_OFFSET;
+  }
+
+  bool operator==(const bluestore_pextent_t& other) const {
+    return offset == other.offset && length == other.length;
   }
 
   DENC(bluestore_pextent_t, v, p) {
@@ -204,7 +135,6 @@ struct denc_traits<PExtentVector> {
     }
   }
 };
-
 
 /// extent_map: a map of reference counted extents
 //按注释的意思，一组引用计数范围的映射
@@ -375,7 +305,7 @@ struct bluestore_blob_use_tracker_t {
   }
   void prune_tail(uint32_t new_len) {
     if (num_au) {
-      new_len = ROUND_UP_TO(new_len, au_size);
+      new_len = round_up_to(new_len, au_size);
       uint32_t _num_au = new_len / au_size;
       assert(_num_au <= num_au);
       if (_num_au) {
@@ -400,7 +330,7 @@ struct bluestore_blob_use_tracker_t {
       bytes_per_au[0] = old_total;
     } else {
       assert(_au_size == au_size);
-      new_len = ROUND_UP_TO(new_len, au_size);
+      new_len = round_up_to(new_len, au_size);
       uint32_t _num_au = new_len / au_size;
       assert(_num_au >= num_au);
       if (_num_au > num_au) {
@@ -542,6 +472,9 @@ public:
   const PExtentVector& get_extents() const {
     return extents;
   }
+  PExtentVector& dirty_extents() {
+    return extents;
+  }
 
   DENC_HELPERS;
   //计算编码长度
@@ -669,7 +602,7 @@ public:
   //默认为dev_block_size ,考虑了需要计算checksum的情况
   uint64_t get_chunk_size(uint64_t dev_block_size) const {
     return has_csum() ?
-      MAX(dev_block_size, get_csum_chunk_size()) : dev_block_size;
+      std::max<uint64_t>(dev_block_size, get_csum_chunk_size()) : dev_block_size;
   }
 
   //check sum块大小
@@ -751,7 +684,7 @@ public:
     assert(offset + length <= blob_len);
     uint64_t chunk_size = blob_len / (sizeof(unused)*8);
     uint64_t start = offset / chunk_size;
-    uint64_t end = ROUND_UP_TO(offset + length, chunk_size) / chunk_size;
+    uint64_t end = round_up_to(offset + length, chunk_size) / chunk_size;
     auto i = start;
     //将blob_len构造成 start,end两个chunk位置
     while (i < end && (unused & (1u << i))) {
@@ -768,7 +701,7 @@ public:
     //offset指定的范围必须在blob_len以内
     assert(offset + length <= blob_len);
     uint64_t chunk_size = blob_len / (sizeof(unused)*8);
-    uint64_t start = ROUND_UP_TO(offset, chunk_size) / chunk_size;
+    uint64_t start = round_up_to(offset, chunk_size) / chunk_size;
     uint64_t end = (offset + length) / chunk_size;
     for (auto i = start; i < end; ++i) {
       unused |= (1u << i);
@@ -787,7 +720,7 @@ public:
       assert(offset + length <= blob_len);
       uint64_t chunk_size = blob_len / (sizeof(unused)*8);
       uint64_t start = offset / chunk_size;
-      uint64_t end = ROUND_UP_TO(offset + length, chunk_size) / chunk_size;
+      uint64_t end = round_up_to(offset + length, chunk_size) / chunk_size;
       for (auto i = start; i < end; ++i) {
         unused &= ~(1u << i);
       }
@@ -798,8 +731,10 @@ public:
   }
 
   //用f函数访问x_off,x_len之间的数据，由于数据可能分段存储，故f可能会调用多次
-  int map(uint64_t x_off, uint64_t x_len,
-	   std::function<int(uint64_t,uint64_t)> f) const {
+  template<class F>
+  int map(uint64_t x_off, uint64_t x_len, F&& f) const {
+    static_assert(std::is_invocable_r_v<int, F, uint64_t, uint64_t>);
+
     auto p = extents.begin();
     assert(p != extents.end());
     while (x_off >= p->length) {//找到x_off对应的p
@@ -810,7 +745,7 @@ public:
     while (x_len > 0) {
       //从x_off开始一直向前走x_len长度，将这段数据，按每个extents进行遍历，访问函数由f定义
       assert(p != extents.end());
-      uint64_t l = MIN(p->length - x_off, x_len);
+      uint64_t l = std::min(p->length - x_off, x_len);
       int r = f(p->offset + x_off, l);
       if (r < 0)
         return r;
@@ -825,9 +760,12 @@ public:
   //bl传入了一段数据，我们在当前的extents中查找x_off开始，到(x_off + bl.length())
   //将这么长的数据，沿extents指明的物理范围，使得每一个范围调用一次f,并直接所有的bl数据
   //都被遍历完。
+  template<class F>
   void map_bl(uint64_t x_off,
 	      bufferlist& bl,
-	      std::function<void(uint64_t,bufferlist&)> f) const {
+	      F&& f) const {
+    static_assert(std::is_invocable_v<F, uint64_t, bufferlist&>);
+
     auto p = extents.begin();
     assert(p != extents.end());
     //找x_off在extents中位于那个pe上
@@ -841,7 +779,7 @@ public:
     uint64_t x_len = bl.length();
     while (x_len > 0) {
       assert(p != extents.end());
-      uint64_t l = MIN(p->length - x_off, x_len);
+      uint64_t l = std::min(p->length - x_off, x_len);
       bufferlist t;
       it.copy(l, t);//准备足够长度的数据
       f(p->offset + x_off, t);//调用回调
@@ -989,7 +927,7 @@ public:
   }
 
   void split(uint32_t blob_offset, bluestore_blob_t& rb);
-  void allocated(uint32_t b_off, uint32_t length, const AllocExtentVector& allocs);
+  void allocated(uint32_t b_off, uint32_t length, const PExtentVector& allocs);
   void allocated_test(const bluestore_pextent_t& alloc); // intended for UT only
 
   /// updates blob's pextents container and return unused pextents eligible
@@ -1016,6 +954,9 @@ struct bluestore_shared_blob_t {
   bluestore_extent_ref_map_t ref_map;  ///< shared blob extents
 
   bluestore_shared_blob_t(uint64_t _sbid) : sbid(_sbid) {}
+  bluestore_shared_blob_t(uint64_t _sbid,
+			  bluestore_extent_ref_map_t&& _ref_map ) 
+    : sbid(_sbid), ref_map(std::move(_ref_map)) {}
 
   DENC(bluestore_shared_blob_t, v, p) {
     DENC_START(1, 1, p);

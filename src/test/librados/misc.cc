@@ -6,8 +6,10 @@
 #include "include/err.h"
 #include "include/buffer.h"
 #include "include/rbd_types.h"
+#include "include/rados.h"
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
+#include "include/scope_guard.h"
 #include "include/stringify.h"
 #include "common/Checksummer.h"
 #include "global/global_context.h"
@@ -19,7 +21,7 @@
 #include <map>
 #include <sstream>
 #include <string>
-#include <boost/regex.hpp>
+#include <regex>
 
 using namespace librados;
 using std::map;
@@ -284,13 +286,13 @@ static std::string read_key_from_tmap(IoCtx& ioctx, const std::string &obj,
   bufferlist::iterator p = bl.begin();
   bufferlist header;
   map<string, bufferlist> m;
-  ::decode(header, p);
-  ::decode(m, p);
+  decode(header, p);
+  decode(m, p);
   map<string, bufferlist>::iterator i = m.find(key);
   if (i == m.end())
     return "";
   std::string retstring;
-  ::decode(retstring, i->second);
+  decode(retstring, i->second);
   return retstring;
 }
 
@@ -300,11 +302,11 @@ static std::string add_key_to_tmap(IoCtx &ioctx, const std::string &obj,
   __u8 c = CEPH_OSD_TMAP_SET;
 
   bufferlist tmbl;
-  ::encode(c, tmbl);
-  ::encode(key, tmbl);
+  encode(c, tmbl);
+  encode(key, tmbl);
   bufferlist blbl;
-  ::encode(val, blbl);
-  ::encode(blbl, tmbl);
+  encode(val, blbl);
+  encode(blbl, tmbl);
   int ret = ioctx.tmap_update(obj, tmbl);
   if (ret) {
     ostringstream oss;
@@ -321,8 +323,8 @@ static int remove_key_from_tmap(IoCtx &ioctx, const std::string &obj,
   __u8 c = CEPH_OSD_TMAP_RM;
 
   bufferlist tmbl;
-  ::encode(c, tmbl);
-  ::encode(key, tmbl);
+  encode(c, tmbl);
+  encode(key, tmbl);
   int ret = ioctx.tmap_update(obj, tmbl);
   if (ret) {
     ostringstream oss;
@@ -340,9 +342,9 @@ TEST_F(LibRadosMiscPP, TmapUpdatePP) {
     bufferlist emptybl;
 
     bufferlist tmbl;
-    ::encode(c, tmbl);
-    ::encode(my_tmap, tmbl);
-    ::encode(emptybl, tmbl);
+    encode(c, tmbl);
+    encode(my_tmap, tmbl);
+    encode(emptybl, tmbl);
     ASSERT_EQ(0, ioctx.tmap_update("foo", tmbl));
   }
 
@@ -369,9 +371,9 @@ TEST_F(LibRadosMiscPP, TmapUpdateMisorderedPP) {
     bufferlist emptybl;
 
     bufferlist tmbl;
-    ::encode(c, tmbl);
-    ::encode(my_tmap, tmbl);
-    ::encode(emptybl, tmbl);
+    encode(c, tmbl);
+    encode(my_tmap, tmbl);
+    encode(emptybl, tmbl);
     ASSERT_EQ(0, ioctx.tmap_update("foo", tmbl));
   }
 
@@ -379,19 +381,19 @@ TEST_F(LibRadosMiscPP, TmapUpdateMisorderedPP) {
   {
     __u8 c = CEPH_OSD_TMAP_SET;
     bufferlist tmbl;
-    ::encode(c, tmbl);
-    ::encode("a", tmbl);
+    encode(c, tmbl);
+    encode("a", tmbl);
     bufferlist blbl;
-    ::encode("old", blbl);
-    ::encode(blbl, tmbl);
+    encode("old", blbl);
+    encode(blbl, tmbl);
 
-    ::encode(c, tmbl);
-    ::encode("b", tmbl);
-    ::encode(blbl, tmbl);
+    encode(c, tmbl);
+    encode("b", tmbl);
+    encode(blbl, tmbl);
 
-    ::encode(c, tmbl);
-    ::encode("c", tmbl);
-    ::encode(blbl, tmbl);
+    encode(c, tmbl);
+    encode("c", tmbl);
+    encode(blbl, tmbl);
 
     ASSERT_EQ(0, ioctx.tmap_update("foo", tmbl));
   }
@@ -400,19 +402,19 @@ TEST_F(LibRadosMiscPP, TmapUpdateMisorderedPP) {
   {
     __u8 c = CEPH_OSD_TMAP_SET;
     bufferlist tmbl;
-    ::encode(c, tmbl);
-    ::encode("b", tmbl);
+    encode(c, tmbl);
+    encode("b", tmbl);
     bufferlist blbl;
-    ::encode("new", blbl);
-    ::encode(blbl, tmbl);
+    encode("new", blbl);
+    encode(blbl, tmbl);
 
-    ::encode(c, tmbl);
-    ::encode("a", tmbl);
-    ::encode(blbl, tmbl);
+    encode(c, tmbl);
+    encode("a", tmbl);
+    encode(blbl, tmbl);
 
-    ::encode(c, tmbl);
-    ::encode("c", tmbl);
-    ::encode(blbl, tmbl);
+    encode(c, tmbl);
+    encode("c", tmbl);
+    encode(blbl, tmbl);
 
     ASSERT_EQ(0, ioctx.tmap_update("foo", tmbl));
   }
@@ -433,15 +435,15 @@ TEST_F(LibRadosMiscPP, TmapUpdateMisorderedPutPP) {
   // create unsorted tmap
   string h("header");
   bufferlist bl;
-  ::encode(h, bl);
+  encode(h, bl);
   uint32_t n = 3;
-  ::encode(n, bl);
-  ::encode(string("b"), bl);
-  ::encode(string("bval"), bl);
-  ::encode(string("a"), bl);
-  ::encode(string("aval"), bl);
-  ::encode(string("c"), bl);
-  ::encode(string("cval"), bl);
+  encode(n, bl);
+  encode(string("b"), bl);
+  encode(string("bval"), bl);
+  encode(string("a"), bl);
+  encode(string("aval"), bl);
+  encode(string("c"), bl);
+  encode(string("cval"), bl);
   bufferlist orig = bl;  // tmap_put steals bl content
   ASSERT_EQ(0, ioctx.tmap_put("foo", bl));
 
@@ -461,8 +463,8 @@ TEST_F(LibRadosMiscPP, Tmap2OmapPP) {
   omap["3"].append("c");
   {
     bufferlist bl;
-    ::encode(hdr, bl);
-    ::encode(omap, bl);
+    encode(hdr, bl);
+    encode(omap, bl);
     ASSERT_EQ(0, ioctx.tmap_put("foo", bl));
   }
 
@@ -519,7 +521,7 @@ TEST_F(LibRadosMisc, Exec) {
   bl.append(buf2, res);
   bufferlist::iterator iter = bl.begin();
   uint64_t all_features;
-  ::decode(all_features, iter);
+  decode(all_features, iter);
   // make sure *some* features are specified; don't care which ones
   ASSERT_NE(all_features, (unsigned)0);
 }
@@ -532,7 +534,7 @@ TEST_F(LibRadosMiscPP, ExecPP) {
   ASSERT_EQ(0, r);
   bufferlist::iterator iter = out.begin();
   uint64_t all_features;
-  ::decode(all_features, iter);
+  decode(all_features, iter);
   // make sure *some* features are specified; don't care which ones
   ASSERT_NE(all_features, (unsigned)0);
 }
@@ -754,7 +756,8 @@ TEST_F(LibRadosMiscPP, BigAttrPP) {
   for (int i=0; i<1000; i++) {
     bl.clear();
     got.clear();
-    bl.append(buffer::create(MIN(g_conf->osd_max_attr_size, 1024)));
+    bl.append(buffer::create(std::min<uint64_t>(g_conf->osd_max_attr_size,
+						1024)));
     char n[10];
     snprintf(n, sizeof(n), "a%d", i);
     ASSERT_EQ(0, ioctx.setxattr("foo", n, bl));
@@ -1134,7 +1137,7 @@ TYPED_TEST(LibRadosChecksum, Subset) {
 
   typename TestFixture::init_value_t init_value = -1;
   bufferlist init_value_bl;
-  ::encode(init_value, init_value_bl);
+  encode(init_value, init_value_bl);
 
   std::vector<bufferlist> checksum_bls(csum_count);
   std::vector<int> checksum_rvals(csum_count);
@@ -1152,11 +1155,11 @@ TYPED_TEST(LibRadosChecksum, Subset) {
 
     auto bl_it = checksum_bls[i].begin();
     uint32_t count;
-    ::decode(count, bl_it);
+    decode(count, bl_it);
     ASSERT_EQ(1U, count);
 
     typename TestFixture::value_t value;
-    ::decode(value, bl_it);
+    decode(value, bl_it);
 
     bufferlist content_sub_bl;
     content_sub_bl.substr_of(this->content_bl, i * chunk_size, chunk_size);
@@ -1177,7 +1180,7 @@ TYPED_TEST(LibRadosChecksum, Chunked) {
 
   typename TestFixture::init_value_t init_value = -1;
   bufferlist init_value_bl;
-  ::encode(init_value, init_value_bl);
+  encode(init_value, init_value_bl);
 
   bufferlist checksum_bl;
   int checksum_rval;
@@ -1191,7 +1194,7 @@ TYPED_TEST(LibRadosChecksum, Chunked) {
 
   auto bl_it = checksum_bl.begin();
   uint32_t count;
-  ::decode(count, bl_it);
+  decode(count, bl_it);
   ASSERT_EQ(csum_count, count);
 
   std::vector<typename TestFixture::value_t> expected_values(csum_count);
@@ -1205,7 +1208,7 @@ TYPED_TEST(LibRadosChecksum, Chunked) {
 
   for (uint32_t i = 0; i < csum_count; ++i) {
     typename TestFixture::value_t value;
-    ::decode(value, bl_it);
+    decode(value, bl_it);
     ASSERT_EQ(expected_values[i], value);
   }
 }
@@ -1249,7 +1252,7 @@ TEST_F(LibRadosMisc, Applications) {
   string result(buf);
   rados_buffer_free(buf);
   rados_buffer_free(st);
-  if (!boost::regex_search(result, boost::regex("require_osd_release [l-z]"))) {
+  if (!std::regex_search(result, std::regex("require_osd_release [l-z]"))) {
     std::cout << "SKIPPING";
     return;
   }
@@ -1318,8 +1321,8 @@ TEST_F(LibRadosMiscPP, Applications) {
 				   inbl, &outbl, &outs));
   ASSERT_LT(0u, outbl.length());
   ASSERT_LE(0u, outs.length());
-  if (!boost::regex_search(outbl.to_str(),
-                           boost::regex("require_osd_release [l-z]"))) {
+  if (!std::regex_search(outbl.to_str(),
+			 std::regex("require_osd_release [l-z]"))) {
     std::cout << "SKIPPING";
     return;
   }
@@ -1377,4 +1380,44 @@ TEST_F(LibRadosMiscECPP, CompareExtentRange) {
   ObjectReadOperation read2;
   read2.cmpext(2097152, bl3, nullptr);
   ASSERT_EQ(0, ioctx.operate("foo", &read2, nullptr));
+}
+
+TEST_F(LibRadosMisc, MinCompatClient) {
+  int8_t min_compat_client;
+  int8_t require_min_compat_client;
+  ASSERT_EQ(0, rados_get_min_compatible_client(cluster,
+                                               &min_compat_client,
+                                               &require_min_compat_client));
+  ASSERT_LE(-1, min_compat_client);
+  ASSERT_GT(CEPH_RELEASE_MAX, min_compat_client);
+
+  ASSERT_LE(-1, require_min_compat_client);
+  ASSERT_GT(CEPH_RELEASE_MAX, require_min_compat_client);
+}
+
+TEST_F(LibRadosMiscPP, MinCompatClient) {
+  int8_t min_compat_client;
+  int8_t require_min_compat_client;
+  ASSERT_EQ(0, cluster.get_min_compatible_client(&min_compat_client,
+                                                 &require_min_compat_client));
+  ASSERT_LE(-1, min_compat_client);
+  ASSERT_GT(CEPH_RELEASE_MAX, min_compat_client);
+
+  ASSERT_LE(-1, require_min_compat_client);
+  ASSERT_GT(CEPH_RELEASE_MAX, require_min_compat_client);
+}
+
+TEST_F(LibRadosMiscPP, Conf) {
+  const char* const option = "bluestore_throttle_bytes";
+  size_t new_size = 1 << 20;
+  std::string original;
+  ASSERT_EQ(0, cluster.conf_get(option, original));
+  auto restore_setting = make_scope_guard([&] {
+    cluster.conf_set(option, original.c_str());
+  });
+  std::string expected = std::to_string(new_size);
+  ASSERT_EQ(0, cluster.conf_set(option, expected.c_str()));
+  std::string actual;
+  ASSERT_EQ(0, cluster.conf_get(option, actual));
+  ASSERT_EQ(expected, actual);
 }

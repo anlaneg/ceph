@@ -1292,7 +1292,7 @@ int librados::IoCtxImpl::remove(const object_t& oid)
   ::ObjectOperation op;
   prepare_assert_ops(&op);
   op.remove();
-  return operate(oid, &op, NULL);
+  return operate(oid, &op, nullptr, librados::OPERATION_FULL_FORCE);
 }
 
 int librados::IoCtxImpl::remove(const object_t& oid, int flags)
@@ -1503,7 +1503,7 @@ int librados::IoCtxImpl::mapext(const object_t& oid,
     return r;
 
   bufferlist::iterator iter = bl.begin();
-  ::decode(m, iter);
+  decode(m, iter);
 
   return m.size();
 }

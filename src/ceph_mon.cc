@@ -197,7 +197,6 @@ int main(int argc, const char **argv)
 
   vector<const char*> args;
   argv_to_vec(argc, argv, args);//将参数合入args中
-  env_to_vec(args);//将env合入args中
 
   // We need to specify some default values that may be overridden by the
   // user, that are specific to the monitor.  The options we are overriding
@@ -214,12 +213,14 @@ int main(int argc, const char **argv)
   //  leveldb_block_size        = 64*1024       = 65536     // 64KB
   //  leveldb_compression       = false
   //  leveldb_log               = ""
-  vector<const char*> def_args;//添加此参数，这些参数取消掉osd中的配置设定
-  def_args.push_back("--leveldb-write-buffer-size=33554432");
-  def_args.push_back("--leveldb-cache-size=536870912");
-  def_args.push_back("--leveldb-block-size=65536");
-  def_args.push_back("--leveldb-compression=false");
-  def_args.push_back("--leveldb-log=");
+  //添加此参数，这些参数取消掉osd中的配置设定
+  map<string,string> defaults = {
+    { "leveldb_write_buffer_size", "33554432" },
+    { "leveldb_cache_size", "536870912" },
+    { "leveldb_block_size", "65536" },
+    { "leveldb_compression", "false"},
+    { "leveldb_log", "" }
+  };
 
   int flags = 0;
   {
@@ -241,7 +242,10 @@ int main(int argc, const char **argv)
     }
   }
 
-  auto cct = global_init(&def_args, args,
+  // don't try to get config from mon cluster during startup
+  flags |= CINIT_FLAG_NO_MON_CONFIG;
+
+  auto cct = global_init(&defaults, args,
 			 CEPH_ENTITY_TYPE_MON, CODE_ENVIRONMENT_DAEMON,
 			 flags, "mon_data");
   ceph_heap_profiler_init();
@@ -515,7 +519,10 @@ int main(int argc, const char **argv)
 #endif
   }
 
-  //找开db
+  // set up signal handlers, now that we've daemonized/forked.
+  init_async_signal_handler();
+  register_async_signal_handler(SIGHUP, sighup_handler);
+
   MonitorDBStore *store = new MonitorDBStore(g_conf->mon_data);
   {
     ostringstream oss;
@@ -575,8 +582,8 @@ int main(int argc, const char **argv)
     bufferlist mapbl;
     tmp.encode(mapbl, CEPH_FEATURES_ALL);//编码后，准备写入
     bufferlist final;
-    ::encode(v, final);
-    ::encode(mapbl, final);
+    encode(v, final);
+    encode(mapbl, final);
 
     auto t(std::make_shared<MonitorDBStore::Transaction>());
     // save it
@@ -798,9 +805,6 @@ int main(int argc, const char **argv)
 
   mon->init();
 
-  // set up signal handlers, now that we've daemonized/forked.
-  init_async_signal_handler();
-  register_async_signal_handler(SIGHUP, sighup_handler);
   register_async_signal_handler_oneshot(SIGINT, handle_mon_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_mon_signal);
 

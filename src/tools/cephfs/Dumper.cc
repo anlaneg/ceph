@@ -33,7 +33,7 @@
 
 #define HEADER_LEN 4096
 
-int Dumper::init(mds_role_t role_)
+int Dumper::init(mds_role_t role_, const std::string &type)
 {
   role = role_;
 
@@ -45,15 +45,21 @@ int Dumper::init(mds_role_t role_)
   auto fs =  fsmap->get_filesystem(role.fscid);
   assert(fs != nullptr);
 
-  JournalPointer jp(role.rank, fs->mds_map.get_metadata_pool());
-  int jp_load_result = jp.load(objecter);
-  if (jp_load_result != 0) {
-    std::cerr << "Error loading journal: " << cpp_strerror(jp_load_result) << std::endl;
-    return jp_load_result;
+  if (type == "mdlog") {
+    JournalPointer jp(role.rank, fs->mds_map.get_metadata_pool());
+    int jp_load_result = jp.load(objecter);
+    if (jp_load_result != 0) {
+      std::cerr << "Error loading journal: " << cpp_strerror(jp_load_result) << std::endl;
+      return jp_load_result;
+    } else {
+      ino = jp.front;
+    }
+  } else if (type == "purge_queue") {
+    ino = MDS_INO_PURGE_QUEUE + role.rank;
   } else {
-    ino = jp.front;
-    return 0;
+    ceph_abort(); // should not get here 
   }
+  return 0;
 }
 
 
@@ -135,7 +141,7 @@ int Dumper::dump(const char *dump_file)
       bufferlist bl;
       dout(10) << "Reading at pos=0x" << std::hex << pos << std::dec << dendl;
 
-      const uint32_t read_size = MIN(chunk_size, end - pos);
+      const uint32_t read_size = std::min<uint64_t>(chunk_size, end - pos);
 
       C_SaferCond cond;
       lock.Lock();
@@ -249,7 +255,7 @@ int Dumper::undump(const char *dump_file)
   h.layout.pool_id = fs->mds_map.get_metadata_pool();
   
   bufferlist hbl;
-  ::encode(h, hbl);
+  encode(h, hbl);
 
   object_t oid = file_object_t(ino, 0);
   object_locator_t oloc(fs->mds_map.get_metadata_pool());
@@ -298,7 +304,7 @@ int Dumper::undump(const char *dump_file)
     // Read
     bufferlist j;
     lseek64(fd, pos, SEEK_SET);
-    uint64_t l = MIN(left, 1024*1024);
+    uint64_t l = std::min<uint64_t>(left, 1024*1024);
     j.read_fd(fd, l);
 
     // Write

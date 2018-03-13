@@ -868,7 +868,7 @@ class SyntheticDispatcher : public Dispatcher {
 
     Payload pl;
     auto p = m->get_data().begin();
-    ::decode(pl, p);
+    decode(pl, p);
     if (pl.who == Payload::PING) {
       lderr(g_ceph_context) << __func__ << " conn=" << m->get_connection() << pl << dendl;
       reply_message(m, pl);
@@ -901,7 +901,7 @@ class SyntheticDispatcher : public Dispatcher {
   void reply_message(const Message *m, Payload& pl) {
     pl.who = Payload::PONG;
     bufferlist bl;
-    ::encode(pl, bl);
+    encode(pl, bl);
     MPing *rm = new MPing();
     rm->set_data(bl);
     m->get_connection()->send_message(rm);
@@ -912,7 +912,7 @@ class SyntheticDispatcher : public Dispatcher {
     Message *m = new MPing();
     Payload pl{Payload::PING, index++, data};
     bufferlist bl;
-    ::encode(pl, bl);
+    encode(pl, bl);
     m->set_data(bl);
     if (!con->get_messenger()->get_default_policy().lossy) {
       Mutex::Locker l(lock);
@@ -1329,7 +1329,7 @@ TEST_P(MessengerTest, SyntheticInjectTest4) {
   g_ceph_context->_conf->set_val("ms_inject_socket_failures", "30");
   g_ceph_context->_conf->set_val("ms_inject_internal_delays", "0.1");
   g_ceph_context->_conf->set_val("ms_inject_delay_probability", "1");
-  g_ceph_context->_conf->set_val("ms_inject_delay_type", "client osd", false);
+  g_ceph_context->_conf->set_val("ms_inject_delay_type", "client osd");
   g_ceph_context->_conf->set_val("ms_inject_delay_max", "5");
   SyntheticWorkload test_msg(16, 32, GetParam(), 100,
                              Messenger::Policy::lossless_peer(0),
@@ -1360,7 +1360,7 @@ TEST_P(MessengerTest, SyntheticInjectTest4) {
   g_ceph_context->_conf->set_val("ms_inject_socket_failures", "0");
   g_ceph_context->_conf->set_val("ms_inject_internal_delays", "0");
   g_ceph_context->_conf->set_val("ms_inject_delay_probability", "0");
-  g_ceph_context->_conf->set_val("ms_inject_delay_type", "", false);
+  g_ceph_context->_conf->set_val("ms_inject_delay_type", "");
   g_ceph_context->_conf->set_val("ms_inject_delay_max", "0");
 }
 
@@ -1519,9 +1519,10 @@ TEST(DummyTest, ValueParameterizedTestsAreNotSupportedOnThisPlatform) {}
 int main(int argc, char **argv) {
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
-  env_to_vec(args);
 
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
+  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+			 CODE_ENVIRONMENT_UTILITY,
+			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   g_ceph_context->_conf->set_val("auth_cluster_required", "none");
   g_ceph_context->_conf->set_val("auth_service_required", "none");
   g_ceph_context->_conf->set_val("auth_client_required", "none");

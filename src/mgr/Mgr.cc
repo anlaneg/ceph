@@ -22,9 +22,7 @@
 #include "global/signal_handler.h"
 
 #include "mgr/MgrContext.h"
-#include "mgr/mgr_commands.h"
 
-//#include "MgrPyModule.h"
 #include "DaemonServer.h"
 #include "messages/MMgrBeacon.h"
 #include "messages/MMgrDigest.h"
@@ -161,8 +159,10 @@ void Mgr::init()
   // Start communicating with daemons to learn statistics etc
   int r = server.init(monc->get_global_id(), client_messenger->get_myaddr());
   if (r < 0) {
-    derr << "Initialize server fail"<< dendl;
-    return;
+    derr << "Initialize server fail: " << cpp_strerror(r) << dendl;
+    // This is typically due to a bind() failure, so let's let
+    // systemd restart us.
+    exit(1);
   }
   dout(4) << "Initialized server at " << server.get_myaddr() << dendl;
 
@@ -218,8 +218,8 @@ void Mgr::init()
 
   // assume finisher already initialized in background_init
   dout(4) << "starting python modules..." << dendl;
-  py_module_registry->active_start(loaded_config, daemon_state, cluster_state, *monc,
-      clog, *objecter, *client, finisher);
+  py_module_registry->active_start(loaded_config, daemon_state, cluster_state,
+      *monc, clog, *objecter, *client, finisher);
 
   dout(4) << "Complete." << dendl;
   initializing = false;
@@ -567,7 +567,7 @@ void Mgr::handle_fs_map(MFSMap* m)
       c->set_default("addr", stringify(info.addr));
 
       std::ostringstream cmd;
-      cmd << "{\"prefix\": \"mds metadata\", \"role\": \""
+      cmd << "{\"prefix\": \"mds metadata\", \"who\": \""
           << info.name << "\"}";
       monc->start_mon_command(
           {cmd.str()},
@@ -593,6 +593,7 @@ bool Mgr::got_mgr_map(const MgrMap& m)
   }
 
   cluster_state.set_mgr_map(m);
+  server.got_mgr_map();
 
   return false;
 }
@@ -622,16 +623,6 @@ void Mgr::tick()
 {
   dout(10) << dendl;
   server.send_report();
-}
-
-std::vector<MonCommand> Mgr::get_command_set() const
-{
-  Mutex::Locker l(lock);
-
-  std::vector<MonCommand> commands = mgr_commands;
-  std::vector<MonCommand> py_commands = py_module_registry->get_commands();
-  commands.insert(commands.end(), py_commands.begin(), py_commands.end());
-  return commands;
 }
 
 std::map<std::string, std::string> Mgr::get_services() const

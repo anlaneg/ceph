@@ -35,6 +35,7 @@
 #include <map>
 using std::map;
 using std::vector;
+using std::chrono::duration_cast;
 
 #include "common/config.h"
 #include "common/errno.h"
@@ -50,7 +51,7 @@ using std::vector;
     if ((dout_context)->_conf->subsys.should_gather(ceph_subsys_mds_balancer, lvl)) {\
       subsys = ceph_subsys_mds_balancer;\
     }\
-    dout_impl(dout_context, subsys, lvl) dout_prefix
+    dout_impl(dout_context, ceph::dout::need_dynamic(subsys), lvl) dout_prefix
 #undef dendl
 #define dendl dendl_impl; } while (0)
 
@@ -148,31 +149,35 @@ void MDBalancer::handle_export_pins(void)
 void MDBalancer::tick()
 {
   static int num_bal_times = g_conf->mds_bal_max;
-  static utime_t first = ceph_clock_now();
-  utime_t now = ceph_clock_now();
-  utime_t elapsed = now;
-  elapsed -= first;
+  static mono_time first = mono_clock::now();
+  mono_time now = mono_clock::now();
+  ceph::timespan elapsed = now - first;
 
   if (g_conf->mds_bal_export_pin) {
     handle_export_pins();
   }
 
   // sample?
-  if ((double)now - (double)last_sample > g_conf->mds_bal_sample_interval) {
+  if (chrono::duration<double> (now - last_sample).count() >
+    g_conf->mds_bal_sample_interval) {
     dout(15) << "tick last_sample now " << now << dendl;
     last_sample = now;
   }
 
+  // We can use duration_cast below, although the result is an int,
+  // because the values from g_conf are also integers.
   // balance?
-  if (last_heartbeat == utime_t())
+  if (mono_clock::is_zero(last_heartbeat))
     last_heartbeat = now;
   if (mds->get_nodeid() == 0 &&
       g_conf->mds_bal_interval > 0 &&
       (num_bal_times ||
        (g_conf->mds_bal_max_until >= 0 &&
-	elapsed.sec() > g_conf->mds_bal_max_until)) &&
+        duration_cast<chrono::seconds>(elapsed).count() >
+          g_conf->mds_bal_max_until)) &&
       mds->is_active() &&
-      now.sec() - last_heartbeat.sec() >= g_conf->mds_bal_interval) {
+      duration_cast<chrono::seconds>(now - last_heartbeat).count() >=
+       g_conf->mds_bal_interval) {
     last_heartbeat = now;
     send_heartbeat();
     num_bal_times--;
@@ -447,7 +452,7 @@ double MDBalancer::try_match(balance_state_t& state, mds_rank_t ex, double& maxe
 {
   if (maxex <= 0 || maxim <= 0) return 0.0;
 
-  double howmuch = MIN(maxex, maxim);
+  double howmuch = std::min(maxex, maxim);
   if (howmuch <= 0) return 0.0;
 
   dout(5) << "   - mds." << ex << " exports " << howmuch << " to mds." << im << dendl;
@@ -974,9 +979,7 @@ void MDBalancer::find_exports(CDir *dir,
   dout(7) << " find_exports in " << dir_pop << " " << *dir << " need " << need << " (" << needmin << " - " << needmax << ")" << dendl;
 
   double subdir_sum = 0;
-  for (CDir::map_t::iterator it = dir->begin();
-       it != dir->end();
-       ++it) {
+  for (auto it = dir->begin(); it != dir->end(); ++it) {
     CInode *in = it->second->get_linkage()->get_inode();
     if (!in) continue;
     if (!in->is_dir()) continue;
@@ -1273,7 +1276,7 @@ int MDBalancer::dump_loads(Formatter *f)
     dir->dump_load(f, now, decayrate);
     f->close_section();
 
-    for (CDir::map_t::iterator it = dir->begin(); it != dir->end(); ++it) {
+    for (auto it = dir->begin(); it != dir->end(); ++it) {
       CInode *in = it->second->get_linkage()->get_inode();
       if (!in || !in->is_dir())
 	continue;
@@ -1292,7 +1295,7 @@ int MDBalancer::dump_loads(Formatter *f)
   f->open_object_section("mds_load");
   {
 
-    auto dump_mds_load = [this, f, now](mds_load_t& load) {
+    auto dump_mds_load = [f, now](mds_load_t& load) {
       f->dump_float("request_rate", load.req_rate);
       f->dump_float("cache_hit_rate", load.cache_hit_rate);
       f->dump_float("queue_length", load.queue_len);

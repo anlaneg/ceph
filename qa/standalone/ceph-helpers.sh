@@ -39,11 +39,6 @@ else
 fi
 
 EXTRA_OPTS=""
-if [ -n "$CEPH_LIB" ]; then
-    EXTRA_OPTS+=" --erasure-code-dir $CEPH_LIB"
-    EXTRA_OPTS+=" --plugin-dir $CEPH_LIB"
-    EXTRA_OPTS+=" --osd-class-dir $CEPH_LIB"
-fi
 
 #! @file ceph-helpers.sh
 #  @brief Toolbox to manage Ceph cluster dedicated to testing
@@ -507,6 +502,11 @@ function create_rbd_pool() {
 function create_pool() {
     ceph osd pool create "$@"
     sleep 1
+}
+
+function delete_pool() {
+    local poolname=$1
+    ceph osd pool delete $poolname $poolname --yes-i-really-really-mean-it
 }
 
 #######################################################################
@@ -1397,6 +1397,7 @@ function wait_for_clean() {
     local -a delays=($(get_timeout_delays $TIMEOUT .1))
     local -i loop=0
 
+    flush_pg_stats
     while test $(get_num_pgs) == 0 ; do
 	sleep 1
     done
@@ -1732,11 +1733,17 @@ function test_display_logs() {
 #
 function run_in_background() {
     local pid_variable=$1
-    shift;
+    shift
     # Execute the command and prepend the output with its pid
     # We enforce to return the exit status of the command and not the awk one.
-    ("$@" |& awk '{ a[i++] = $0 }END{for (i = 0; i in a; ++i) { print "'$$': " a[i]} }'; return ${PIPESTATUS[0]}) >&2 &
+    ("$@" |& sed 's/^/'$$': /'; return "${PIPESTATUS[0]}") >&2 &
     eval "$pid_variable+=\" $!\""
+}
+
+function save_stdout {
+    local out="$1"
+    shift
+    "$@" > "$out"
 }
 
 function test_run_in_background() {

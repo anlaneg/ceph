@@ -389,7 +389,7 @@ TEST_F(MapCacherTest, Simple)
   set<string> truth_keys;
   string blah("asdf");
   bufferlist bl;
-  ::encode(blah, bl);
+  encode(blah, bl);
   truth[string("asdf")] = bl;
   truth_keys.insert(truth.begin()->first);
   {
@@ -606,7 +606,7 @@ protected:
   void init(uint32_t to_set) {
     pgnum = to_set;
     for (uint32_t i = 0; i < pgnum; ++i) {
-      pg_t pgid(i, 0, -1);
+      pg_t pgid(i, 0);
       mappers[pgid].reset(
 	new MapperVerifier(
 	  driver.get(),

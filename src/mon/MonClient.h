@@ -27,13 +27,14 @@
 
 
 class MMonMap;
+class MConfig;
 class MMonGetVersionReply;
 struct MMonSubscribeAck;
 class MMonCommandAck;
 struct MAuthReply;
 class MAuthRotating;
 class LogClient;
-struct AuthAuthorizer;
+class AuthAuthorizer;
 class AuthMethodList;
 class AuthClientHandler;
 class KeyRing;
@@ -75,7 +76,7 @@ struct MonClientPinger : public Dispatcher {
     bufferlist &payload = m->get_payload();
     if (result && payload.length() > 0) {
       bufferlist::iterator p = payload.begin();
-      ::decode(*result, p);
+      decode(*result, p);
     }
     done = true;
     ping_recvd_cond.SignalAll();
@@ -177,6 +178,7 @@ private:
   bool ms_handle_refused(Connection *con) override { return false; }
 
   void handle_monmap(MMonMap *m);
+  void handle_config(MConfig *m);
 
   void handle_auth(MAuthReply *m);
 
@@ -188,6 +190,7 @@ private:
   bool want_monmap;
   Cond map_cond;
   bool passthrough_monmap = false;
+  bool got_config = false;
 
   // authenticate
   std::unique_ptr<AuthClientHandler> auth;
@@ -343,7 +346,7 @@ public:
 
   int build_initial_monmap();
   int get_monmap();
-  int get_monmap_privately();
+  int get_monmap_and_config();
   /**
    * If you want to see MonMap messages, set this and
    * the MonClient will tell the Messenger it hasn't

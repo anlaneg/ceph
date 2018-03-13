@@ -113,10 +113,12 @@ public:
   RGWUserBuckets& operator=(const RGWUserBuckets&) = default;
 
   void encode(bufferlist& bl) const {
-    ::encode(buckets, bl);
+    using ceph::encode;
+    encode(buckets, bl);
   }
   void decode(bufferlist::iterator& bl) {
-    ::decode(buckets, bl);
+    using ceph::decode;
+    decode(buckets, bl);
   }
   /**
    * Check if the user owns a bucket by the given name.
@@ -180,8 +182,7 @@ extern int rgw_link_bucket(RGWRados* store,
                            const rgw_user& user_id,
                            rgw_bucket& bucket,
                            ceph::real_time creation_time,
-                           bool update_entrypoint = true,
-                           bool update_stats = true);
+                           bool update_entrypoint = true);
 extern int rgw_unlink_bucket(RGWRados *store, const rgw_user& user_id,
                              const string& tenant_name, const string& bucket_name, bool update_entrypoint = true);
 
@@ -209,9 +210,10 @@ struct RGWBucketAdminOpState {
   bool delete_child_objects;
   bool bucket_stored;
   int max_aio = 0;
-  bool update_stats;
 
   rgw_bucket bucket;
+
+  RGWQuotaInfo quota;
 
   void set_fetch_stats(bool value) { stat_buckets = value; }
   void set_check_objects(bool value) { check_objects = value; }
@@ -219,7 +221,6 @@ struct RGWBucketAdminOpState {
   void set_delete_children(bool value) { delete_child_objects = value; }
 
   void set_max_aio(int value) { max_aio = value; }
-  void set_update_stats(bool value) { update_stats = value; }
 
   void set_user_id(const rgw_user& user_id) {
     if (!user_id.empty())
@@ -231,6 +232,10 @@ struct RGWBucketAdminOpState {
   void set_object(std::string& object_str) {
     object_name = object_str;
   }
+  void set_quota(RGWQuotaInfo& value) {
+    quota = value;
+  }
+
 
   rgw_user& get_user_id() { return uid; }
   std::string& get_user_display_name() { return display_name; }
@@ -256,11 +261,10 @@ struct RGWBucketAdminOpState {
   bool is_system_op() { return uid.empty(); }
   bool has_bucket_stored() { return bucket_stored; }
   int get_max_aio() { return max_aio; }
-  bool will_update_stats() { return update_stats;}
 
   RGWBucketAdminOpState() : list_buckets(false), stat_buckets(false), check_objects(false), 
                             fix_index(false), delete_child_objects(false),
-                            bucket_stored(false), update_stats(true)  {}
+                            bucket_stored(false)  {}
 };
 
 /*
@@ -300,6 +304,7 @@ public:
   int remove(RGWBucketAdminOpState& op_state, bool bypass_gc = false, bool keep_index_consistent = true, std::string *err_msg = NULL);
   int link(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
   int unlink(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
+  int set_quota(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
 
   int remove_object(RGWBucketAdminOpState& op_state, std::string *err_msg = NULL);
   int policy_bl_to_stream(bufferlist& bl, ostream& o);
@@ -331,6 +336,7 @@ public:
 			 const std::list<std::string>& user_ids,
 			 RGWFormatterFlusher& flusher,
 			 bool warnings_only = false);
+  static int set_quota(RGWRados *store, RGWBucketAdminOpState& op_state);
 };
 
 
@@ -347,19 +353,19 @@ struct rgw_data_change {
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
     uint8_t t = (uint8_t)entity_type;
-    ::encode(t, bl);
-    ::encode(key, bl);
-    ::encode(timestamp, bl);
+    encode(t, bl);
+    encode(key, bl);
+    encode(timestamp, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
      uint8_t t;
-     ::decode(t, bl);
+     decode(t, bl);
      entity_type = (DataLogEntityType)t;
-     ::decode(key, bl);
-     ::decode(timestamp, bl);
+     decode(key, bl);
+     decode(timestamp, bl);
      DECODE_FINISH(bl);
   }
 
@@ -375,17 +381,17 @@ struct rgw_data_change_log_entry {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(log_id, bl);
-    ::encode(log_timestamp, bl);
-    ::encode(entry, bl);
+    encode(log_id, bl);
+    encode(log_timestamp, bl);
+    encode(entry, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-     ::decode(log_id, bl);
-     ::decode(log_timestamp, bl);
-     ::decode(entry, bl);
+     decode(log_id, bl);
+     decode(log_timestamp, bl);
+     decode(entry, bl);
      DECODE_FINISH(bl);
   }
 

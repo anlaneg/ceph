@@ -11,7 +11,6 @@
 #include <boost/utility/string_view.hpp>
 #include <boost/container/static_vector.hpp>
 
-#include "common/backport_std.h"
 #include "common/sstring.hh"
 #include "rgw_op.h"
 #include "rgw_rest.h"
@@ -28,8 +27,6 @@
 
 #include "rgw_auth.h"
 #include "rgw_auth_filters.h"
-
-#define RGW_AUTH_GRACE_MINS 15
 
 struct rgw_http_error {
   int http_ret;
@@ -766,8 +763,6 @@ public:
 class AWSGeneralAbstractor : public AWSEngine::VersionAbstractor {
   CephContext* const cct;
 
-  bool is_time_skew_ok(const utime_t& header_time) const;
-
   virtual boost::optional<std::string>
   get_v4_canonical_headers(const req_info& info,
                            const boost::string_view& signedheaders,
@@ -850,6 +845,8 @@ public:
   const char* get_name() const noexcept override {
     return "rgw::auth::s3::LDAPEngine";
   }
+
+  static void shutdown();
 };
 
 

@@ -28,7 +28,9 @@ set(librbd_internal_srcs
   api/Group.cc
   api/Image.cc
   api/Mirror.cc
+  api/Snapshot.cc
   cache/ImageWriteback.cc
+  cache/ObjectCacherObjectDispatch.cc
   cache/PassthroughImageCache.cc
   deep_copy/ImageCopyRequest.cc
   deep_copy/MetadataCopyRequest.cc
@@ -45,6 +47,7 @@ set(librbd_internal_srcs
   image/CloneRequest.cc
   image/CloseRequest.cc
   image/CreateRequest.cc
+  image/DetachChildRequest.cc
   image/OpenRequest.cc
   image/RefreshParentRequest.cc
   image/RefreshRequest.cc
@@ -55,12 +58,18 @@ set(librbd_internal_srcs
   io/AioCompletion.cc
   io/AsyncOperation.cc
   io/CopyupRequest.cc
+  io/ImageDispatchSpec.cc
   io/ImageRequest.cc
   io/ImageRequestWQ.cc
+  io/ObjectDispatch.cc
+  io/ObjectDispatchSpec.cc
+  io/ObjectDispatcher.cc
   io/ObjectRequest.cc
   io/ReadResult.cc
+  io/Utils.cc
   journal/CreateRequest.cc
   journal/DemoteRequest.cc
+  journal/ObjectDispatch.cc
   journal/OpenRequest.cc
   journal/PromoteRequest.cc
   journal/RemoveRequest.cc
@@ -146,6 +155,10 @@ target_link_libraries(librbd PRIVATE
 if(HAVE_UDEV)
   target_link_libraries(librbd PRIVATE
     udev)
+endif()
+if(WITH_STATIC_LIBSTDCXX)
+  target_link_libraries(librbd INTERFACE
+    "-static-libstdc++ -static-libgcc")
 endif()
 if(ENABLE_SHARED)
   set_target_properties(librbd PROPERTIES

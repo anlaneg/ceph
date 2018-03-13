@@ -315,7 +315,7 @@ static struct rgw_flags_desc rgw_perms[] = {
  { RGW_PERM_READ, "read" },
  { RGW_PERM_WRITE, "write" },
  { RGW_PERM_READ_ACP, "read-acp" },
- { RGW_PERM_WRITE_ACP, "read-acp" },
+ { RGW_PERM_WRITE_ACP, "write-acp" },
  { 0, NULL }
 };
 
@@ -1633,4 +1633,18 @@ void RGWLifecycleConfiguration::dump(Formatter *f) const
     f->close_section();
   }
   f->close_section();
+}
+
+void compression_block::dump(Formatter *f) const
+{
+  f->dump_unsigned("old_ofs", old_ofs);
+  f->dump_unsigned("new_ofs", new_ofs);
+  f->dump_unsigned("len", len);
+}
+
+void RGWCompressionInfo::dump(Formatter *f) const
+{
+  f->dump_string("compression_type", compression_type);
+  f->dump_unsigned("orig_size", orig_size);
+  ::encode_json("blocks", blocks, f);
 }

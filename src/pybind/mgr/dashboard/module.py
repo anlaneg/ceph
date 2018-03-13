@@ -3,11 +3,19 @@
 Demonstrate writing a Ceph web interface inside a mgr module.
 """
 
+from __future__ import absolute_import
+
 # We must share a global reference to this instance, because it is the
 # gatekeeper to all accesses to data from the C++ side (e.g. the REST API
 # request handlers need to see it)
 from collections import defaultdict
+from functools import cmp_to_key
 import collections
+
+try:
+    iteritems = dict.iteritems
+except AttributeError:
+    iteritems = dict.items
 
 _global_instance = {'plugin': None}
 def global_instance():
@@ -26,18 +34,21 @@ import socket
 
 import cherrypy
 import jinja2
+try:
+    import urlparse
+except ImportError:
+    import urllib.parse as urlparse
 
 from mgr_module import MgrModule, MgrStandbyModule, CommandResult
 
-from types import OsdMap, NotFound, Config, FsMap, MonMap, \
+from .types import OsdMap, NotFound, Config, FsMap, MonMap, \
     PgSummary, Health, MonStatus
 
-import rados
-import rbd_iscsi
-import rbd_mirroring
-from rbd_ls import RbdLs, RbdPoolLs
-from cephfs_clients import CephFSClients
-from rgw import RGWDaemons
+from . import rbd_iscsi
+from . import rbd_mirroring
+from .rbd_ls import RbdLs, RbdPoolLs
+from .cephfs_clients import CephFSClients
+from .rgw import RGWDaemons
 
 log = logging.getLogger("dashboard")
 
@@ -64,17 +75,25 @@ def recurse_refs(root, path):
     log.info("%s %d (%s)" % (path, sys.getrefcount(root), root.__class__))
 
 def get_prefixed_url(url):
-    return global_instance().url_prefix + url
+    return global_instance().url_prefix.rstrip('/') + url
 
 def to_sorted_array(data):
     assert isinstance(data, dict)
-    return sorted(data.iteritems())
+    return sorted(iteritems(data))
 
+def prepare_url_prefix(url_prefix):
+    """
+    return '' if no prefix, or '/prefix' without slash in the end.
+    """
+    url_prefix = urlparse.urljoin('/', url_prefix)
+    return url_prefix.rstrip('/')
 
 class StandbyModule(MgrStandbyModule):
     def serve(self):
         server_addr = self.get_localized_config('server_addr', '::')
         server_port = self.get_localized_config('server_port', '7000')
+        url_prefix = prepare_url_prefix(self.get_config('url_prefix', default=''))
+
         if server_addr is None:
             raise RuntimeError('no server_addr configured; try "ceph config-key set mgr/dashboard/server_addr <ip>"')
         log.info("server_addr: %s server_port: %s" % (server_addr, server_port))
@@ -92,16 +111,16 @@ class StandbyModule(MgrStandbyModule):
 
         class Root(object):
             @cherrypy.expose
-            def index(self):
+            def default(self, *args, **kwargs):
                 active_uri = module.get_active_uri()
                 if active_uri:
-                    log.info("Redirecting to active '{0}'".format(active_uri))
-                    raise cherrypy.HTTPRedirect(active_uri)
+                    log.info("Redirecting to active '{0}'".format(active_uri + "/".join(args)))
+                    raise cherrypy.HTTPRedirect(active_uri + "/".join(args))
                 else:
                     template = env.get_template("standby.html")
                     return template.render(delay=5)
 
-        cherrypy.tree.mount(Root(), "/", {})
+        cherrypy.tree.mount(Root(), url_prefix, {})
         log.info("Starting engine...")
         cherrypy.engine.start()
         log.info("Waiting for engine...")
@@ -125,9 +144,6 @@ class Module(MgrModule):
         self.log_primed = False
         self.log_buffer = collections.deque(maxlen=LOG_BUFFER_SIZE)
         self.audit_buffer = collections.deque(maxlen=LOG_BUFFER_SIZE)
-
-        # Keep a librados instance for those that need it.
-        self._rados = None
 
         # Stateful instances of RbdLs, hold cached results.  Key to dict
         # is pool name.
@@ -156,21 +172,6 @@ class Module(MgrModule):
 
         # A prefix for all URLs to use the dashboard with a reverse http proxy
         self.url_prefix = ''
-
-    @property
-    def rados(self):
-        """
-        A librados instance to be shared by any classes within
-        this mgr module that want one.
-        """
-        if self._rados:
-            return self._rados
-
-        ctx_capsule = self.get_context()
-        self._rados = rados.Rados(context=ctx_capsule)
-        self._rados.connect()
-
-        return self._rados
 
     def update_pool_stats(self):
         df = global_instance().get("df")
@@ -246,10 +247,6 @@ class Module(MgrModule):
         cherrypy.engine.exit()
         log.info("Stopped server")
 
-        log.info("Stopping librados...")
-        if self._rados:
-            self._rados.shutdown()
-        log.info("Stopped librados.")
 
     def get_latest(self, daemon_type, daemon_name, stat):
         data = self.get_counter(daemon_type, daemon_name, stat)[stat]
@@ -381,7 +378,7 @@ class Module(MgrModule):
                 )
 
         # Find the standby replays
-        for gid_str, daemon_info in mdsmap['info'].iteritems():
+        for gid_str, daemon_info in iteritems(mdsmap['info']):
             if daemon_info['state'] != "up:standby-replay":
                 continue
 
@@ -485,14 +482,12 @@ class Module(MgrModule):
                 # Transform the `checks` dict into a list for the convenience
                 # of rendering from javascript.
                 checks = []
-                for k, v in health['checks'].iteritems():
+                for k, v in iteritems(health['checks']):
                     v['type'] = k
                     checks.append(v)
 
-                checks = sorted(checks, cmp=lambda a, b: a['severity'] > b['severity'])
-
+                checks = sorted(checks, key=lambda x: x['severity'])
                 health['checks'] = checks
-
                 return health
 
             def _toplevel_data(self):
@@ -774,7 +769,72 @@ class Module(MgrModule):
                     toplevel_data=json.dumps(self._toplevel_data(), indent=2),
                     content_data=json.dumps(self._servers(), indent=2)
                 )
+            
+            @cherrypy.expose
+            def config_options(self, service="any"):
+                template = env.get_template("config_options.html")
+                return template.render(
+                    url_prefix = global_instance().url_prefix,
+                    ceph_version=global_instance().version,
+                    path_info=cherrypy.request.path_info,
+                    toplevel_data=json.dumps(self._toplevel_data(), indent=2),
+                    content_data=json.dumps(self.config_options_data(service), indent=2)
+                )
 
+            @cherrypy.expose
+            @cherrypy.tools.json_out()
+            def config_options_data(self, service):
+                options = {}
+                options = global_instance().get("config_options")
+
+                return {
+                    'options': options,
+                    'service': service,
+                }
+
+            @cherrypy.expose
+            def monitors(self):
+                template = env.get_template("monitors.html")
+                return template.render(
+                    url_prefix = global_instance().url_prefix,
+                    ceph_version=global_instance().version,
+                    path_info=cherrypy.request.path_info,
+                    toplevel_data=json.dumps(self._toplevel_data(), indent=2),
+                    content_data=json.dumps(self._monitors(), indent=2)
+                )
+
+            @cherrypy.expose
+            @cherrypy.tools.json_out()
+            def monitors_data(self):
+                return self._monitors
+
+            def _monitors(self):
+                in_quorum, out_quorum = [], []
+
+                counters = [ 'mon.num_sessions'
+                ]
+
+                mon_status = global_instance().get_sync_object(MonStatus).data
+                for mon in mon_status["monmap"]["mons"]:
+                    mon["stats"] = {}
+                    mon["url_perf"] = "/perf_counters/mon/" + mon["name"]
+                    for counter in counters:
+                        data = global_instance().get_counter("mon", mon["name"], counter)
+                        if data is not None:
+                            mon["stats"][counter.split(".")[1]] = data[counter] 
+                        else:
+                            mon["stats"][counter.split(".")[1]] = []
+                    if mon["rank"] in mon_status["quorum"]:
+                        in_quorum.append(mon)
+                    else:
+                        out_quorum.append(mon)
+                    
+                return {
+                    'mon_status': mon_status,
+                    'in_quorum' : in_quorum,
+                    'out_quorum': out_quorum,                
+                }
+            
             def _servers(self):
                 return {
                     'servers': global_instance().list_servers()
@@ -785,6 +845,43 @@ class Module(MgrModule):
             def servers_data(self):
                 return self._servers()
 
+            @cherrypy.expose
+            def perf_counters(self, service_type, service_id):
+                template = env.get_template("perf_counters.html")
+                toplevel_data = self._toplevel_data()
+                
+                return template.render(
+                    url_prefix = global_instance().url_prefix,
+                    ceph_version=global_instance().version,
+                    path_info=cherrypy.request.path_info,
+                    toplevel_data=json.dumps(toplevel_data, indent=2),
+                    content_data=json.dumps(self.perf_counters_data(service_type, service_id), indent=2)
+                )
+            
+            @cherrypy.expose
+            @cherrypy.tools.json_out()
+            def perf_counters_data(self, service_type, service_id):
+                schema = global_instance().get_perf_schema(service_type, str(service_id)).values()[0]
+                counters = []
+                
+                for key, value in sorted(schema.items()):
+                    counter = dict()
+                    counter["name"] = str(key)
+                    counter["description"] = value["description"]
+                    if global_instance()._stattype_to_str(value["type"]) == 'counter':
+                        counter["value"] = global_instance().get_rate(service_type, service_id, key)
+                        counter["unit"]  = global_instance()._unit_to_str(value["units"])
+                    else:
+                        counter["value"] = global_instance().get_latest(service_type, service_id, key)
+                        counter["unit"] = ""
+                    counters.append(counter)
+                                                    
+                return {
+                    'service_type': service_type,
+                    'service_id': service_id,
+                    'counters': counters,
+                }  
+                
             def _health(self):
                 # Fuse osdmap with pg_summary to get description of pools
                 # including their PG states
@@ -928,15 +1025,7 @@ class Module(MgrModule):
                         ret[k1][k2] = sorted_dict
                 return ret
 
-        url_prefix = self.get_config('url_prefix')
-        if url_prefix == None:
-            url_prefix = ''
-        else:
-            if len(url_prefix) != 0:
-                if url_prefix[0] != '/':
-                    url_prefix = '/'+url_prefix
-                if url_prefix[-1] == '/':
-                    url_prefix = url_prefix[:-1]
+        url_prefix = prepare_url_prefix(self.get_config('url_prefix', default=''))
         self.url_prefix = url_prefix
 
         server_addr = self.get_localized_config('server_addr', '::')
@@ -955,9 +1044,10 @@ class Module(MgrModule):
 
         # Publish the URI that others may use to access the service we're
         # about to start serving
-        self.set_uri("http://{0}:{1}/".format(
+        self.set_uri("http://{0}:{1}{2}/".format(
             socket.getfqdn() if server_addr == "::" else server_addr,
-            server_port
+            server_port,
+            url_prefix
         ))
 
         static_dir = os.path.join(current_dir, 'static')
@@ -1004,7 +1094,8 @@ class Module(MgrModule):
                 return {
                     "osd": osd,
                     "osd_metadata": osd_metadata,
-                    "osd_histogram": histogram
+                    "osd_histogram": histogram,
+                    "url_perf": "/perf_counters/osd/" + str(osd_id)
                 }
 
             @cherrypy.expose
@@ -1126,32 +1217,28 @@ class Module(MgrModule):
             @cherrypy.expose
             def index(self, rgw_id=None):
                 if rgw_id is not None:
-		    template = env.get_template("rgw_detail.html")
-		    toplevel_data = self._toplevel_data()
-		    return template.render(
-			    url_prefix=global_instance().url_prefix,
-			    ceph_version=global_instance().version,
-			    path_info='/rgw' + cherrypy.request.path_info,
-			    toplevel_data=json.dumps(toplevel_data, indent=2),
-			    content_data=json.dumps(self.rgw_data(rgw_id), indent=2)
-			)
+                    template = env.get_template("rgw_detail.html")
+                    toplevel_data = self._toplevel_data()
+                    return template.render(
+                            url_prefix=global_instance().url_prefix,
+                            ceph_version=global_instance().version,
+                            path_info='/rgw' + cherrypy.request.path_info,
+                            toplevel_data=json.dumps(toplevel_data, indent=2),
+                            content_data=json.dumps(self.rgw_data(rgw_id), indent=2)
+                        )
                 else:
+                    # List all RGW servers
+                    template = env.get_template("rgw.html")
+                    toplevel_data = self._toplevel_data()
+                    content_data = self._rgw_daemons()
+                    return template.render(
+                        url_prefix = global_instance().url_prefix,
+                        ceph_version=global_instance().version,
+                        path_info='/rgw' + cherrypy.request.path_info,
+                        toplevel_data=json.dumps(toplevel_data, indent=2),
+                        content_data=json.dumps(content_data, indent=2)
+                    )
 
-		    """ List all RGW servers """
-
-		    template = env.get_template("rgw.html")
-		    toplevel_data = self._toplevel_data()
-
-		    content_data = self._rgw_daemons()
-
-		    return template.render(
-			url_prefix = global_instance().url_prefix,
-			ceph_version=global_instance().version,
-			path_info='/rgw' + cherrypy.request.path_info,
-			toplevel_data=json.dumps(toplevel_data, indent=2),
-			content_data=json.dumps(content_data, indent=2)
-		    )
-            
             def _rgw_daemons(self):
                 status, data = global_instance().rgw_daemons.get()
                 if data is None:
@@ -1178,6 +1265,7 @@ class Module(MgrModule):
 
                 return {
                     "rgw_id": rgw_id,
+                    "url_perf": "/perf_counters/rgw/" + str(rgw_id),
                     "rgw_metadata": to_sorted_array(rgw_metadata),
                     "rgw_status": to_sorted_array(rgw_status),
                 }
@@ -1185,7 +1273,7 @@ class Module(MgrModule):
             @cherrypy.expose
             @cherrypy.tools.json_out()
             def rgw_data(self, rgw_id):
-	        return self._rgw(rgw_id)
+                return self._rgw(rgw_id)
 
         cherrypy.tree.mount(Root(), get_prefixed_url("/"), conf)
         cherrypy.tree.mount(OSDEndpoint(), get_prefixed_url("/osd"), conf)

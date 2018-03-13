@@ -443,7 +443,7 @@ void ECBackend::handle_recovery_read_complete(
     if (op.obc->obs.oi.size > 0) {
       assert(op.xattrs.count(ECUtil::get_hinfo_key()));
       bufferlist::iterator bp = op.xattrs[ECUtil::get_hinfo_key()].begin();
-      ::decode(hinfo, bp);
+      decode(hinfo, bp);
     }
     op.hinfo = unstable_hashinfo_registry.lookup_or_create(hoid, hinfo);
   }
@@ -552,7 +552,7 @@ void ECBackend::continue_recovery_op(
 	op.hinfo = get_hash_info(op.hoid);
 	assert(op.hinfo);
 	op.xattrs = op.obc->attr_cache;
-	::encode(*(op.hinfo), op.xattrs[ECUtil::get_hinfo_key()]);
+	encode(*(op.hinfo), op.xattrs[ECUtil::get_hinfo_key()]);
       }
 
       map<pg_shard_t, vector<pair<int, int>>> to_read;
@@ -759,6 +759,7 @@ bool ECBackend::_handle_message(
     // not conflict with ECSubWrite's operator<<.
     MOSDECSubOpWrite *op = static_cast<MOSDECSubOpWrite*>(
       _op->get_nonconst_req());
+    parent->maybe_preempt_replica_scrub(op->op.soid);
     handle_sub_write(op->op.from, _op, op->op, _op->pg_trace);
     return true;
   }
@@ -849,6 +850,7 @@ void ECBackend::sub_write_committed(
     reply.tid = tid;
     reply.last_complete = last_complete;
     reply.committed = true;
+    reply.applied = true;
     reply.from = get_parent()->whoami_shard();
     handle_sub_write_reply(
       get_parent()->whoami_shard(),
@@ -862,6 +864,7 @@ void ECBackend::sub_write_committed(
     r->op.tid = tid;
     r->op.last_complete = last_complete;
     r->op.committed = true;
+    r->op.applied = true;
     r->op.from = get_parent()->whoami_shard();
     r->set_priority(CEPH_MSG_PRIO_HIGH);
     r->trace = trace;
@@ -871,59 +874,11 @@ void ECBackend::sub_write_committed(
   }
 }
 
-struct SubWriteApplied : public Context {
-  ECBackend *pg;
-  OpRequestRef msg;
-  ceph_tid_t tid;
-  eversion_t version;
-  const ZTracer::Trace trace;
-  SubWriteApplied(
-    ECBackend *pg,
-    OpRequestRef msg,
-    ceph_tid_t tid,
-    eversion_t version,
-    const ZTracer::Trace &trace)
-    : pg(pg), msg(msg), tid(tid), version(version), trace(trace) {}
-  void finish(int) override {
-    if (msg)
-      msg->mark_event("sub_op_applied");
-    pg->sub_write_applied(tid, version, trace);
-  }
-};
-void ECBackend::sub_write_applied(
-  ceph_tid_t tid, eversion_t version,
-  const ZTracer::Trace &trace) {
-  parent->op_applied(version);
-  if (get_parent()->pgb_is_primary()) {
-    ECSubWriteReply reply;
-    reply.from = get_parent()->whoami_shard();
-    reply.tid = tid;
-    reply.applied = true;
-    handle_sub_write_reply(
-      get_parent()->whoami_shard(),
-      reply, trace);
-  } else {
-    MOSDECSubOpWriteReply *r = new MOSDECSubOpWriteReply;
-    r->pgid = get_parent()->primary_spg_t();
-    r->map_epoch = get_parent()->get_epoch();
-    r->min_epoch = get_parent()->get_interval_start_epoch();
-    r->op.from = get_parent()->whoami_shard();
-    r->op.tid = tid;
-    r->op.applied = true;
-    r->set_priority(CEPH_MSG_PRIO_HIGH);
-    r->trace = trace;
-    r->trace.event("sending sub op apply");
-    get_parent()->send_message_osd_cluster(
-      get_parent()->primary_shard().osd, r, get_parent()->get_epoch());
-  }
-}
-
 void ECBackend::handle_sub_write(
   pg_shard_t from,
   OpRequestRef msg,
   ECSubWrite &op,
-  const ZTracer::Trace &trace,
-  Context *on_local_applied_sync)
+  const ZTracer::Trace &trace)
 {
   if (msg)
     msg->mark_started();
@@ -963,19 +918,12 @@ void ECBackend::handle_sub_write(
       ec_impl->get_data_chunk_count())
     op.t.set_fadvise_flag(CEPH_OSD_OP_FLAG_FADVISE_DONTNEED);
 
-  if (on_local_applied_sync) {
-    dout(10) << "Queueing onreadable_sync: " << on_local_applied_sync << dendl;
-    localt.register_on_applied_sync(on_local_applied_sync);
-  }
   localt.register_on_commit(
     get_parent()->bless_context(
       new SubWriteCommitted(
 	this, msg, op.tid,
 	op.at_version,
 	get_parent()->get_info().last_complete, trace)));
-  localt.register_on_applied(
-    get_parent()->bless_context(
-      new SubWriteApplied(this, msg, op.tid, op.at_version, trace)));
   vector<ObjectStore::Transaction> tls;
   tls.reserve(2);
   tls.push_back(std::move(op.t));
@@ -1123,12 +1071,6 @@ void ECBackend::handle_sub_write_reply(
     i->second.pending_apply.erase(from);
   }
 
-  if (i->second.pending_apply.empty() && i->second.on_all_applied) {
-    dout(10) << __func__ << " Calling on_all_applied on " << i->second << dendl;
-    i->second.on_all_applied->complete(0);
-    i->second.on_all_applied = 0;
-    i->second.trace.event("ec write all applied");
-  }
   if (i->second.pending_commit.empty() && i->second.on_all_commit) {
     dout(10) << __func__ << " Calling on_all_commit on " << i->second << dendl;
     i->second.on_all_commit->complete(0);
@@ -1465,8 +1407,6 @@ void ECBackend::submit_transaction(
   const eversion_t &roll_forward_to,
   const vector<pg_log_entry_t> &log_entries,
   boost::optional<pg_hit_set_history_t> &hset_history,
-  Context *on_local_applied_sync,
-  Context *on_all_applied,
   Context *on_all_commit,
   ceph_tid_t tid,
   osd_reqid_t reqid,
@@ -1482,8 +1422,6 @@ void ECBackend::submit_transaction(
   op->roll_forward_to = std::max(roll_forward_to, committed_to);
   op->log_entries = log_entries;
   std::swap(op->updated_hit_set_history, hset_history);
-  op->on_local_applied_sync = on_local_applied_sync;
-  op->on_all_applied = on_all_applied;
   op->on_all_commit = on_all_commit;
   op->tid = tid;
   op->reqid = reqid;
@@ -1493,29 +1431,16 @@ void ECBackend::submit_transaction(
   
   dout(10) << __func__ << ": op " << *op << " starting" << dendl;
   start_rmw(op, std::move(t));
-  dout(10) << "onreadable_sync: " << op->on_local_applied_sync << dendl;
 }
 
-void ECBackend::call_write_ordered(std::function<void(void)> &&cb)
-{
-  if (waiting_state.empty() &&
-      waiting_reads.empty()) {
-    dout(10) << __func__ << " sync" << dendl;
-    cb();
+void ECBackend::call_write_ordered(std::function<void(void)> &&cb) {
+  if (!waiting_state.empty()) {
+    waiting_state.back().on_write.emplace_back(std::move(cb));
+  } else if (!waiting_reads.empty()) {
+    waiting_reads.back().on_write.emplace_back(std::move(cb));
   } else {
-    ceph_tid_t tid = parent->get_tid();
-    Op& op = tid_to_op_map[tid];
-    op.tid = tid;
-    op.on_write = std::move(cb);
-    if (!waiting_state.empty()) {
-      dout(10) << __func__ << " tid " << tid << " waiting_state" << dendl;
-      waiting_state.push_back(op);
-    } else if (!waiting_reads.empty()) {
-      dout(10) << __func__ << " tid " << tid << " waiting_reads" << dendl;
-      waiting_reads.push_back(op);
-    } else {
-      ceph_abort();
-    }
+    // Nothing earlier in the pipeline, just call it
+    cb();
   }
 }
 
@@ -1775,7 +1700,7 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
       }
       if (bl.length() > 0) {
 	bufferlist::iterator bp = bl.begin();
-	::decode(hinfo, bp);
+	decode(hinfo, bp);
 	if (checks && hinfo.get_total_chunk_size() != (uint64_t)st.st_size) {
 	  dout(0) << __func__ << ": Mismatch of total_chunk_size "
 			       << hinfo.get_total_chunk_size() << dendl;
@@ -1896,12 +1821,6 @@ bool ECBackend::try_reads_to_commit()
   if (waiting_reads.empty())
     return false;
   Op *op = &(waiting_reads.front());
-  if (op->on_write) {
-    waiting_reads.pop_front();
-    op->on_write();
-    tid_to_op_map.erase(op->tid);
-    return true;
-  }
   if (op->read_in_progress())
     return false;
   waiting_reads.pop_front();
@@ -1983,7 +1902,6 @@ bool ECBackend::try_reads_to_commit()
   op->remote_read.clear();
   op->remote_read_result.clear();
 
-  dout(10) << "onreadable_sync: " << op->on_local_applied_sync << dendl;
   ObjectStore::Transaction empty;
   bool should_write_local = false;
   ECSubWrite local_write_op;
@@ -2043,10 +1961,15 @@ bool ECBackend::try_reads_to_commit()
       get_parent()->whoami_shard(),
       op->client_op,
       local_write_op,
-      op->trace,
-      op->on_local_applied_sync);
-    op->on_local_applied_sync = 0;
+      op->trace);
   }
+
+  for (auto i = op->on_write.begin();
+       i != op->on_write.end();
+       op->on_write.erase(i++)) {
+    (*i)();
+  }
+
   return true;
 }
 
@@ -2417,53 +2340,62 @@ void ECBackend::rollback_append(
       old_size));
 }
 
-void ECBackend::be_deep_scrub(
+int ECBackend::be_deep_scrub(
   const hobject_t &poid,
-  uint32_t seed,
-  ScrubMap::object &o,
-  ThreadPool::TPHandle &handle,
-  ScrubMap* const map) {
-  bufferhash h(-1); // we always used -1
+  ScrubMap &map,
+  ScrubMapBuilder &pos,
+  ScrubMap::object &o)
+{
+  dout(10) << __func__ << " " << poid << " pos " << pos << dendl;
   int r;
-  uint64_t stride = cct->_conf->osd_deep_scrub_stride;
-  if (stride % sinfo.get_chunk_size())
-    stride += sinfo.get_chunk_size() - (stride % sinfo.get_chunk_size());
-  uint64_t pos = 0;
   bool skip_data_digest = store->has_builtin_csum() &&
-    g_conf->get_val<bool>("osd_skip_data_digest");
+    g_conf->osd_skip_data_digest;
 
   uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
                            CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
 
-  while (true) {
-    bufferlist bl;
-    handle.reset_tp_timeout();
-    r = store->read(
-      ch,
-      ghobject_t(
-	poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-      pos,
-      stride, bl,
-      fadvise_flags);
-    if (r < 0)
-      break;
-    if (bl.length() % sinfo.get_chunk_size()) {
-      r = -EIO;
-      break;
-    }
-    pos += r;
-    if (!skip_data_digest) {
-      h << bl;
-    }
-    if ((unsigned)r < stride)
-      break;
+  utime_t sleeptime;
+  sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
+  if (sleeptime != utime_t()) {
+    lgeneric_derr(cct) << __func__ << " sleeping for " << sleeptime << dendl;
+    sleeptime.sleep();
   }
 
-  if (r == -EIO) {
-    dout(0) << "_scan_list  " << poid << " got "
-	    << r << " on read, read_error" << dendl;
+  if (pos.data_pos == 0) {
+    pos.data_hash = bufferhash(-1);
+  }
+
+  uint64_t stride = cct->_conf->osd_deep_scrub_stride;
+  if (stride % sinfo.get_chunk_size())
+    stride += sinfo.get_chunk_size() - (stride % sinfo.get_chunk_size());
+
+  bufferlist bl;
+  r = store->read(
+    ch,
+    ghobject_t(
+      poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+    pos.data_pos,
+    stride, bl,
+    fadvise_flags);
+  if (r < 0) {
+    dout(20) << __func__ << "  " << poid << " got "
+	     << r << " on read, read_error" << dendl;
     o.read_error = true;
-    return;
+    return 0;
+  }
+  if (bl.length() % sinfo.get_chunk_size()) {
+    dout(20) << __func__ << "  " << poid << " got "
+	     << r << " on read, not chunk size " << sinfo.get_chunk_size() << " aligned"
+	     << dendl;
+    o.read_error = true;
+    return 0;
+  }
+  if (r > 0 && !skip_data_digest) {
+    pos.data_hash << bl;
+  }
+  pos.data_pos += r;
+  if (r == (int)stride) {
+    return -EINPROGRESS;
   }
 
   ECUtil::HashInfoRef hinfo = get_hash_info(poid, false, &o.attrs);
@@ -2471,21 +2403,28 @@ void ECBackend::be_deep_scrub(
     dout(0) << "_scan_list  " << poid << " could not retrieve hash info" << dendl;
     o.read_error = true;
     o.digest_present = false;
-    return;
+    return 0;
   } else {
     if (!get_parent()->get_pool().allows_ecoverwrites()) {
       assert(hinfo->has_chunk_hash());
-      if (hinfo->get_total_chunk_size() != pos) {
-	dout(0) << "_scan_list  " << poid << " got incorrect size on read" << dendl;
+      if (hinfo->get_total_chunk_size() != (unsigned)pos.data_pos) {
+	dout(0) << "_scan_list  " << poid << " got incorrect size on read 0x"
+		<< std::hex << pos
+		<< " expected 0x" << hinfo->get_total_chunk_size() << std::dec
+		<< dendl;
 	o.ec_size_mismatch = true;
-	return;
+	return 0;
       }
 
       if (!skip_data_digest &&
-          hinfo->get_chunk_hash(get_parent()->whoami_shard().shard) != h.digest()) {
-	dout(0) << "_scan_list  " << poid << " got incorrect hash on read" << dendl;
+          hinfo->get_chunk_hash(get_parent()->whoami_shard().shard) !=
+	  pos.data_hash.digest()) {
+	dout(0) << "_scan_list  " << poid << " got incorrect hash on read 0x"
+		<< std::hex << pos.data_hash.digest() << " !=  expected 0x"
+		<< hinfo->get_chunk_hash(get_parent()->whoami_shard().shard)
+		<< std::dec << dendl;
 	o.ec_hash_mismatch = true;
-	return;
+	return 0;
       }
 
       /* We checked above that we match our own stored hash.  We cannot
@@ -2505,6 +2444,7 @@ void ECBackend::be_deep_scrub(
     }
   }
 
-  o.omap_digest = seed;
+  o.omap_digest = -1;
   o.omap_digest_present = true;
+  return 0;
 }

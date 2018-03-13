@@ -38,6 +38,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unknown-pragmas")
 if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-null-sentinel -Woverloaded-virtual")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-new-ttp-matching")
   if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
   endif()
@@ -140,15 +141,15 @@ else(no_yasm)
   endif(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64")
 endif(no_yasm)
 
-# require c++14
-if(CMAKE_VERSION VERSION_LESS "3.1")
+# require c++17
+if(CMAKE_VERSION VERSION_LESS "3.8")
   include(CheckCXXCompilerFlag)
-  CHECK_CXX_COMPILER_FLAG("-std=c++14" COMPILER_SUPPORTS_CXX14)
-  if(NOT COMPILER_SUPPORTS_CXX14)
+  CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
+  if(NOT COMPILER_SUPPORTS_CXX17)
     message(FATAL_ERROR
-      "The compiler ${CMAKE_CXX_COMPILER} has no C++14 support.")
+      "The compiler ${CMAKE_CXX_COMPILER} has no C++17 support.")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
   include(CheckCCompilerFlag)
   CHECK_C_COMPILER_FLAG("-std=gnu99" COMPILER_SUPPORTS_GNU99)
   if(NOT COMPILER_SUPPORTS_GNU99)
@@ -157,7 +158,7 @@ if(CMAKE_VERSION VERSION_LESS "3.1")
   endif()
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
 else()
-  set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_EXTENSIONS OFF)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_C_STANDARD 99)
@@ -215,13 +216,7 @@ if(${ENABLE_COVERAGE})
   list(APPEND EXTRALIBS gcov)
 endif(${ENABLE_COVERAGE})
 
-if(USE_NSS)
-  if(NSS_FOUND)
-    if(NSPR_FOUND)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${NSS_INCLUDE_DIR} -I${NSPR_INCLUDE_DIR}")
-    endif(NSPR_FOUND)
-  endif(NSS_FOUND)
-endif(USE_NSS)
+include_directories(${NSS_INCLUDE_DIR} ${NSPR_INCLUDE_DIR})
 
 set(GCOV_PREFIX_STRIP 4)
 
@@ -267,21 +262,24 @@ if(WITH_CEPHFS_JAVA)
 endif()
 
 # Python stuff
-find_package(PythonInterp 2 REQUIRED)
-find_package(PythonLibs 2 REQUIRED)
+option(WITH_PYTHON2 "build python2 bindings" ON)
+if(WITH_PYTHON2)
+  find_package(PythonInterp 2 REQUIRED)
+  find_package(PythonLibs 2 REQUIRED)
+endif()
 
-option(WITH_PYTHON3 "build python3 bindings" "CHECK")
-if(WITH_PYTHON3 MATCHES "check|CHECK")
-  find_package(Python3Interp 3 QUIET)
-  find_package(Python3Libs 3 QUIET)
-  if(PYTHON3INTERP_FOUND AND PYTHON3LIBS_FOUND)
-    set(WITH_PYTHON3 ON)
-  else()
-    set(WITH_PYTHON3 OFF)
-  endif()
-elseif(WITH_PYTHON3)
+option(WITH_PYTHON3 "build python3 bindings" OFF)
+if(WITH_PYTHON3)
   find_package(Python3Interp 3 REQUIRED)
   find_package(Python3Libs 3 REQUIRED)
+endif()
+
+# the major version of the python bindings as a dependency of other
+# targets
+if(WITH_PYTHON2)
+  set(PY_BINDING_INFIX "")
+else()
+  set(PY_BINDING_INFIX 3)
 endif()
 
 if(HAVE_XIO)
@@ -425,10 +423,9 @@ set(libcommon_files
   common/bloom_filter.cc
   common/Readahead.cc
   common/cmdparse.cc
-  common/escape.c
+  common/escape.cc
   common/url_escape.cc
   common/io_priority.cc
-  common/Clock.cc
   common/ceph_time.cc
   common/mempool.cc
   common/Throttle.cc
@@ -454,7 +451,6 @@ set(libcommon_files
   common/types.cc
   common/iso_8601.cc
   log/Log.cc
-  log/SubsystemMap.cc
   mon/MonCap.cc
   mon/MonClient.cc
   mon/MonMap.cc
@@ -535,6 +531,7 @@ set(libcommon_files
   common/dns_resolve.cc
   common/hostname.cc
   common/util.cc
+  librbd/Features.cc
   arch/probe.cc
   ${auth_files}
   ${mds_files})
@@ -626,7 +623,6 @@ set(ceph_common_deps
   json_spirit erasure_code ${LIB_RESOLV}
   Boost::thread
   Boost::system
-  Boost::regex
   Boost::random
   Boost::program_options
   Boost::date_time
@@ -682,7 +678,14 @@ if(WITH_DPDK)
 endif(WITH_DPDK)
 
 add_library(common STATIC ${ceph_common_objs})
-target_link_libraries(common ${ceph_common_deps})
+target_link_libraries(common
+  PRIVATE ${ceph_common_deps})
+if(WITH_STATIC_LIBSTDCXX)
+  # the apps linking against libcommon are daemons also written in C++, so we
+  # need to link them against libstdc++.
+  target_link_libraries(common
+    INTERFACE "-static-libstdc++ -static-libgcc")
+endif()
 
 add_library(ceph-common SHARED ${ceph_common_objs})
 target_link_libraries(ceph-common ${ceph_common_deps})
@@ -691,9 +694,9 @@ set_target_properties(ceph-common PROPERTIES
   SOVERSION 0
   INSTALL_RPATH "")
 if(WITH_STATIC_LIBSTDCXX)
+  # link libstdc++ into ceph-common to avoid including libstdc++ in every apps,
+  # to reduce the size of the app linking against ceph-common.
   set_target_properties(ceph-common PROPERTIES
-    LINK_FLAGS "-static-libstdc++ -static-libgcc")
-  set_target_properties(common PROPERTIES
     LINK_FLAGS "-static-libstdc++ -static-libgcc")
 endif()
 install(TARGETS ceph-common DESTINATION ${CMAKE_INSTALL_PKGLIBDIR})
@@ -731,6 +734,7 @@ if (WITH_MGR)
       mgr/ActivePyModules.cc
       mgr/OSDHealthMetricCollector.cc
       mgr/StandbyPyModules.cc
+      mgr/PyModule.cc
       mgr/PyModuleRegistry.cc
       mgr/PyModuleRunner.cc
       mgr/PyFormatter.cc
@@ -745,8 +749,8 @@ if (WITH_MGR)
   add_executable(ceph-mgr ${mgr_srcs}
                  $<TARGET_OBJECTS:heap_profiler_objs>)
   target_include_directories(ceph-mgr SYSTEM PRIVATE "${PYTHON_INCLUDE_DIRS}")
-  target_link_libraries(ceph-mgr osdc client global-static common
-      Boost::python ${PYTHON_LIBRARIES} ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} ${ALLOC_LIBS})
+  target_link_libraries(ceph-mgr osdc client global-static ceph-common
+      Boost::python ${MGR_PYTHON_LIBRARIES} ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} ${ALLOC_LIBS})
   install(TARGETS ceph-mgr DESTINATION bin)
 endif (WITH_MGR)
 
@@ -832,7 +836,7 @@ set(ceph_mon_srcs
 add_executable(ceph-mon ${ceph_mon_srcs}
   $<TARGET_OBJECTS:common_texttable_obj>)
 add_dependencies(ceph-mon erasure_code_plugins)
-target_link_libraries(ceph-mon mon os global-static common
+target_link_libraries(ceph-mon mon os global-static ceph-common
   ${EXTRALIBS}
   ${CMAKE_DL_LIBS})
 install(TARGETS ceph-mon DESTINATION bin)
@@ -863,7 +867,7 @@ set(ceph_osd_srcs
   ceph_osd.cc)
 add_executable(ceph-osd ${ceph_osd_srcs})
 add_dependencies(ceph-osd erasure_code_plugins)
-target_link_libraries(ceph-osd osd os global-static common
+target_link_libraries(ceph-osd osd os global-static ceph-common
   ${BLKID_LIBRARIES} ${RDMA_LIBRARIES})
 if(WITH_FUSE)
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
@@ -874,7 +878,7 @@ add_subdirectory(mds)
 set(ceph_mds_srcs
   ceph_mds.cc)
 add_executable(ceph-mds ${ceph_mds_srcs})
-target_link_libraries(ceph-mds mds ${CMAKE_DL_LIBS} global-static common
+target_link_libraries(ceph-mds mds ${CMAKE_DL_LIBS} global-static ceph-common
   Boost::thread)
 install(TARGETS ceph-mds DESTINATION bin)
 
@@ -918,9 +922,6 @@ endif()
 configure_file(${CMAKE_SOURCE_DIR}/src/ceph.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph @ONLY)
 
-configure_file(${CMAKE_SOURCE_DIR}/src/ceph-crush-location.in
-  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-crush-location @ONLY)
-
 configure_file(${CMAKE_SOURCE_DIR}/src/init-ceph.in
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/init-ceph @ONLY)
 
@@ -936,10 +937,8 @@ endif()
 
 install(PROGRAMS
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph
-  ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-crush-location
   ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-post-file
   ${CMAKE_SOURCE_DIR}/src/ceph-run
-  ${CMAKE_SOURCE_DIR}/src/ceph-rest-api
   ${CMAKE_SOURCE_DIR}/src/ceph-clsinfo
   DESTINATION bin)
 install(PROGRAMS
@@ -978,6 +977,10 @@ if(WITH_LIBCEPHFS)
   add_library(cephfs ${CEPH_SHARED} ${libcephfs_srcs})
   target_link_libraries(cephfs PRIVATE client ceph-common
     ${CRYPTO_LIBS} ${EXTRALIBS})
+  if(WITH_STATIC_LIBSTDCXX)
+    target_link_libraries(cephfs
+      INTERFACE "-static-libstdc++ -static-libgcc")
+  endif()
   if(ENABLE_SHARED)
     set_target_properties(cephfs PROPERTIES
       OUTPUT_NAME cephfs
@@ -998,7 +1001,7 @@ if(WITH_LIBCEPHFS)
     ceph_syn.cc
     client/SyntheticClient.cc)
   add_executable(ceph-syn ${ceph_syn_srcs})
-  target_link_libraries(ceph-syn client global-static common)
+  target_link_libraries(ceph-syn client global-static ceph-common)
 
   set(mount_ceph_srcs
     mount/mount.ceph.c)
@@ -1019,7 +1022,7 @@ if(WITH_FUSE)
     client/fuse_ll.cc)
   add_executable(ceph-fuse ${ceph_fuse_srcs})
   target_link_libraries(ceph-fuse ${ALLOC_LIBS} ${FUSE_LIBRARIES}
-    client common global-static)
+    client ceph-common global-static)
   set_target_properties(ceph-fuse PROPERTIES COMPILE_FLAGS "-I${FUSE_INCLUDE_DIRS}")
   install(TARGETS ceph-fuse DESTINATION bin)
   install(PROGRAMS mount.fuse.ceph DESTINATION ${CMAKE_INSTALL_SBINDIR})
@@ -1058,12 +1061,6 @@ if(WITH_RADOSGW)
 	"${CMAKE_SOURCE_DIR}/src/civetweb/include")
   set_property(TARGET civetweb_common_objs
     APPEND PROPERTY COMPILE_DEFINITIONS USE_IPV6=1)
-  if(USE_OPENSSL)
-    set_property(TARGET civetweb_common_objs
-      APPEND PROPERTY COMPILE_DEFINITIONS NO_SSL_DL=1)
-    target_include_directories(civetweb_common_objs SYSTEM PRIVATE
-      "${SSL_INCLUDE_DIR}")
-  endif(USE_OPENSSL)
   if (LIBSSL_SONAME)
     set_property(TARGET civetweb_common_objs
       APPEND PROPERTY COMPILE_DEFINITIONS SSL_LIB="${LIBSSL_SONAME}")
@@ -1097,13 +1094,12 @@ add_custom_target(vstart-base DEPENDS
     monmaptool
     crushtool
     rados
-    cython_rados
-    )
+    cython${PY_BINDING_INFIX}_rados)
 
 add_custom_target(vstart DEPENDS
     vstart-base
     ceph-mds
-    cython_rbd)
+    cython${PY_BINDING_INFIX}_rbd)
 if(WITH_RADOSGW)
   add_dependencies(vstart radosgw radosgw-admin)
 endif(WITH_RADOSGW)
@@ -1116,7 +1112,7 @@ endif(WITH_LTTNG)
 add_custom_target(cephfs_testing DEPENDS
     vstart
     rados
-    cython_modules
+    cython${PY_BINDING_INFIX}_modules
     cephfs
     cls_cephfs
     ceph-fuse

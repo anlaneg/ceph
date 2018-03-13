@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <sstream>
 
+#include "include/uuid.h"
 #include "common/bit_vector.hpp"
 #include "common/errno.h"
 #include "objclass/objclass.h"
@@ -60,11 +61,10 @@ CLS_NAME(rbd)
 
 #define RBD_MAX_KEYS_READ 64
 #define RBD_SNAP_KEY_PREFIX "snapshot_"
+#define RBD_SNAP_CHILDREN_KEY_PREFIX "snap_children_"
 #define RBD_DIR_ID_KEY_PREFIX "id_"
 #define RBD_DIR_NAME_KEY_PREFIX "name_"
 #define RBD_METADATA_KEY_PREFIX "metadata_"
-
-#define GROUP_SNAP_SEQ "snap_seq"
 
 static int snap_read_header(cls_method_context_t hctx, bufferlist& bl)
 {
@@ -110,8 +110,7 @@ static void key_from_snap_id(snapid_t snap_id, string *out)
   *out = oss.str();
 }
 
-static snapid_t snap_id_from_key(const string &key)
-{
+static snapid_t snap_id_from_key(const string &key) {
   istringstream iss(key);
   uint64_t id;
   iss.ignore(strlen(RBD_SNAP_KEY_PREFIX)) >> std::hex >> id;
@@ -132,12 +131,25 @@ static int read_key(cls_method_context_t hctx, const string &key, T *out)
 
   try {
     bufferlist::iterator it = bl.begin();
-    ::decode(*out, it);
+    decode(*out, it);
   } catch (const buffer::error &err) {
     CLS_ERR("error decoding %s", key.c_str());
     return -EIO;
   }
 
+  return 0;
+}
+
+template <typename T>
+static int write_key(cls_method_context_t hctx, const string &key, const T &t) {
+  bufferlist bl;
+  encode(t, bl);
+
+  int r = cls_cxx_map_set_val(hctx, key, &bl);
+  if (r < 0) {
+    CLS_ERR("failed to set omap key: %s", key.c_str());
+    return r;
+  }
   return 0;
 }
 
@@ -160,6 +172,113 @@ static bool is_valid_id(const string &id) {
   }
   return true;
 }
+
+namespace image {
+
+std::string snap_children_key_from_snap_id(snapid_t snap_id)
+{
+  ostringstream oss;
+  oss << RBD_SNAP_CHILDREN_KEY_PREFIX
+      << std::setw(16) << std::setfill('0') << std::hex << snap_id;
+  return oss.str();
+}
+
+int set_op_features(cls_method_context_t hctx, uint64_t op_features,
+                    uint64_t mask) {
+  uint64_t orig_features;
+  int r = read_key(hctx, "features", &orig_features);
+  if (r < 0) {
+    CLS_ERR("failed to read features off disk: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  uint64_t orig_op_features = 0;
+  r = read_key(hctx, "op_features", &orig_op_features);
+  if (r < 0 && r != -ENOENT) {
+    CLS_ERR("Could not read op features off disk: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  op_features = (orig_op_features & ~mask) | (op_features & mask);
+  CLS_LOG(10, "op_features=%" PRIu64 " orig_op_features=%" PRIu64,
+          op_features, orig_op_features);
+  if (op_features == orig_op_features) {
+    return 0;
+  }
+
+  uint64_t features = orig_features;
+  if (op_features == 0ULL) {
+    features &= ~RBD_FEATURE_OPERATIONS;
+
+    r = cls_cxx_map_remove_key(hctx, "op_features");
+    if (r == -ENOENT) {
+      r = 0;
+    }
+  } else {
+    features |= RBD_FEATURE_OPERATIONS;
+
+    bufferlist bl;
+    encode(op_features, bl);
+    r = cls_cxx_map_set_val(hctx, "op_features", &bl);
+  }
+
+  if (r < 0) {
+    CLS_ERR("error updating op features: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  if (features != orig_features) {
+    bufferlist bl;
+    encode(features, bl);
+    r = cls_cxx_map_set_val(hctx, "features", &bl);
+    if (r < 0) {
+      CLS_ERR("error updating features: %s", cpp_strerror(r).c_str());
+      return r;
+    }
+  }
+
+  return 0;
+}
+
+template<typename L>
+int snapshot_iterate(cls_method_context_t hctx, L& lambda) {
+  int max_read = RBD_MAX_KEYS_READ;
+  string last_read = RBD_SNAP_KEY_PREFIX;
+  bool more = false;
+  do {
+    map<string, bufferlist> vals;
+    int r = cls_cxx_map_get_vals(hctx, last_read, RBD_SNAP_KEY_PREFIX,
+			         max_read, &vals, &more);
+    if (r < 0) {
+      return r;
+    }
+
+    cls_rbd_snap snap_meta;
+    for (auto& val : vals) {
+      bufferlist::iterator iter = val.second.begin();
+      try {
+	decode(snap_meta, iter);
+      } catch (const buffer::error &err) {
+	CLS_ERR("error decoding snapshot metadata for snap : %s",
+	        val.first.c_str());
+	return -EIO;
+      }
+
+      r = lambda(snap_meta);
+      if (r < 0) {
+        return r;
+      }
+    }
+
+    if (!vals.empty()) {
+      last_read = vals.rbegin()->first;
+    }
+  } while (more);
+
+  return 0;
+}
+
+} // namespace image
 
 /**
  * Initialize the header with basic metadata.
@@ -188,12 +307,12 @@ int create(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(size, iter);
-    ::decode(order, iter);
-    ::decode(features, iter);
-    ::decode(object_prefix, iter);
+    decode(size, iter);
+    decode(order, iter);
+    decode(features, iter);
+    decode(object_prefix, iter);
     if (!iter.end()) {
-      ::decode(data_pool_id, iter);
+      decode(data_pool_id, iter);
     }
   } catch (const buffer::error &err) {
     return -EINVAL;
@@ -226,12 +345,12 @@ int create(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   bufferlist create_timestampbl;
   uint64_t snap_seq = 0;
   utime_t create_timestamp = ceph_clock_now();
-  ::encode(size, sizebl);
-  ::encode(order, orderbl);
-  ::encode(features, featuresbl);
-  ::encode(object_prefix, object_prefixbl);
-  ::encode(snap_seq, snap_seqbl);
-  ::encode(create_timestamp, create_timestampbl);
+  encode(size, sizebl);
+  encode(order, orderbl);
+  encode(features, featuresbl);
+  encode(object_prefix, object_prefixbl);
+  encode(snap_seq, snap_seqbl);
+  encode(create_timestamp, create_timestampbl);
 
   map<string, bufferlist> omap_vals;
   omap_vals["size"] = sizebl;
@@ -248,7 +367,7 @@ int create(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
 
     bufferlist data_pool_id_bl;
-    ::encode(data_pool_id, data_pool_id_bl);
+    encode(data_pool_id, data_pool_id_bl);
     omap_vals["data_pool_id"] = data_pool_id_bl;
   } else if (data_pool_id != -1) {
     CLS_ERR("data pool provided with feature disabled");
@@ -274,34 +393,20 @@ int create(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
  */
 int get_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
-  uint64_t snap_id;
   bool read_only = false;
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    uint64_t snap_id;
+    decode(snap_id, iter);
     if (!iter.end()) {
-      ::decode(read_only, iter);
+      decode(read_only, iter);
     }
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
-  CLS_LOG(20, "get_features snap_id=%" PRIu64 ", read_only=%d",
-          snap_id, read_only);
-
-  // NOTE: keep this deprecated snapshot logic to support negative
-  // test cases in older (pre-Infernalis) releases. Remove once older
-  // releases are no longer supported.
-  if (snap_id != CEPH_NOSNAP) {
-    cls_rbd_snap snap;
-    string snapshot_key;
-    key_from_snap_id(snap_id, &snapshot_key);
-    int r = read_key(hctx, snapshot_key, &snap);
-    if (r < 0) {
-      return r;
-    }
-  }
+  CLS_LOG(20, "get_features read_only=%d", read_only);
 
   uint64_t features;
   int r = read_key(hctx, "features", &features);
@@ -312,8 +417,8 @@ int get_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   uint64_t incompatible = (read_only ? features & RBD_FEATURES_INCOMPATIBLE :
 				       features & RBD_FEATURES_RW_INCOMPATIBLE);
-  ::encode(features, *out);
-  ::encode(incompatible, *out);
+  encode(features, *out);
+  encode(incompatible, *out);
   return 0;
 }
 
@@ -335,8 +440,8 @@ int set_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   uint64_t mask;
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(features, iter);
-    ::decode(mask, iter);
+    decode(features, iter);
+    decode(mask, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -349,6 +454,12 @@ int set_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     CLS_ERR("Could not read image's features off disk: %s",
             cpp_strerror(r).c_str());
     return r;
+  }
+
+  if ((mask & RBD_FEATURES_INTERNAL) != 0ULL) {
+    CLS_ERR("Attempting to set internal feature: %" PRIu64,
+            static_cast<uint64_t>(mask & RBD_FEATURES_INTERNAL));
+    return -EINVAL;
   }
 
   // newer clients might attempt to mask off features we don't support
@@ -374,7 +485,7 @@ int set_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
           features, orig_features);
 
   bufferlist bl;
-  ::encode(features, bl);
+  encode(features, bl);
   r = cls_cxx_map_set_val(hctx, "features", &bl);
   if (r < 0) {
     CLS_ERR("error updating features: %s", cpp_strerror(r).c_str());
@@ -422,7 +533,7 @@ int get_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -452,8 +563,8 @@ int get_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     size = snap.image_size;
   }
 
-  ::encode(order, *out);
-  ::encode(size, *out);
+  encode(order, *out);
+  encode(size, *out);
 
   return 0;
 }
@@ -471,7 +582,7 @@ int set_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(size, iter);
+    decode(size, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -489,7 +600,7 @@ int set_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
           (unsigned long long)orig_size);
 
   bufferlist sizebl;
-  ::encode(size, sizebl);
+  encode(size, sizebl);
   r = cls_cxx_map_set_val(hctx, "size", &sizebl);
   if (r < 0) {
     CLS_ERR("error writing snapshot metadata: %s", cpp_strerror(r).c_str());
@@ -508,7 +619,7 @@ int set_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     if (parent.exists() && parent.overlap > size) {
       bufferlist parentbl;
       parent.overlap = size;
-      ::encode(parent, parentbl);
+      encode(parent, parentbl);
       r = cls_cxx_map_set_val(hctx, "parent", &parentbl);
       if (r < 0) {
 	CLS_ERR("error writing parent: %s", cpp_strerror(r).c_str());
@@ -552,7 +663,7 @@ int get_protection_status(cls_method_context_t hctx, bufferlist *in,
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     CLS_LOG(20, "get_protection_status: invalid decode");
     return -EINVAL;
@@ -583,7 +694,7 @@ int get_protection_status(cls_method_context_t hctx, bufferlist *in,
     return -EIO;
   }
 
-  ::encode(snap.protection_status, *out);
+  encode(snap.protection_status, *out);
   return 0;
 }
 
@@ -606,8 +717,8 @@ int set_protection_status(cls_method_context_t hctx, bufferlist *in,
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
-    ::decode(status, iter);
+    decode(snap_id, iter);
+    decode(status, iter);
   } catch (const buffer::error &err) {
     CLS_LOG(20, "set_protection_status: invalid decode");
     return -EINVAL;
@@ -646,7 +757,7 @@ int set_protection_status(cls_method_context_t hctx, bufferlist *in,
 
   snap.protection_status = status;
   bufferlist snapshot_bl;
-  ::encode(snap, snapshot_bl);
+  encode(snap, snapshot_bl);
   r = cls_cxx_map_set_val(hctx, snapshot_key, &snapshot_bl);
   if (r < 0) {
     CLS_ERR("error writing snapshot metadata: %s", cpp_strerror(r).c_str());
@@ -703,8 +814,8 @@ int get_stripe_unit_count(cls_method_context_t hctx, bufferlist *in, bufferlist 
   if (r < 0)
     return r;
 
-  ::encode(stripe_unit, *out);
-  ::encode(stripe_count, *out);
+  encode(stripe_unit, *out);
+  encode(stripe_count, *out);
   return 0;
 }
 
@@ -723,8 +834,8 @@ int set_stripe_unit_count(cls_method_context_t hctx, bufferlist *in, bufferlist 
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(stripe_unit, iter);
-    ::decode(stripe_count, iter);
+    decode(stripe_unit, iter);
+    decode(stripe_count, iter);
   } catch (const buffer::error &err) {
     CLS_LOG(20, "set_stripe_unit_count: invalid decode");
     return -EINVAL;
@@ -756,14 +867,14 @@ int set_stripe_unit_count(cls_method_context_t hctx, bufferlist *in, bufferlist 
   }
 
   bufferlist bl, bl2;
-  ::encode(stripe_unit, bl);
+  encode(stripe_unit, bl);
   r = cls_cxx_map_set_val(hctx, "stripe_unit", &bl);
   if (r < 0) {
     CLS_ERR("error writing stripe_unit metadata: %s", cpp_strerror(r).c_str());
     return r;
   }
 
-  ::encode(stripe_count, bl2);
+  encode(stripe_count, bl2);
   r = cls_cxx_map_set_val(hctx, "stripe_count", &bl2);
   if (r < 0) {
     CLS_ERR("error writing stripe_count metadata: %s", cpp_strerror(r).c_str());
@@ -788,14 +899,14 @@ int get_create_timestamp(cls_method_context_t hctx, bufferlist *in, bufferlist *
   } else {
     try {
       bufferlist::iterator it = bl.begin();
-      ::decode(timestamp, it);
+      decode(timestamp, it);
     } catch (const buffer::error &err) {
       CLS_ERR("could not decode create_timestamp");
       return -EIO;
     }
   }
 
-  ::encode(timestamp, *out);
+  encode(timestamp, *out);
   return 0;
 }
 
@@ -815,7 +926,7 @@ int get_flags(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   uint64_t snap_id;
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -840,7 +951,7 @@ int get_flags(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     flags = snap.flags;
   }
 
-  ::encode(flags, *out);
+  encode(flags, *out);
   return 0;
 }
 
@@ -864,10 +975,10 @@ int set_flags(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   uint64_t snap_id = CEPH_NOSNAP;
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(flags, iter);
-    ::decode(mask, iter);
+    decode(flags, iter);
+    decode(mask, iter);
     if (!iter.end()) {
-      ::decode(snap_id, iter);
+      decode(snap_id, iter);
     }
   } catch (const buffer::error &err) {
     return -EINVAL;
@@ -904,13 +1015,13 @@ int set_flags(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   if (snap_id == CEPH_NOSNAP) {
     bufferlist bl;
-    ::encode(flags, bl);
+    encode(flags, bl);
     r = cls_cxx_map_set_val(hctx, "flags", &bl);
   } else {
     snap_meta.flags = flags;
 
     bufferlist bl;
-    ::encode(snap_meta, bl);
+    encode(snap_meta, bl);
     r = cls_cxx_map_set_val(hctx, snap_meta_key, &bl);
   }
 
@@ -919,6 +1030,63 @@ int set_flags(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
   return 0;
+}
+
+/**
+ * Get the operation-based image features
+ *
+ * Input:
+ *
+ * Output:
+ * @param bitmask of enabled op features (uint64_t)
+ * @returns 0 on success, negative error code on failure
+ */
+int op_features_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  CLS_LOG(20, "op_features_get");
+
+  uint64_t op_features = 0;
+  int r = read_key(hctx, "op_features", &op_features);
+  if (r < 0 && r != -ENOENT) {
+    CLS_ERR("failed to read op features off disk: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  encode(op_features, *out);
+  return 0;
+}
+
+/**
+ * Set the operation-based image features
+ *
+ * Input:
+ * @param op_features image op features
+ * @param mask image op feature mask
+ *
+ * Output:
+ * none
+ *
+ * @returns 0 on success, negative error code upon failure
+ */
+int op_features_set(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  uint64_t op_features;
+  uint64_t mask;
+  bufferlist::iterator iter = in->begin();
+  try {
+    decode(op_features, iter);
+    decode(mask, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  uint64_t unsupported_op_features = (mask & ~RBD_OPERATION_FEATURES_ALL);
+  if (unsupported_op_features != 0ULL) {
+    CLS_ERR("unsupported op features: %" PRIu64, unsupported_op_features);
+    return -EINVAL;
+  }
+
+  return image::set_op_features(hctx, op_features, mask);
 }
 
 /**
@@ -941,7 +1109,7 @@ int get_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -970,10 +1138,10 @@ int get_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  ::encode(parent.pool, *out);
-  ::encode(parent.id, *out);
-  ::encode(parent.snapid, *out);
-  ::encode(parent.overlap, *out);
+  encode(parent.pool, *out);
+  encode(parent.id, *out);
+  encode(parent.snapid, *out);
+  encode(parent.overlap, *out);
   return 0;
 }
 
@@ -997,10 +1165,10 @@ int set_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(pool, iter);
-    ::decode(id, iter);
-    ::decode(snapid, iter);
-    ::decode(size, iter);
+    decode(pool, iter);
+    decode(id, iter);
+    decode(snapid, iter);
+    decode(size, iter);
   } catch (const buffer::error &err) {
     CLS_LOG(20, "cls_rbd::set_parent: invalid decode");
     return -EINVAL;
@@ -1047,8 +1215,8 @@ int set_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   parent.pool = pool;
   parent.id = id;
   parent.snapid = snapid;
-  parent.overlap = MIN(our_size, size);
-  ::encode(parent, parentbl);
+  parent.overlap = std::min(our_size, size);
+  encode(parent, parentbl);
   r = cls_cxx_map_set_val(hctx, "parent", &parentbl);
   if (r < 0) {
     CLS_ERR("error writing parent: %s", cpp_strerror(r).c_str());
@@ -1082,51 +1250,30 @@ int remove_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  // remove the parent from all snapshots
-  if ((features & RBD_FEATURE_DEEP_FLATTEN) != 0) {
-    int max_read = RBD_MAX_KEYS_READ;
-    vector<snapid_t> snap_ids;
-    string last_read = RBD_SNAP_KEY_PREFIX;
-    bool more;
+  auto flatten_lambda = [hctx, features](const cls_rbd_snap& snap_meta) {
+    if (snap_meta.parent.pool != -1) {
+      if ((features & RBD_FEATURE_DEEP_FLATTEN) != 0ULL) {
+        // remove parent reference from snapshot
+        cls_rbd_snap snap_meta_copy = snap_meta;
+        snap_meta_copy.parent = cls_rbd_parent();
 
-    do {
-      set<string> keys;
-      r = cls_cxx_map_get_keys(hctx, last_read, max_read, &keys, &more);
-      if (r < 0) {
-        return r;
-      }
-
-      for (std::set<string>::const_iterator it = keys.begin();
-           it != keys.end(); ++it) {
-        if ((*it).find(RBD_SNAP_KEY_PREFIX) != 0) {
-	  break;
-        }
-
-        uint64_t snap_id = snap_id_from_key(*it);
-        cls_rbd_snap snap_meta;
-        r = read_key(hctx, *it, &snap_meta);
+        std::string snap_key;
+        key_from_snap_id(snap_meta_copy.id, &snap_key);
+        int r = write_key(hctx, snap_key, snap_meta_copy);
         if (r < 0) {
-          CLS_ERR("Could not read snapshot: snap_id=%" PRIu64 ": %s",
-                  snap_id, cpp_strerror(r).c_str());
           return r;
         }
-
-        snap_meta.parent = cls_rbd_parent();
-
-        bufferlist bl;
-        ::encode(snap_meta, bl);
-        r = cls_cxx_map_set_val(hctx, *it, &bl);
-        if (r < 0) {
-          CLS_ERR("Could not update snapshot: snap_id=%" PRIu64 ": %s",
-                  snap_id, cpp_strerror(r).c_str());
-          return r;
-        }
+      } else {
+        return -EEXIST;
       }
+    }
+    return 0;
+  };
 
-      if (!keys.empty()) {
-        last_read = *(keys.rbegin());
-      }
-    } while (more);
+  r = image::snapshot_iterate(hctx, flatten_lambda);
+  bool has_child_snaps = (r == -EEXIST);
+  if (r < 0 && r != -EEXIST) {
+    return r;
   }
 
   cls_rbd_parent parent;
@@ -1139,6 +1286,15 @@ int remove_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     CLS_ERR("error removing parent: %s", cpp_strerror(r).c_str());
     return r;
   }
+
+  if (!has_child_snaps) {
+    // disable clone child op feature if no longer associated
+    r = image::set_op_features(hctx, 0, RBD_OPERATION_FEATURE_CLONE_CHILD);
+    if (r < 0) {
+      return r;
+    }
+  }
+
   return 0;
 }
 
@@ -1150,9 +1306,9 @@ static int decode_parent_common(bufferlist::iterator& it, uint64_t *pool_id,
 				string *image_id, snapid_t *snap_id)
 {
   try {
-    ::decode(*pool_id, it);
-    ::decode(*image_id, it);
-    ::decode(*snap_id, it);
+    decode(*pool_id, it);
+    decode(*image_id, it);
+    decode(*snap_id, it);
   } catch (const buffer::error &err) {
     CLS_ERR("error decoding parent spec");
     return -EINVAL;
@@ -1176,7 +1332,7 @@ static int decode_parent_and_child(bufferlist *in, uint64_t *pool_id,
   if (r < 0)
     return r;
   try {
-    ::decode(*c_image_id, it);
+    decode(*c_image_id, it);
   } catch (const buffer::error &err) {
     CLS_ERR("error decoding child image id");
     return -EINVAL;
@@ -1187,9 +1343,9 @@ static int decode_parent_and_child(bufferlist *in, uint64_t *pool_id,
 static string parent_key(uint64_t pool_id, string image_id, snapid_t snap_id)
 {
   bufferlist key_bl;
-  ::encode(pool_id, key_bl);
-  ::encode(image_id, key_bl);
-  ::encode(snap_id, key_bl);
+  encode(pool_id, key_bl);
+  encode(image_id, key_bl);
+  encode(snap_id, key_bl);
   return string(key_bl.c_str(), key_bl.length());
 }
 
@@ -1244,7 +1400,7 @@ int add_child(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   // write back
   bufferlist childbl;
-  ::encode(children, childbl);
+  encode(children, childbl);
   r = cls_cxx_map_set_val(hctx, key, &childbl);
   if (r < 0)
     CLS_LOG(20, "add_child: omap write failed: %s", cpp_strerror(r).c_str());
@@ -1306,7 +1462,7 @@ int remove_child(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   } else {
     // write back shortened children list
     bufferlist childbl;
-    ::encode(children, childbl);
+    encode(children, childbl);
     r = cls_cxx_map_set_val(hctx, key, &childbl);
     if (r < 0)
       CLS_LOG(20, "remove_child: write omap failed: %s", cpp_strerror(r).c_str());
@@ -1349,7 +1505,7 @@ int get_children(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
       CLS_LOG(20, "get_children: read omap failed: %s", cpp_strerror(r).c_str());
     return r;
   }
-  ::encode(children, *out);
+  encode(children, *out);
   return 0;
 }
 
@@ -1400,8 +1556,8 @@ int get_snapcontext(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   // snap_ids must be descending in a snap context
   std::reverse(snap_ids.begin(), snap_ids.end());
 
-  ::encode(snap_seq, *out);
-  ::encode(snap_ids, *out);
+  encode(snap_seq, *out);
+  encode(snap_ids, *out);
 
   return 0;
 }
@@ -1423,7 +1579,7 @@ int get_object_prefix(cls_method_context_t hctx, bufferlist *in, bufferlist *out
     return r;
   }
 
-  ::encode(object_prefix, *out);
+  encode(object_prefix, *out);
 
   return 0;
 }
@@ -1449,17 +1605,25 @@ int get_data_pool(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  ::encode(data_pool_id, *out);
+  encode(data_pool_id, *out);
   return 0;
 }
 
+/**
+ * Input:
+ * @param snap_id which snapshot to query
+ *
+ * Output:
+ * @param name (string) of the snapshot
+ * @returns 0 on success, negative error code on failure
+ */
 int get_snapshot_name(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
   uint64_t snap_id;
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -1476,18 +1640,28 @@ int get_snapshot_name(cls_method_context_t hctx, bufferlist *in, bufferlist *out
   if (r < 0)
     return r;
 
-  ::encode(snap.name, *out);
+  encode(snap.name, *out);
 
   return 0;
 }
 
+/**
+ * Input:
+ * @param snap_id which snapshot to query
+ *
+ * Output:
+ * @param timestamp (utime_t) of the snapshot
+ * @returns 0 on success, negative error code on failure
+ *
+ * NOTE: deprecated - remove this method after Luminous is unsupported
+ */
 int get_snapshot_timestamp(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
   uint64_t snap_id;
-  
+
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -1497,7 +1671,7 @@ int get_snapshot_timestamp(cls_method_context_t hctx, bufferlist *in, bufferlist
   if (snap_id == CEPH_NOSNAP) {
     return -EINVAL;
   }
-  
+
   cls_rbd_snap snap;
   string snapshot_key;
   key_from_snap_id(snap_id, &snapshot_key);
@@ -1506,33 +1680,30 @@ int get_snapshot_timestamp(cls_method_context_t hctx, bufferlist *in, bufferlist
     return r;
   }
 
-  ::encode(snap.timestamp, *out);
+  encode(snap.timestamp, *out);
   return 0;
 }
 
 /**
- * Retrieve namespace of a snapshot.
- *
  * Input:
- * @param snap_id id of the snapshot (uint64_t)
+ * @param snap_id which snapshot to query
  *
  * Output:
- * @param SnapshotNamespace
- * @returns 0 on success, negative error code on failure.
+ * @param snapshot (cls::rbd::SnapshotInfo)
+ * @returns 0 on success, negative error code on failure
  */
-int get_snapshot_namespace(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+int snapshot_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
   uint64_t snap_id;
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
-  CLS_LOG(20, "get_snapshot_namespace snap_id=%" PRIu64, snap_id);
-
+  CLS_LOG(20, "snapshot_get snap_id=%llu", (unsigned long long)snap_id);
   if (snap_id == CEPH_NOSNAP) {
     return -EINVAL;
   }
@@ -1545,8 +1716,10 @@ int get_snapshot_namespace(cls_method_context_t hctx, bufferlist *in, bufferlist
     return r;
   }
 
-  ::encode(snap.snapshot_namespace, *out);
-
+  cls::rbd::SnapshotInfo snapshot_info{snap.id, snap.snapshot_namespace,
+                                       snap.name, snap.image_size,
+                                       snap.timestamp, snap.child_count};
+  encode(snapshot_info, *out);
   return 0;
 }
 
@@ -1556,7 +1729,7 @@ int get_snapshot_namespace(cls_method_context_t hctx, bufferlist *in, bufferlist
  * Input:
  * @param snap_name name of the snapshot (string)
  * @param snap_id id of the snapshot (uint64_t)
- * @param snap_namespace namespace of the snapshot (cls::rbd::SnapshotNamespaceOnDisk)
+ * @param snap_namespace namespace of the snapshot (cls::rbd::SnapshotNamespace)
  *
  * Output:
  * @returns 0 on success, negative error code on failure.
@@ -1571,17 +1744,17 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(snap_meta.name, iter);
-    ::decode(snap_meta.id, iter);
+    decode(snap_meta.name, iter);
+    decode(snap_meta.id, iter);
     if (!iter.end()) {
-      ::decode(snap_meta.snapshot_namespace, iter);
+      decode(snap_meta.snapshot_namespace, iter);
     }
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
   if (boost::get<cls::rbd::UnknownSnapshotNamespace>(
-        &snap_meta.snapshot_namespace.snapshot_namespace) != nullptr) {
+        &snap_meta.snapshot_namespace) != nullptr) {
     CLS_ERR("Unknown snapshot namespace provided");
     return -EINVAL;
   }
@@ -1609,11 +1782,6 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     CLS_ERR("Could not read image's size off disk: %s", cpp_strerror(r).c_str());
     return r;
   }
-  r = read_key(hctx, "features", &snap_meta.features);
-  if (r < 0) {
-    CLS_ERR("Could not read image's features off disk: %s", cpp_strerror(r).c_str());
-    return r;
-  }
   r = read_key(hctx, "flags", &snap_meta.flags);
   if (r < 0 && r != -ENOENT) {
     CLS_ERR("Could not read image's flags off disk: %s", cpp_strerror(r).c_str());
@@ -1630,48 +1798,31 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   snap_meta.timestamp = ceph_clock_now();
 
-  int max_read = RBD_MAX_KEYS_READ;
   uint64_t total_read = 0;
-  string last_read = RBD_SNAP_KEY_PREFIX;
-  bool more;
-  do {
-    map<string, bufferlist> vals;
-    r = cls_cxx_map_get_vals(hctx, last_read, RBD_SNAP_KEY_PREFIX,
-			     max_read, &vals, &more);
-    if (r < 0)
-      return r;
-
-    total_read += vals.size();
-    if (total_read >= snap_limit) {
-      CLS_ERR("Attempt to create snapshot over limit of %" PRIu64, snap_limit);
-      return -EDQUOT;
-    }
-
-    for (map<string, bufferlist>::iterator it = vals.begin();
-	 it != vals.end(); ++it) {
-      cls_rbd_snap old_meta;
-      bufferlist::iterator iter = it->second.begin();
-      try {
-	::decode(old_meta, iter);
-      } catch (const buffer::error &err) {
-	snapid_t snap_id = snap_id_from_key(it->first);
-	CLS_ERR("error decoding snapshot metadata for snap_id: %llu",
-	        (unsigned long long)snap_id.val);
-	return -EIO;
+  auto pre_check_lambda =
+    [&snap_meta, &total_read, snap_limit](const cls_rbd_snap& old_meta) {
+      ++total_read;
+      if (total_read >= snap_limit) {
+        CLS_ERR("Attempt to create snapshot over limit of %" PRIu64,
+                snap_limit);
+        return -EDQUOT;
       }
+
       if ((snap_meta.name == old_meta.name &&
 	    snap_meta.snapshot_namespace == old_meta.snapshot_namespace) ||
 	  snap_meta.id == old_meta.id) {
-	CLS_LOG(20, "snap_name %s or snap_id %llu matches existing snap %s %llu",
-		snap_meta.name.c_str(), (unsigned long long)snap_meta.id.val,
-		old_meta.name.c_str(), (unsigned long long)old_meta.id.val);
+	CLS_LOG(20, "snap_name %s or snap_id %" PRIu64 " matches existing snap "
+                "%s %" PRIu64, snap_meta.name.c_str(), snap_meta.id.val,
+		old_meta.name.c_str(), old_meta.id.val);
 	return -EEXIST;
       }
-    }
+      return 0;
+    };
 
-    if (!vals.empty())
-      last_read = vals.rbegin()->first;
-  } while (more);
+  r = image::snapshot_iterate(hctx, pre_check_lambda);
+  if (r < 0) {
+    return r;
+  }
 
   // snapshot inherits parent, if any
   cls_rbd_parent parent;
@@ -1683,8 +1834,8 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   }
 
   bufferlist snap_metabl, snap_seqbl;
-  ::encode(snap_meta, snap_metabl);
-  ::encode(snap_meta.id, snap_seqbl);
+  encode(snap_meta, snap_metabl);
+  encode(snap_meta.id, snap_seqbl);
 
   string snapshot_key;
   key_from_snap_id(snap_meta.id, &snapshot_key);
@@ -1697,9 +1848,18 @@ int snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
+  if (cls::rbd::get_snap_namespace_type(snap_meta.snapshot_namespace) ==
+        cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+    // add snap_trash feature bit if not already enabled
+    r = image::set_op_features(hctx, RBD_OPERATION_FEATURE_SNAP_TRASH,
+                               RBD_OPERATION_FEATURE_SNAP_TRASH);
+    if (r < 0) {
+      return r;
+    }
+  }
+
   return 0;
 }
-
 
 /**
  * rename snapshot .
@@ -1715,60 +1875,54 @@ int snapshot_rename(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
   bufferlist snap_namebl, snap_idbl;
   snapid_t src_snap_id;
-  string src_snap_key,dst_snap_name;
+  string dst_snap_name;
   cls_rbd_snap snap_meta;
   int r;
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(src_snap_id, iter);
-    ::decode(dst_snap_name, iter);
+    decode(src_snap_id, iter);
+    decode(dst_snap_name, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
-  
-  CLS_LOG(20, "snapshot_rename id=%llu dst_name=%s", (unsigned long long)src_snap_id.val,
-	 dst_snap_name.c_str());
 
-  int max_read = RBD_MAX_KEYS_READ;
-  string last_read = RBD_SNAP_KEY_PREFIX;
-  bool more;
-  do {
-    map<string, bufferlist> vals;
-    r = cls_cxx_map_get_vals(hctx, last_read, RBD_SNAP_KEY_PREFIX,
-			     max_read, &vals, &more);
-    if (r < 0)
-      return r;
+  CLS_LOG(20, "snapshot_rename id=%" PRIu64 ", dst_name=%s",
+          src_snap_id.val, dst_snap_name.c_str());
 
-    for (map<string, bufferlist>::iterator it = vals.begin();
-	 it != vals.end(); ++it) {
-      bufferlist::iterator iter = it->second.begin();
-      try {
-	::decode(snap_meta, iter);
-      } catch (const buffer::error &err) {
-	CLS_ERR("error decoding snapshot metadata for snap : %s",
-	        dst_snap_name.c_str());
-	return -EIO;
-      }
-      if (dst_snap_name == snap_meta.name) {
-	CLS_LOG(20, "snap_name %s  matches existing snap with snap id = %llu ",
-		dst_snap_name.c_str(), (unsigned long long)snap_meta.id.val);
-        return -EEXIST;
-      }
+  auto duplicate_name_lambda = [&dst_snap_name](const cls_rbd_snap& snap_meta) {
+    if (cls::rbd::get_snap_namespace_type(snap_meta.snapshot_namespace) ==
+          cls::rbd::SNAPSHOT_NAMESPACE_TYPE_USER &&
+        snap_meta.name == dst_snap_name) {
+      CLS_LOG(20, "snap_name %s matches existing snap with snap id %" PRIu64,
+              dst_snap_name.c_str(), snap_meta.id.val);
+      return -EEXIST;
     }
-    if (!vals.empty())
-      last_read = vals.rbegin()->first;
-  } while (more);
-
-  key_from_snap_id(src_snap_id, &src_snap_key);
-  r = read_key(hctx, src_snap_key, &snap_meta); 
-  if (r == -ENOENT) {
-    CLS_LOG(20, "cannot find existing snap with snap id = %llu ", (unsigned long long)src_snap_id);
+    return 0;
+  };
+  r = image::snapshot_iterate(hctx, duplicate_name_lambda);
+  if (r < 0) {
     return r;
   }
+
+  std::string src_snap_key;
+  key_from_snap_id(src_snap_id, &src_snap_key);
+  r = read_key(hctx, src_snap_key, &snap_meta);
+  if (r == -ENOENT) {
+    CLS_LOG(20, "cannot find existing snap with snap id = %" PRIu64,
+            src_snap_id.val);
+    return r;
+  }
+
+  if (cls::rbd::get_snap_namespace_type(snap_meta.snapshot_namespace) !=
+        cls::rbd::SNAPSHOT_NAMESPACE_TYPE_USER) {
+    // can only rename user snapshots
+    return -EINVAL;
+  }
+
   snap_meta.name = dst_snap_name;
   bufferlist snap_metabl;
-  ::encode(snap_meta, snap_metabl);
+  encode(snap_meta, snap_metabl);
 
   r = cls_cxx_map_set_val(hctx, src_snap_key, &snap_metabl);
   if (r < 0) {
@@ -1778,6 +1932,7 @@ int snapshot_rename(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   return 0;
 }
+
 /**
  * Removes a snapshot from an rbd header.
  *
@@ -1793,7 +1948,7 @@ int snapshot_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(snap_id, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -1808,15 +1963,127 @@ int snapshot_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string snapshot_key;
   key_from_snap_id(snap_id, &snapshot_key);
   int r = read_key(hctx, snapshot_key, &snap);
-  if (r == -ENOENT)
+  if (r == -ENOENT) {
     return -ENOENT;
+  }
 
-  if (snap.protection_status != RBD_PROTECTION_STATUS_UNPROTECTED)
+  if (snap.protection_status != RBD_PROTECTION_STATUS_UNPROTECTED) {
     return -EBUSY;
+  }
 
-  r = cls_cxx_map_remove_key(hctx, snapshot_key);
+  // snapshot is in-use by clone v2 child
+  if (snap.child_count > 0) {
+    return -EBUSY;
+  }
+
+  r = remove_key(hctx, snapshot_key);
   if (r < 0) {
-    CLS_ERR("error writing snapshot metadata: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  bool has_child_snaps = false;
+  bool has_trash_snaps = false;
+  auto remove_lambda =
+    [snap_id, &has_child_snaps, &has_trash_snaps](const cls_rbd_snap& snap_meta) {
+      if (snap_meta.id != snap_id) {
+        if (snap_meta.parent.pool != -1) {
+          has_child_snaps = true;
+        }
+        if (cls::rbd::get_snap_namespace_type(snap_meta.snapshot_namespace) ==
+              cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+          has_trash_snaps = true;
+        }
+      }
+      return 0;
+    };
+
+  r = image::snapshot_iterate(hctx, remove_lambda);
+  if (r < 0) {
+    return r;
+  }
+
+  cls_rbd_parent parent;
+  r = read_key(hctx, "parent", &parent);
+  if (r < 0 && r != -ENOENT) {
+    return r;
+  }
+  bool has_parent = (r >= 0 && parent.pool != -1);
+
+  uint64_t op_features_mask = 0ULL;
+  if (!has_child_snaps && !has_parent) {
+    // disable clone child op feature if no longer associated
+    op_features_mask |= RBD_OPERATION_FEATURE_CLONE_CHILD;
+  }
+  if (!has_trash_snaps) {
+    // remove the snap_trash op feature if not in-use by any other snapshots
+    op_features_mask |= RBD_OPERATION_FEATURE_SNAP_TRASH;
+  }
+
+  if (op_features_mask != 0ULL) {
+    r = image::set_op_features(hctx, 0, op_features_mask);
+    if (r < 0) {
+      return r;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Moves a snapshot to the trash namespace.
+ *
+ * Input:
+ * @param snap_id the id of the snapshot to move to the trash (uint64_t)
+ *
+ * Output:
+ * @returns 0 on success, negative error code on failure
+ */
+int snapshot_trash_add(cls_method_context_t hctx, bufferlist *in,
+                       bufferlist *out)
+{
+  snapid_t snap_id;
+
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(snap_id, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "snapshot_trash_add id=%" PRIu64, snap_id.val);
+
+  cls_rbd_snap snap;
+  std::string snapshot_key;
+  key_from_snap_id(snap_id, &snapshot_key);
+  int r = read_key(hctx, snapshot_key, &snap);
+  if (r == -ENOENT) {
+    return r;
+  }
+
+  if (snap.protection_status != RBD_PROTECTION_STATUS_UNPROTECTED) {
+    return -EBUSY;
+  }
+
+  auto snap_type = cls::rbd::get_snap_namespace_type(snap.snapshot_namespace);
+  if (snap_type == cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+    return -EEXIST;
+  }
+
+  // add snap_trash feature bit if not already enabled
+  r = image::set_op_features(hctx, RBD_OPERATION_FEATURE_SNAP_TRASH,
+                             RBD_OPERATION_FEATURE_SNAP_TRASH);
+  if (r < 0) {
+    return r;
+  }
+
+  snap.snapshot_namespace = cls::rbd::TrashSnapshotNamespace{snap_type,
+                                                             snap.name};
+  uuid_d uuid_gen;
+  uuid_gen.generate_random();
+  snap.name = uuid_gen.to_string();
+
+  r = write_key(hctx, snapshot_key, snap);
+  if (r < 0) {
     return r;
   }
 
@@ -1829,7 +2096,7 @@ int snapshot_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 int get_all_features(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
   uint64_t all_features = RBD_FEATURES_ALL;
-  ::encode(all_features, *out);
+  encode(all_features, *out);
   return 0;
 }
 
@@ -1891,12 +2158,12 @@ int get_id(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string id;
   try {
     bufferlist::iterator iter = read_bl.begin();
-    ::decode(id, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EIO;
   }
 
-  ::encode(id, *out);
+  encode(id, *out);
   return 0;
 }
 
@@ -1919,7 +2186,7 @@ int set_id(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(id, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -1939,7 +2206,7 @@ int set_id(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   CLS_LOG(20, "set_id: id=%s", id.c_str());
 
   bufferlist write_bl;
-  ::encode(id, write_bl);
+  encode(id, write_bl);
   return cls_cxx_write(hctx, 0, write_bl.length(), &write_bl);
 }
 
@@ -1986,8 +2253,8 @@ static int dir_add_image_helper(cls_method_context_t hctx,
     return -EBADF;
   }
   bufferlist id_bl, name_bl;
-  ::encode(id, id_bl);
-  ::encode(name, name_bl);
+  encode(id, id_bl);
+  encode(name, name_bl);
   map<string, bufferlist> omap_vals;
   omap_vals[name_key] = id_bl;
   omap_vals[id_key] = name_bl;
@@ -2059,9 +2326,9 @@ int dir_rename_image(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string src, dest, id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(src, iter);
-    ::decode(dest, iter);
-    ::decode(id, iter);
+    decode(src, iter);
+    decode(dest, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2090,7 +2357,7 @@ int dir_get_id(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(name, iter);
+    decode(name, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2104,7 +2371,7 @@ int dir_get_id(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
       CLS_ERR("error reading id for name '%s': %s", name.c_str(), cpp_strerror(r).c_str());
     return r;
   }
-  ::encode(id, *out);
+  encode(id, *out);
   return 0;
 }
 
@@ -2124,7 +2391,7 @@ int dir_get_name(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(id, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2137,7 +2404,7 @@ int dir_get_name(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     CLS_ERR("error reading name for id '%s': %s", id.c_str(), cpp_strerror(r).c_str());
     return r;
   }
-  ::encode(name, *out);
+  encode(name, *out);
   return 0;
 }
 
@@ -2161,8 +2428,8 @@ int dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2187,7 +2454,7 @@ int dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
       string id;
       bufferlist::iterator iter = it->second.begin();
       try {
-	::decode(id, iter);
+	decode(id, iter);
       } catch (const buffer::error &err) {
 	CLS_ERR("could not decode id of image '%s'", it->first.c_str());
 	return -EIO;
@@ -2202,7 +2469,7 @@ int dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  ::encode(images, *out);
+  encode(images, *out);
 
   return 0;
 }
@@ -2231,8 +2498,8 @@ int dir_add_image(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string name, id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(name, iter);
-    ::decode(id, iter);
+    decode(name, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2256,8 +2523,8 @@ int dir_remove_image(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string name, id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(name, iter);
-    ::decode(id, iter);
+    decode(name, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2284,7 +2551,7 @@ int object_map_read(cls_method_context_t hctx, BitVector<2> &object_map)
 
   try {
     bufferlist::iterator iter = bl.begin();
-    ::decode(object_map, iter);
+    decode(object_map, iter);
   } catch (const buffer::error &err) {
     CLS_ERR("failed to decode object map: %s", err.what());
     return -EINVAL;
@@ -2311,7 +2578,7 @@ int object_map_load(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   }
 
   object_map.set_crc_enabled(false);
-  ::encode(object_map, *out);
+  encode(object_map, *out);
   return 0;
 }
 
@@ -2329,7 +2596,7 @@ int object_map_save(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   BitVector<2> object_map;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(object_map, iter);
+    decode(object_map, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2337,7 +2604,7 @@ int object_map_save(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   object_map.set_crc_enabled(true);
 
   bufferlist bl;
-  ::encode(object_map, bl);
+  encode(object_map, bl);
   CLS_LOG(20, "object_map_save: object size=%" PRIu64 ", byte size=%u",
 	  object_map.size(), bl.length());
   return cls_cxx_write_full(hctx, &bl);
@@ -2359,8 +2626,8 @@ int object_map_resize(cls_method_context_t hctx, bufferlist *in, bufferlist *out
   uint8_t default_state;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(object_count, iter);
-    ::decode(default_state, iter);
+    decode(object_count, iter);
+    decode(default_state, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2379,8 +2646,11 @@ int object_map_resize(cls_method_context_t hctx, bufferlist *in, bufferlist *out
 
   size_t orig_object_map_size = object_map.size();
   if (object_count < orig_object_map_size) {
-    for (uint64_t i = object_count + 1; i < orig_object_map_size; ++i) {
-      if (object_map[i] != default_state) {
+    auto it = object_map.begin() + object_count;
+    auto end_it = object_map.end() ;
+    uint64_t i = object_count;
+    for (; it != end_it; ++it, ++i) {
+      if (*it != default_state) {
 	CLS_ERR("object map indicates object still exists: %" PRIu64, i);
 	return -ESTALE;
       }
@@ -2388,13 +2658,15 @@ int object_map_resize(cls_method_context_t hctx, bufferlist *in, bufferlist *out
     object_map.resize(object_count);
   } else if (object_count > orig_object_map_size) {
     object_map.resize(object_count);
-    for (uint64_t i = orig_object_map_size; i < object_count; ++i) {
-      object_map[i] = default_state;
+    auto it = object_map.begin() + orig_object_map_size;
+    auto end_it = object_map.end();
+    for (; it != end_it; ++it) {
+      *it = default_state;
     }
   }
 
   bufferlist map;
-  ::encode(object_map, map);
+  encode(object_map, map);
   CLS_LOG(20, "object_map_resize: object size=%" PRIu64 ", byte size=%u",
 	  object_count, map.length());
   return cls_cxx_write_full(hctx, &map);
@@ -2420,10 +2692,10 @@ int object_map_update(cls_method_context_t hctx, bufferlist *in, bufferlist *out
   boost::optional<uint8_t> current_object_state;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_object_no, iter);
-    ::decode(end_object_no, iter);
-    ::decode(new_object_state, iter);
-    ::decode(current_object_state, iter);
+    decode(start_object_no, iter);
+    decode(end_object_no, iter);
+    decode(new_object_state, iter);
+    decode(current_object_state, iter);
   } catch (const buffer::error &err) {
     CLS_ERR("failed to decode message");
     return -EINVAL;
@@ -2558,16 +2830,18 @@ int object_map_snap_add(cls_method_context_t hctx, bufferlist *in,
   }
 
   bool updated = false;
-  for (uint64_t i = 0; i < object_map.size(); ++i) {
-    if (object_map[i] == OBJECT_EXISTS) {
-      object_map[i] = OBJECT_EXISTS_CLEAN;
+  auto it = object_map.begin();
+  auto end_it = object_map.end();
+  for (; it != end_it; ++it) {
+    if (*it == OBJECT_EXISTS) {
+      *it = OBJECT_EXISTS_CLEAN;
       updated = true;
     }
   }
 
   if (updated) {
     bufferlist bl;
-    ::encode(object_map, bl);
+    encode(object_map, bl);
     r = cls_cxx_write_full(hctx, &bl);
   }
   return r;
@@ -2589,7 +2863,7 @@ int object_map_snap_remove(cls_method_context_t hctx, bufferlist *in,
   BitVector<2> src_object_map;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(src_object_map, iter);
+    decode(src_object_map, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2601,17 +2875,24 @@ int object_map_snap_remove(cls_method_context_t hctx, bufferlist *in,
   }
 
   bool updated = false;
-  for (uint64_t i = 0; i < dst_object_map.size(); ++i) {
-    if (dst_object_map[i] == OBJECT_EXISTS_CLEAN &&
-        (i >= src_object_map.size() || src_object_map[i] == OBJECT_EXISTS)) {
-      dst_object_map[i] = OBJECT_EXISTS;
+  auto src_it = src_object_map.begin();
+  auto dst_it = dst_object_map.begin();
+  auto dst_it_end = dst_object_map.end();
+  uint64_t i = 0;
+  for (; dst_it != dst_it_end; ++dst_it) {
+    if (*dst_it == OBJECT_EXISTS_CLEAN &&
+        (i >= src_object_map.size() || *src_it == OBJECT_EXISTS)) {
+      *dst_it = OBJECT_EXISTS;
       updated = true;
     }
+    if (i < src_object_map.size())
+      ++src_it;
+    ++i;
   }
 
   if (updated) {
     bufferlist bl;
-    ::encode(dst_object_map, bl);
+    encode(dst_object_map, bl);
     r = cls_cxx_write_full(hctx, &bl);
   }
   return r;
@@ -2644,8 +2925,8 @@ int metadata_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2661,7 +2942,7 @@ int metadata_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   while (more && data.size() < max_return) {
     map<string, bufferlist> raw_data;
-    int max_read = MIN(RBD_MAX_KEYS_READ, max_return - data.size());
+    int max_read = std::min<uint64_t>(RBD_MAX_KEYS_READ, max_return - data.size());
     int r = cls_cxx_map_get_vals(hctx, last_read, RBD_METADATA_KEY_PREFIX,
                                  max_read, &raw_data, &more);
     if (r < 0) {
@@ -2678,7 +2959,7 @@ int metadata_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  ::encode(data, *out);
+  encode(data, *out);
   return 0;
 }
 
@@ -2695,7 +2976,7 @@ int metadata_set(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(data, iter);
+    decode(data, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2728,7 +3009,7 @@ int metadata_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(key, iter);
+    decode(key, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2759,7 +3040,7 @@ int metadata_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   bufferlist::iterator iter = in->begin();
   try {
-    ::decode(key, iter);
+    decode(key, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2772,7 +3053,7 @@ int metadata_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  ::encode(value, *out);
+  encode(value, *out);
   return 0;
 }
 
@@ -2789,7 +3070,7 @@ int snapshot_get_limit(cls_method_context_t hctx, bufferlist *in,
   }
 
   CLS_LOG(20, "read snapshot limit %" PRIu64, snap_limit);
-  ::encode(snap_limit, *out);
+  encode(snap_limit, *out);
 
   return 0;
 }
@@ -2804,7 +3085,7 @@ int snapshot_set_limit(cls_method_context_t hctx, bufferlist *in,
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(new_limit, iter);
+    decode(new_limit, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -2855,13 +3136,222 @@ int snapshot_set_limit(cls_method_context_t hctx, bufferlist *in,
   } else {
     CLS_LOG(20, "set snapshot limit to %" PRIu64 "\n", new_limit);
     bl.clear();
-    ::encode(new_limit, bl);
+    encode(new_limit, bl);
     rc = cls_cxx_map_set_val(hctx, "snap_limit", &bl);
   }
 
   return rc;
 }
 
+
+/**
+ * Input:
+ * @param snap id (uint64_t) parent snapshot id
+ * @param child spec (cls::rbd::ChildImageSpec) child image
+ *
+ * Output:
+ * @returns 0 on success, negative error code on failure
+ */
+int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  uint64_t snap_id;
+  cls::rbd::ChildImageSpec child_image;
+  try {
+    bufferlist::iterator it = in->begin();
+    decode(snap_id, it);
+    decode(child_image, it);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "child_attach snap_id=%" PRIu64 ", child_pool_id=%" PRIi64 ", "
+              "child_image_id=%s", snap_id, child_image.pool_id,
+               child_image.image_id.c_str());
+
+  cls_rbd_snap snap;
+  std::string snapshot_key;
+  key_from_snap_id(snap_id, &snapshot_key);
+  int r = read_key(hctx, snapshot_key, &snap);
+  if (r < 0) {
+    return r;
+  }
+
+  if (cls::rbd::get_snap_namespace_type(snap.snapshot_namespace) ==
+        cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+    // cannot attach to a deleted snapshot
+    return -ENOENT;
+  }
+
+  auto children_key = image::snap_children_key_from_snap_id(snap_id);
+  cls::rbd::ChildImageSpecs child_images;
+  r = read_key(hctx, children_key, &child_images);
+  if (r < 0 && r != -ENOENT) {
+    CLS_ERR("error reading snapshot children: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  auto it = child_images.insert(child_image);
+  if (!it.second) {
+    // child already attached to the snapshot
+    return -EEXIST;
+  }
+
+  r = write_key(hctx, children_key, child_images);
+  if (r < 0) {
+    CLS_ERR("error writing snapshot children: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  ++snap.child_count;
+  r = write_key(hctx, snapshot_key, snap);
+  if (r < 0) {
+    CLS_ERR("error writing snapshot: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  r = image::set_op_features(hctx, RBD_OPERATION_FEATURE_CLONE_PARENT,
+                             RBD_OPERATION_FEATURE_CLONE_PARENT);
+  if (r < 0) {
+    return r;
+  }
+
+  return 0;
+}
+
+/**
+ * Input:
+ * @param snap id (uint64_t) parent snapshot id
+ * @param child spec (cls::rbd::ChildImageSpec) child image
+ *
+ * Output:
+ * @returns 0 on success, negative error code on failure
+ */
+int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  uint64_t snap_id;
+  cls::rbd::ChildImageSpec child_image;
+  try {
+    bufferlist::iterator it = in->begin();
+    decode(snap_id, it);
+    decode(child_image, it);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "child_detach snap_id=%" PRIu64 ", child_pool_id=%" PRIi64 ", "
+              "child_image_id=%s", snap_id, child_image.pool_id,
+               child_image.image_id.c_str());
+
+  cls_rbd_snap snap;
+  std::string snapshot_key;
+  key_from_snap_id(snap_id, &snapshot_key);
+  int r = read_key(hctx, snapshot_key, &snap);
+  if (r < 0) {
+    return r;
+  }
+
+  auto children_key = image::snap_children_key_from_snap_id(snap_id);
+  cls::rbd::ChildImageSpecs child_images;
+  r = read_key(hctx, children_key, &child_images);
+  if (r < 0 && r != -ENOENT) {
+    CLS_ERR("error reading snapshot children: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  if (snap.child_count != child_images.size()) {
+    // children and reference count don't match
+    CLS_ERR("children reference count mismatch: %" PRIu64, snap_id);
+    return -EINVAL;
+  }
+
+  if (child_images.erase(child_image) == 0) {
+    // child not attached to the snapshot
+    return -ENOENT;
+  }
+
+  if (child_images.empty()) {
+    r = remove_key(hctx, children_key);
+  } else {
+    r = write_key(hctx, children_key, child_images);
+    if (r < 0) {
+      CLS_ERR("error writing snapshot children: %s", cpp_strerror(r).c_str());
+      return r;
+    }
+  }
+
+  --snap.child_count;
+  r = write_key(hctx, snapshot_key, snap);
+  if (r < 0) {
+    CLS_ERR("error writing snapshot: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  if (snap.child_count == 0) {
+    auto clone_in_use_lambda = [snap_id](const cls_rbd_snap& snap_meta) {
+      if (snap_meta.id != snap_id && snap_meta.child_count > 0) {
+        return -EEXIST;
+      }
+      return 0;
+    };
+
+    r = image::snapshot_iterate(hctx, clone_in_use_lambda);
+    if (r < 0 && r != -EEXIST) {
+      return r;
+    }
+
+    if (r != -EEXIST) {
+      // remove the clone_v2 op feature if not in-use by any other snapshots
+      r = image::set_op_features(hctx, 0, RBD_OPERATION_FEATURE_CLONE_PARENT);
+      if (r < 0) {
+        return r;
+      }
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Input:
+ * @param snap id (uint64_t) parent snapshot id
+ *
+ * Output:
+ * @param (cls::rbd::ChildImageSpecs) child images
+ * @returns 0 on success, negative error code on failure
+ */
+int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  uint64_t snap_id;
+  try {
+    bufferlist::iterator it = in->begin();
+    decode(snap_id, it);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "child_detach snap_id=%" PRIu64, snap_id);
+
+  cls_rbd_snap snap;
+  std::string snapshot_key;
+  key_from_snap_id(snap_id, &snapshot_key);
+  int r = read_key(hctx, snapshot_key, &snap);
+  if (r < 0) {
+    return r;
+  }
+
+  auto children_key = image::snap_children_key_from_snap_id(snap_id);
+  cls::rbd::ChildImageSpecs child_images;
+  r = read_key(hctx, children_key, &child_images);
+  if (r == -ENOENT) {
+    return r;
+  } else if (r < 0) {
+    CLS_ERR("error reading snapshot children: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  encode(child_images, *out);
+  return 0;
+}
 
 /****************************** Old format *******************************/
 
@@ -2882,14 +3372,14 @@ int old_snapshots_list(cls_method_context_t hctx, bufferlist *in, bufferlist *ou
          buf + sizeof(*header) + header->snap_count * sizeof(struct rbd_obj_snap_ondisk),
          header->snap_names_len);
 
-  ::encode(header->snap_seq, *out);
-  ::encode(header->snap_count, *out);
+  encode(header->snap_seq, *out);
+  encode(header->snap_count, *out);
 
   for (unsigned i = 0; i < header->snap_count; i++) {
     string s = name;
-    ::encode(header->snaps[i].id, *out);
-    ::encode(header->snaps[i].image_size, *out);
-    ::encode(s, *out);
+    encode(header->snaps[i].id, *out);
+    encode(header->snaps[i].image_size, *out);
+    encode(s, *out);
 
     name += strlen(name) + 1;
     if (name > end)
@@ -2923,8 +3413,8 @@ int old_snapshot_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   uint64_t snap_id;
 
   try {
-    ::decode(s, iter);
-    ::decode(snap_id, iter);
+    decode(s, iter);
+    decode(snap_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -3012,7 +3502,7 @@ int old_snapshot_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   struct rbd_obj_snap_ondisk snap;
 
   try {
-    ::decode(s, iter);
+    decode(s, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -3105,8 +3595,8 @@ int old_snapshot_rename(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   bool found = false;
 
   try {
-    ::decode(src_snap_id, iter);
-    ::decode(dst, iter);
+    decode(src_snap_id, iter);
+    decode(dst, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -3249,7 +3739,7 @@ int read_peers(cls_method_context_t hctx,
       try {
         bufferlist::iterator bl_it = it.second.begin();
         cls::rbd::MirrorPeer peer;
-	::decode(peer, bl_it);
+	decode(peer, bl_it);
         peers->push_back(peer);
       } catch (const buffer::error &err) {
 	CLS_ERR("could not decode peer '%s'", it.first.c_str());
@@ -3276,7 +3766,7 @@ int read_peer(cls_method_context_t hctx, const std::string &id,
 
   try {
     bufferlist::iterator bl_it = bl.begin();
-    ::decode(*peer, bl_it);
+    decode(*peer, bl_it);
   } catch (const buffer::error &err) {
     CLS_ERR("could not decode peer '%s'", id.c_str());
     return -EIO;
@@ -3287,7 +3777,7 @@ int read_peer(cls_method_context_t hctx, const std::string &id,
 int write_peer(cls_method_context_t hctx, const std::string &id,
                const cls::rbd::MirrorPeer &peer) {
   bufferlist bl;
-  ::encode(peer, bl);
+  encode(peer, bl);
 
   int r = cls_cxx_map_set_val(hctx, peer_key(id), &bl);
   if (r < 0) {
@@ -3312,7 +3802,7 @@ int image_get(cls_method_context_t hctx, const string &image_id,
 
   try {
     bufferlist::iterator it = bl.begin();
-    ::decode(*mirror_image, it);
+    decode(*mirror_image, it);
   } catch (const buffer::error &err) {
     CLS_ERR("could not decode mirrored image '%s'", image_id.c_str());
     return -EIO;
@@ -3324,7 +3814,7 @@ int image_get(cls_method_context_t hctx, const string &image_id,
 int image_set(cls_method_context_t hctx, const string &image_id,
 	      const cls::rbd::MirrorImage &mirror_image) {
   bufferlist bl;
-  ::encode(mirror_image, bl);
+  encode(mirror_image, bl);
 
   cls::rbd::MirrorImage existing_mirror_image;
   int r = image_get(hctx, image_id, &existing_mirror_image);
@@ -3364,7 +3854,7 @@ int image_set(cls_method_context_t hctx, const string &image_id,
   }
 
   bufferlist image_id_bl;
-  ::encode(image_id, image_id_bl);
+  encode(image_id, image_id_bl);
   r = cls_cxx_map_set_val(hctx, global_key(mirror_image.global_image_id),
                           &image_id_bl);
   if (r < 0) {
@@ -3427,7 +3917,7 @@ struct MirrorImageStatusOnDisk : cls::rbd::MirrorImageStatus {
 
   void encode_meta(bufferlist &bl, uint64_t features) const {
     ENCODE_START(1, 1, bl);
-    ::encode(origin, bl, features);
+    encode(origin, bl, features);
     ENCODE_FINISH(bl);
   }
 
@@ -3438,7 +3928,7 @@ struct MirrorImageStatusOnDisk : cls::rbd::MirrorImageStatus {
 
   void decode_meta(bufferlist::iterator &it) {
     DECODE_START(1, it);
-    ::decode(origin, it);
+    decode(origin, it);
     DECODE_FINISH(it);
   }
 
@@ -3543,7 +4033,7 @@ int image_status_list(cls_method_context_t hctx,
       cls::rbd::MirrorImage mirror_image;
       bufferlist::iterator iter = it->second.begin();
       try {
-	::decode(mirror_image, iter);
+	decode(mirror_image, iter);
       } catch (const buffer::error &err) {
 	CLS_ERR("could not decode mirror image payload of image '%s'",
                 image_id.c_str());
@@ -3601,7 +4091,7 @@ int image_status_get_summary(cls_method_context_t hctx,
       cls::rbd::MirrorImage mirror_image;
       bufferlist::iterator iter = list_it.second.begin();
       try {
-	::decode(mirror_image, iter);
+	decode(mirror_image, iter);
       } catch (const buffer::error &err) {
 	CLS_ERR("could not decode mirror image payload for key '%s'",
                 key.c_str());
@@ -3742,7 +4232,7 @@ int mirror_image_map_list(cls_method_context_t hctx,
     std::map<std::string, bufferlist> vals;
     CLS_LOG(20, "last read: '%s'", last_read.c_str());
 
-    int max_read = MIN(RBD_MAX_KEYS_READ, max_return - image_mapping->size());
+    int max_read = std::min<uint64_t>(RBD_MAX_KEYS_READ, max_return - image_mapping->size());
     int r = cls_cxx_map_get_vals(hctx, last_read, MIRROR_IMAGE_MAP_KEY_PREFIX,
                                  max_read, &vals, &more);
     if (r < 0) {
@@ -3761,7 +4251,7 @@ int mirror_image_map_list(cls_method_context_t hctx,
       cls::rbd::MirrorImageMap mirror_image_map;
       bufferlist::iterator iter = it->second.begin();
       try {
-        ::decode(mirror_image_map, iter);
+        decode(mirror_image_map, iter);
       } catch (const buffer::error &err) {
         CLS_ERR("could not decode image map payload: %s", cpp_strerror(r).c_str());
         return -EINVAL;
@@ -3796,7 +4286,7 @@ int mirror_uuid_get(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(mirror_uuid, *out);
+  encode(mirror_uuid, *out);
   return 0;
 }
 
@@ -3812,7 +4302,7 @@ int mirror_uuid_set(cls_method_context_t hctx, bufferlist *in,
   std::string mirror_uuid;
   try {
     bufferlist::iterator bl_it = in->begin();
-    ::decode(mirror_uuid, bl_it);
+    decode(mirror_uuid, bl_it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -3857,7 +4347,7 @@ int mirror_mode_get(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(mirror_mode_decode, *out);
+  encode(mirror_mode_decode, *out);
   return 0;
 }
 
@@ -3873,7 +4363,7 @@ int mirror_mode_set(cls_method_context_t hctx, bufferlist *in,
   uint32_t mirror_mode_decode;
   try {
     bufferlist::iterator bl_it = in->begin();
-    ::decode(mirror_mode_decode, bl_it);
+    decode(mirror_mode_decode, bl_it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -3903,7 +4393,7 @@ int mirror_mode_set(cls_method_context_t hctx, bufferlist *in,
     }
 
     bufferlist bl;
-    ::encode(mirror_mode_decode, bl);
+    encode(mirror_mode_decode, bl);
 
     r = cls_cxx_map_set_val(hctx, mirror::MODE, &bl);
     if (r < 0) {
@@ -3951,7 +4441,7 @@ int mirror_peer_list(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(peers, *out);
+  encode(peers, *out);
   return 0;
 }
 
@@ -3967,7 +4457,7 @@ int mirror_peer_add(cls_method_context_t hctx, bufferlist *in,
   cls::rbd::MirrorPeer mirror_peer;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(mirror_peer, it);
+    decode(mirror_peer, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4017,7 +4507,7 @@ int mirror_peer_add(cls_method_context_t hctx, bufferlist *in,
   }
 
   bufferlist bl;
-  ::encode(mirror_peer, bl);
+  encode(mirror_peer, bl);
   r = cls_cxx_map_set_val(hctx, mirror::peer_key(mirror_peer.uuid),
                           &bl);
   if (r < 0) {
@@ -4039,7 +4529,7 @@ int mirror_peer_remove(cls_method_context_t hctx, bufferlist *in,
   std::string uuid;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(uuid, it);
+    decode(uuid, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4066,8 +4556,8 @@ int mirror_peer_set_client(cls_method_context_t hctx, bufferlist *in,
   std::string client_name;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(uuid, it);
-    ::decode(client_name, it);
+    decode(uuid, it);
+    decode(client_name, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4100,8 +4590,8 @@ int mirror_peer_set_cluster(cls_method_context_t hctx, bufferlist *in,
   std::string cluster_name;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(uuid, it);
-    ::decode(cluster_name, it);
+    decode(uuid, it);
+    decode(cluster_name, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4136,8 +4626,8 @@ int mirror_image_list(cls_method_context_t hctx, bufferlist *in,
   uint64_t max_return;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4164,7 +4654,7 @@ int mirror_image_list(cls_method_context_t hctx, bufferlist *in,
       cls::rbd::MirrorImage mirror_image;
       bufferlist::iterator iter = it->second.begin();
       try {
-	::decode(mirror_image, iter);
+	decode(mirror_image, iter);
       } catch (const buffer::error &err) {
 	CLS_ERR("could not decode mirror image payload of image '%s'",
                 image_id.c_str());
@@ -4181,7 +4671,7 @@ int mirror_image_list(cls_method_context_t hctx, bufferlist *in,
     }
   }
 
-  ::encode(mirror_images, *out);
+  encode(mirror_images, *out);
   return 0;
 }
 
@@ -4198,7 +4688,7 @@ int mirror_image_get_image_id(cls_method_context_t hctx, bufferlist *in,
   std::string global_id;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_id, it);
+    decode(global_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4211,7 +4701,7 @@ int mirror_image_get_image_id(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(image_id, *out);
+  encode(image_id, *out);
   return 0;
 }
 
@@ -4228,7 +4718,7 @@ int mirror_image_get(cls_method_context_t hctx, bufferlist *in,
   string image_id;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(image_id, it);
+    decode(image_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4239,7 +4729,7 @@ int mirror_image_get(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(mirror_image, *out);
+  encode(mirror_image, *out);
   return 0;
 }
 
@@ -4258,8 +4748,8 @@ int mirror_image_set(cls_method_context_t hctx, bufferlist *in,
   cls::rbd::MirrorImage mirror_image;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(image_id, it);
-    ::decode(mirror_image, it);
+    decode(image_id, it);
+    decode(mirror_image, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4283,7 +4773,7 @@ int mirror_image_remove(cls_method_context_t hctx, bufferlist *in,
   string image_id;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(image_id, it);
+    decode(image_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4309,8 +4799,8 @@ int mirror_image_status_set(cls_method_context_t hctx, bufferlist *in,
   cls::rbd::MirrorImageStatus status;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_image_id, it);
-    ::decode(status, it);
+    decode(global_image_id, it);
+    decode(status, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4334,7 +4824,7 @@ int mirror_image_status_remove(cls_method_context_t hctx, bufferlist *in,
   string global_image_id;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_image_id, it);
+    decode(global_image_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4359,7 +4849,7 @@ int mirror_image_status_get(cls_method_context_t hctx, bufferlist *in,
   string global_image_id;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_image_id, it);
+    decode(global_image_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4376,7 +4866,7 @@ int mirror_image_status_get(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(status, *out);
+  encode(status, *out);
   return 0;
 }
 
@@ -4397,8 +4887,8 @@ int mirror_image_status_list(cls_method_context_t hctx, bufferlist *in,
   uint64_t max_return;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4411,8 +4901,8 @@ int mirror_image_status_list(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(images, *out);
-  ::encode(statuses, *out);
+  encode(images, *out);
+  encode(statuses, *out);
   return 0;
 }
 
@@ -4433,7 +4923,7 @@ int mirror_image_status_get_summary(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(states, *out);
+  encode(states, *out);
   return 0;
 }
 
@@ -4470,7 +4960,7 @@ int mirror_instances_list(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(instance_ids, *out);
+  encode(instance_ids, *out);
   return 0;
 }
 
@@ -4486,7 +4976,7 @@ int mirror_instances_add(cls_method_context_t hctx, bufferlist *in,
   std::string instance_id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(instance_id, iter);
+    decode(instance_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4510,7 +5000,7 @@ int mirror_instances_remove(cls_method_context_t hctx, bufferlist *in,
   std::string instance_id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(instance_id, iter);
+    decode(instance_id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4537,8 +5027,8 @@ int mirror_image_map_list(cls_method_context_t hctx, bufferlist *in,
   uint64_t max_return;
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(start_after, it);
-    ::decode(max_return, it);
+    decode(start_after, it);
+    decode(max_return, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4549,7 +5039,7 @@ int mirror_image_map_list(cls_method_context_t hctx, bufferlist *in,
     return r;
   }
 
-  ::encode(image_mapping, *out);
+  encode(image_mapping, *out);
   return 0;
 }
 
@@ -4568,14 +5058,14 @@ int mirror_image_map_update(cls_method_context_t hctx, bufferlist *in,
 
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_image_id, it);
-    ::decode(image_map, it);
+    decode(global_image_id, it);
+    decode(image_map, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
   bufferlist bl;
-  ::encode(image_map, bl);
+  encode(image_map, bl);
 
   const std::string key = mirror::mirror_image_map_key(global_image_id);
   int r = cls_cxx_map_set_val(hctx, key, &bl);
@@ -4601,7 +5091,7 @@ int mirror_image_map_remove(cls_method_context_t hctx, bufferlist *in,
 
   try {
     bufferlist::iterator it = in->begin();
-    ::decode(global_image_id, it);
+    decode(global_image_id, it);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4617,37 +5107,176 @@ int mirror_image_map_remove(cls_method_context_t hctx, bufferlist *in,
   return 0;
 }
 
-/**
- * Initialize the header with basic metadata.
- * Everything is stored as key/value pairs as omaps in the header object.
- *
- * Input:
- * none
- *
- * Output:
- * @return 0 on success, negative error code on failure
- */
-int group_create(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+namespace group {
+
+/********************** methods for rbd_group_directory ***********************/
+
+int dir_add(cls_method_context_t hctx,
+            const string &name, const string &id,
+            bool check_for_unique_id)
 {
-  bufferlist snap_seqbl;
-  uint64_t snap_seq = 0;
-  ::encode(snap_seq, snap_seqbl);
-  int r = cls_cxx_map_set_val(hctx, GROUP_SNAP_SEQ, &snap_seqbl);
-  if (r < 0)
+  if (!name.size() || !is_valid_id(id)) {
+    CLS_ERR("invalid group name '%s' or id '%s'",
+            name.c_str(), id.c_str());
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "dir_add name=%s id=%s", name.c_str(), id.c_str());
+
+  string name_key = dir_key_for_name(name);
+  string id_key = dir_key_for_id(id);
+  string tmp;
+  int r = read_key(hctx, name_key, &tmp);
+  if (r != -ENOENT) {
+    CLS_LOG(10, "name already exists");
+    return -EEXIST;
+  }
+  r = read_key(hctx, id_key, &tmp);
+  if (r != -ENOENT && check_for_unique_id) {
+    CLS_LOG(10, "id already exists");
+    return -EBADF;
+  }
+  bufferlist id_bl, name_bl;
+  encode(id, id_bl);
+  encode(name, name_bl);
+  map<string, bufferlist> omap_vals;
+  omap_vals[name_key] = id_bl;
+  omap_vals[id_key] = name_bl;
+  return cls_cxx_map_set_vals(hctx, &omap_vals);
+}
+
+int dir_remove(cls_method_context_t hctx,
+               const string &name, const string &id)
+{
+  CLS_LOG(20, "dir_remove name=%s id=%s", name.c_str(), id.c_str());
+
+  string name_key = dir_key_for_name(name);
+  string id_key = dir_key_for_id(id);
+  string stored_name, stored_id;
+
+  int r = read_key(hctx, name_key, &stored_id);
+  if (r < 0) {
+    if (r != -ENOENT)
+      CLS_ERR("error reading name to id mapping: %s", cpp_strerror(r).c_str());
     return r;
+  }
+  r = read_key(hctx, id_key, &stored_name);
+  if (r < 0) {
+    if (r != -ENOENT)
+      CLS_ERR("error reading id to name mapping: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  // check if this op raced with a rename
+  if (stored_name != name || stored_id != id) {
+    CLS_ERR("stored name '%s' and id '%s' do not match args '%s' and '%s'",
+            stored_name.c_str(), stored_id.c_str(), name.c_str(), id.c_str());
+    return -ESTALE;
+  }
+
+  r = cls_cxx_map_remove_key(hctx, name_key);
+  if (r < 0) {
+    CLS_ERR("error removing name: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  r = cls_cxx_map_remove_key(hctx, id_key);
+  if (r < 0) {
+    CLS_ERR("error removing id: %s", cpp_strerror(r).c_str());
+    return r;
+  }
 
   return 0;
 }
 
+static const string RBD_GROUP_SNAP_KEY_PREFIX = "snapshot_";
+
+std::string snap_key(std::string snap_id) {
+  ostringstream oss;
+  oss << RBD_GROUP_SNAP_KEY_PREFIX << snap_id;
+  return oss.str();
+}
+
+int snap_list(cls_method_context_t hctx, cls::rbd::GroupSnapshot start_after,
+              uint64_t max_return,
+              std::vector<cls::rbd::GroupSnapshot> *group_snaps)
+{
+  int max_read = RBD_MAX_KEYS_READ;
+  std::map<string, bufferlist> vals;
+  string last_read = snap_key(start_after.id);
+
+  group_snaps->clear();
+
+  bool more;
+  do {
+    int r = cls_cxx_map_get_vals(hctx, last_read,
+				 RBD_GROUP_SNAP_KEY_PREFIX,
+				 max_read, &vals, &more);
+    if (r < 0)
+      return r;
+
+    for (map<string, bufferlist>::iterator it = vals.begin();
+	 it != vals.end() && group_snaps->size() < max_return; ++it) {
+
+      bufferlist::iterator iter = it->second.begin();
+      cls::rbd::GroupSnapshot snap;
+      try {
+	decode(snap, iter);
+      } catch (const buffer::error &err) {
+	CLS_ERR("error decoding snapshot: %s", it->first.c_str());
+	return -EIO;
+      }
+      CLS_LOG(20, "Discovered snapshot %s %s",
+	      snap.name.c_str(),
+	      snap.id.c_str());
+      group_snaps->push_back(snap);
+    }
+
+  } while (more && (group_snaps->size() < max_return));
+
+  return 0;
+}
+
+static int check_duplicate_snap_name(cls_method_context_t hctx,
+				     std::string snap_name,
+				     std::string snap_id)
+{
+  const int max_read = 1024;
+  cls::rbd::GroupSnapshot snap_last;
+  std::vector<cls::rbd::GroupSnapshot> page;
+
+  for (;;) {
+    int r = snap_list(hctx, snap_last, max_read, &page);
+    if (r < 0) {
+      return r;
+    }
+    for (auto& snap: page) {
+      if (snap.name == snap_name && snap.id != snap_id) {
+	return -EEXIST;
+      }
+    }
+
+    if (page.size() < max_read) {
+      break;
+    }
+
+    snap_last = *page.rbegin();
+  }
+
+  return 0;
+}
+
+} // namespace group
+
 /**
- * List consistency groups from the directory.
+ * List groups from the directory.
  *
  * Input:
  * @param start_after (std::string)
  * @param max_return (int64_t)
  *
  * Output:
- * @param map of consistency groups (name, id)
+ * @param map of groups (name, id)
  * @return 0 on success, negative error code on failure
  */
 int group_dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
@@ -4657,8 +5286,8 @@ int group_dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4682,9 +5311,9 @@ int group_dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
       string id;
       bufferlist::iterator iter = val.second.begin();
       try {
-	::decode(id, iter);
+	decode(id, iter);
       } catch (const buffer::error &err) {
-	CLS_ERR("could not decode id of consistency group '%s'", val.first.c_str());
+	CLS_ERR("could not decode id of group '%s'", val.first.c_str());
 	return -EIO;
       }
       CLS_LOG(20, "adding '%s' -> '%s'", dir_name_from_key(val.first).c_str(), id.c_str());
@@ -4697,13 +5326,13 @@ int group_dir_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  ::encode(groups, *out);
+  encode(groups, *out);
 
   return 0;
 }
 
 /**
- * Add a consistency group to the directory.
+ * Add a group to the directory.
  *
  * Input:
  * @param name (std::string)
@@ -4717,7 +5346,7 @@ int group_dir_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   int r = cls_cxx_create(hctx, false);
 
   if (r < 0) {
-    CLS_ERR("could not create consistency group directory: %s",
+    CLS_ERR("could not create group directory: %s",
 	    cpp_strerror(r).c_str());
     return r;
   }
@@ -4725,44 +5354,47 @@ int group_dir_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string name, id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(name, iter);
-    ::decode(id, iter);
+    decode(name, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
-  if (!name.size() || !is_valid_id(id)) {
-    CLS_ERR("invalid consistency group name '%s' or id '%s'",
-	    name.c_str(), id.c_str());
-    return -EINVAL;
-  }
-
-  CLS_LOG(20, "group_dir_add name=%s id=%s", name.c_str(), id.c_str());
-
-  string tmp;
-  string name_key = dir_key_for_name(name);
-  string id_key = dir_key_for_id(id);
-  r = read_key(hctx, name_key, &tmp);
-  if (r != -ENOENT) {
-    CLS_LOG(10, "name already exists");
-    return -EEXIST;
-  }
-  r = read_key(hctx, id_key, &tmp);
-  if (r != -ENOENT) {
-    CLS_LOG(10, "id already exists");
-    return -EBADF;
-  }
-  bufferlist id_bl, name_bl;
-  ::encode(id, id_bl);
-  ::encode(name, name_bl);
-  map<string, bufferlist> omap_vals;
-  omap_vals[name_key] = id_bl;
-  omap_vals[id_key] = name_bl;
-  return cls_cxx_map_set_vals(hctx, &omap_vals);
+  return group::dir_add(hctx, name, id, true);
 }
 
 /**
- * Remove a consistency group from the directory.
+ * Rename a group to the directory.
+ *
+ * Input:
+ * @param src original name of the group (std::string)
+ * @param dest new name of the group (std::string)
+ * @param id the id of the group (std::string)
+ *
+ * Output:
+ * @return 0 on success, negative error code on failure
+ */
+int group_dir_rename(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
+{
+  string src, dest, id;
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(src, iter);
+    decode(dest, iter);
+    decode(id, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  int r = group::dir_remove(hctx, src, id);
+  if (r < 0)
+    return r;
+
+  return group::dir_add(hctx, dest, id, false);
+}
+
+/**
+ * Remove a group from the directory.
  *
  * Input:
  * @param name (std::string)
@@ -4776,55 +5408,17 @@ int group_dir_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string name, id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(name, iter);
-    ::decode(id, iter);
+    decode(name, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
 
-  CLS_LOG(20, "group_dir_remove name=%s id=%s", name.c_str(), id.c_str());
-
-  string stored_name, stored_id;
-  string name_key = dir_key_for_name(name);
-  string id_key = dir_key_for_id(id);
-
-  int r = read_key(hctx, name_key, &stored_id);
-  if (r < 0) {
-    if (r != -ENOENT)
-      CLS_ERR("error reading name to id mapping: %s", cpp_strerror(r).c_str());
-    return r;
-  }
-  r = read_key(hctx, id_key, &stored_name);
-  if (r < 0) {
-    if (r != -ENOENT)
-      CLS_ERR("error reading id to name mapping: %s", cpp_strerror(r).c_str());
-    return r;
-  }
-
-  // check if this op raced with a rename
-  if (stored_name != name || stored_id != id) {
-    CLS_ERR("stored name '%s' and id '%s' do not match args '%s' and '%s'",
-	    stored_name.c_str(), stored_id.c_str(), name.c_str(), id.c_str());
-    return -ESTALE;
-  }
-
-  r = cls_cxx_map_remove_key(hctx, name_key);
-  if (r < 0) {
-    CLS_ERR("error removing name: %s", cpp_strerror(r).c_str());
-    return r;
-  }
-
-  r = cls_cxx_map_remove_key(hctx, id_key);
-  if (r < 0) {
-    CLS_ERR("error removing id: %s", cpp_strerror(r).c_str());
-    return r;
-  }
-
-  return 0;
+  return group::dir_remove(hctx, name, id);
 }
 
 /**
- * Set state of an image in the consistency group.
+ * Set state of an image in the group.
  *
  * Input:
  * @param image_status (cls::rbd::GroupImageStatus)
@@ -4839,7 +5433,7 @@ int group_image_set(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   cls::rbd::GroupImageStatus st;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(st, iter);
+    decode(st, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4847,7 +5441,7 @@ int group_image_set(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string image_key = st.spec.image_key();
 
   bufferlist image_val_bl;
-  ::encode(st.state, image_val_bl);
+  encode(st.state, image_val_bl);
   int r = cls_cxx_map_set_val(hctx, image_key, &image_val_bl);
   if (r < 0) {
     return r;
@@ -4857,7 +5451,7 @@ int group_image_set(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 }
 
 /**
- * Remove reference to an image from the consistency group.
+ * Remove reference to an image from the group.
  *
  * Input:
  * @param spec (cls::rbd::GroupImageSpec)
@@ -4872,7 +5466,7 @@ int group_image_remove(cls_method_context_t hctx,
   cls::rbd::GroupImageSpec spec;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(spec, iter);
+    decode(spec, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4889,7 +5483,7 @@ int group_image_remove(cls_method_context_t hctx,
 }
 
 /*
- * List images in the consistency group.
+ * List images in the group.
  *
  * Input:
  * @param start_after which name to begin listing after
@@ -4908,8 +5502,8 @@ int group_image_list(cls_method_context_t hctx,
   uint64_t max_return;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4920,8 +5514,9 @@ int group_image_list(cls_method_context_t hctx,
   std::vector<cls::rbd::GroupImageStatus> res;
   bool more;
   do {
-    int r = cls_cxx_map_get_vals(hctx, last_read,cls::rbd::RBD_GROUP_IMAGE_KEY_PREFIX,
-                                 max_read, &vals, &more);
+    int r = cls_cxx_map_get_vals(hctx, last_read,
+				 cls::rbd::RBD_GROUP_IMAGE_KEY_PREFIX,
+				 max_read, &vals, &more);
     if (r < 0)
       return r;
 
@@ -4931,7 +5526,7 @@ int group_image_list(cls_method_context_t hctx,
       bufferlist::iterator iter = it->second.begin();
       cls::rbd::GroupImageLinkState state;
       try {
-	::decode(state, iter);
+	decode(state, iter);
       } catch (const buffer::error &err) {
 	CLS_ERR("error decoding state for image: %s", it->first.c_str());
 	return -EIO;
@@ -4951,13 +5546,13 @@ int group_image_list(cls_method_context_t hctx,
     }
 
   } while (more && (res.size() < max_return));
-  ::encode(res, *out);
+  encode(res, *out);
 
   return 0;
 }
 
 /**
- * Reference the consistency group this image belongs to.
+ * Reference the group this image belongs to.
  *
  * Input:
  * @param group_id (std::string)
@@ -4966,14 +5561,14 @@ int group_image_list(cls_method_context_t hctx,
  * Output:
  * @return 0 on success, negative error code on failure
  */
-int image_add_group(cls_method_context_t hctx,
+int image_group_add(cls_method_context_t hctx,
 		    bufferlist *in, bufferlist *out)
 {
-  CLS_LOG(20, "image_add_group");
+  CLS_LOG(20, "image_group_add");
   cls::rbd::GroupSpec new_group;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(new_group, iter);
+    decode(new_group, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -4982,30 +5577,36 @@ int image_add_group(cls_method_context_t hctx,
 
   int r = cls_cxx_map_get_val(hctx, RBD_GROUP_REF, &existing_refbl);
   if (r == 0) {
-    // If we are trying to link this image to the same group then return success.
-    // If this image already belongs to another group then abort.
+    // If we are trying to link this image to the same group then return
+    // success. If this image already belongs to another group then abort.
     cls::rbd::GroupSpec old_group;
     try {
       bufferlist::iterator iter = existing_refbl.begin();
-      ::decode(old_group, iter);
+      decode(old_group, iter);
     } catch (const buffer::error &err) {
       return -EINVAL;
     }
 
-    if ((old_group.group_id != new_group.group_id)
-	|| (old_group.pool_id != new_group.pool_id)) {
+    if ((old_group.group_id != new_group.group_id) ||
+        (old_group.pool_id != new_group.pool_id)) {
       return -EEXIST;
     } else {
       return 0; // In this case the values are already correct
     }
-  } else if (r < 0 && r != -ENOENT) { // No entry means this image is not a member of any consistency group. So, we can use it.
+  } else if (r < 0 && r != -ENOENT) {
+    // No entry means this image is not a member of any group.
+    return r;
+  }
+
+  r = image::set_op_features(hctx, RBD_OPERATION_FEATURE_GROUP,
+                             RBD_OPERATION_FEATURE_GROUP);
+  if (r < 0) {
     return r;
   }
 
   bufferlist refbl;
-  ::encode(new_group, refbl);
+  encode(new_group, refbl);
   r = cls_cxx_map_set_val(hctx, RBD_GROUP_REF, &refbl);
-
   if (r < 0) {
     return r;
   }
@@ -5014,7 +5615,7 @@ int image_add_group(cls_method_context_t hctx,
 }
 
 /**
- * Remove image's pointer to the consistency group.
+ * Remove image's pointer to the group.
  *
  * Input:
  * @param cg_id (std::string)
@@ -5023,15 +5624,15 @@ int image_add_group(cls_method_context_t hctx,
  * Output:
  * @return 0 on success, negative error code on failure
  */
-int image_remove_group(cls_method_context_t hctx,
+int image_group_remove(cls_method_context_t hctx,
 		       bufferlist *in,
 		       bufferlist *out)
 {
-  CLS_LOG(20, "image_remove_group");
+  CLS_LOG(20, "image_group_remove");
   cls::rbd::GroupSpec spec;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(spec, iter);
+    decode(spec, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5045,7 +5646,7 @@ int image_remove_group(cls_method_context_t hctx,
   cls::rbd::GroupSpec ref_spec;
   bufferlist::iterator iter = refbl.begin();
   try {
-    ::decode(ref_spec, iter);
+    decode(ref_spec, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5059,11 +5660,16 @@ int image_remove_group(cls_method_context_t hctx,
     return r;
   }
 
+  r = image::set_op_features(hctx, 0, RBD_OPERATION_FEATURE_GROUP);
+  if (r < 0) {
+    return r;
+  }
+
   return 0;
 }
 
 /**
- * Retrieve the id and pool of the consistency group this image belongs to.
+ * Retrieve the id and pool of the group this image belongs to.
  *
  * Input:
  * none
@@ -5072,10 +5678,10 @@ int image_remove_group(cls_method_context_t hctx,
  * @param GroupSpec
  * @return 0 on success, negative error code on failure
  */
-int image_get_group(cls_method_context_t hctx,
+int image_group_get(cls_method_context_t hctx,
 		    bufferlist *in, bufferlist *out)
 {
-  CLS_LOG(20, "image_get_group");
+  CLS_LOG(20, "image_group_get");
   bufferlist refbl;
   int r = cls_cxx_map_get_val(hctx, RBD_GROUP_REF, &refbl);
   if (r < 0 && r != -ENOENT) {
@@ -5087,13 +5693,172 @@ int image_get_group(cls_method_context_t hctx,
   if (r != -ENOENT) {
     bufferlist::iterator iter = refbl.begin();
     try {
-      ::decode(spec, iter);
+      decode(spec, iter);
     } catch (const buffer::error &err) {
       return -EINVAL;
     }
   }
 
-  ::encode(spec, *out);
+  encode(spec, *out);
+  return 0;
+}
+
+/**
+ * Save initial snapshot record.
+ *
+ * Input:
+ * @param GroupSnapshot
+ *
+ * Output:
+ * @return 0 on success, negative error code on failure
+ */
+int group_snap_set(cls_method_context_t hctx,
+		   bufferlist *in, bufferlist *out)
+{
+  CLS_LOG(20, "group_snap_set");
+  cls::rbd::GroupSnapshot group_snap;
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(group_snap, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  if (group_snap.name.empty()) {
+    CLS_ERR("group snapshot name is empty");
+    return -EINVAL;
+  }
+  if (group_snap.id.empty()) {
+    CLS_ERR("group snapshot id is empty");
+    return -EINVAL;
+  }
+
+  int r = group::check_duplicate_snap_name(hctx, group_snap.name,
+                                           group_snap.id);
+  if (r < 0) {
+    return r;
+  }
+
+  std::string key = group::snap_key(group_snap.id);
+  if (group_snap.state == cls::rbd::GROUP_SNAPSHOT_STATE_INCOMPLETE) {
+    bufferlist snap_bl;
+    r = cls_cxx_map_get_val(hctx, key, &snap_bl);
+    if (r < 0 && r != -ENOENT) {
+      return r;
+    } else if (r >= 0) {
+      return -EEXIST;
+    }
+  }
+
+  bufferlist obl;
+  encode(group_snap, obl);
+  r = cls_cxx_map_set_val(hctx, key, &obl);
+  return r;
+}
+
+/**
+ * Remove snapshot record.
+ *
+ * Input:
+ * @param id Snapshot id
+ *
+ * Output:
+ * @return 0 on success, negative error code on failure
+ */
+int group_snap_remove(cls_method_context_t hctx,
+		      bufferlist *in, bufferlist *out)
+{
+  CLS_LOG(20, "group_snap_remove");
+  std::string snap_id;
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(snap_id, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  std::string snap_key = group::snap_key(snap_id);
+
+  CLS_LOG(20, "removing snapshot with key %s", snap_key.c_str());
+  int r = cls_cxx_map_remove_key(hctx, snap_key);
+  return r;
+}
+
+/**
+ * Get group's snapshot by id.
+ *
+ * Input:
+ * @param snapshot_id the id of the snapshot to look for.
+ *
+ * Output:
+ * @param GroupSnapshot the requested snapshot
+ * @return 0 on success, negative error code on failure
+ */
+int group_snap_get_by_id(cls_method_context_t hctx,
+			 bufferlist *in, bufferlist *out)
+{
+  CLS_LOG(20, "group_snap_get_by_id");
+
+  std::string snap_id;
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(snap_id, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  bufferlist snapbl;
+
+  int r = cls_cxx_map_get_val(hctx, group::snap_key(snap_id), &snapbl);
+  if (r < 0) {
+    return r;
+  }
+
+  cls::rbd::GroupSnapshot group_snap;
+  bufferlist::iterator iter = snapbl.begin();
+  try {
+    decode(group_snap, iter);
+  } catch (const buffer::error &err) {
+    CLS_ERR("error decoding snapshot: %s", snap_id.c_str());
+    return -EIO;
+  }
+
+  encode(group_snap, *out);
+
+  return 0;
+}
+
+/**
+ * List group's snapshots.
+ *
+ * Input:
+ * @param start_after which name to begin listing after
+ * 	  (use the empty string to start at the beginning)
+ * @param max_return the maximum number of snapshots to list
+ *
+ * Output:
+ * @param list of snapshots
+ * @return 0 on success, negative error code on failure
+ */
+int group_snap_list(cls_method_context_t hctx,
+		    bufferlist *in, bufferlist *out)
+{
+  CLS_LOG(20, "group_snap_list");
+
+  cls::rbd::GroupSnapshot start_after;
+  uint64_t max_return;
+  try {
+    bufferlist::iterator iter = in->begin();
+    decode(start_after, iter);
+    decode(max_return, iter);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+  std::vector<cls::rbd::GroupSnapshot> group_snaps;
+  group::snap_list(hctx, start_after, max_return, &group_snaps);
+
+  encode(group_snaps, *out);
+
   return 0;
 }
 
@@ -5135,8 +5900,8 @@ int trash_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   cls::rbd::TrashImageSpec trash_spec;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(id, iter);
-    ::decode(trash_spec, iter);
+    decode(id, iter);
+    decode(trash_spec, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5161,7 +5926,7 @@ int trash_add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   }
 
   map<string, bufferlist> omap_vals;
-  ::encode(trash_spec, omap_vals[key]);
+  encode(trash_spec, omap_vals[key]);
   return cls_cxx_map_set_vals(hctx, &omap_vals);
 }
 
@@ -5181,7 +5946,7 @@ int trash_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(id, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5228,8 +5993,8 @@ int trash_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(start_after, iter);
-    ::decode(max_return, iter);
+    decode(start_after, iter);
+    decode(max_return, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5256,7 +6021,7 @@ int trash_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
     map<string, bufferlist>::iterator it = raw_data.begin();
     for (; it != raw_data.end(); ++it) {
-      ::decode(data[trash::image_id_from_key(it->first)], it->second);
+      decode(data[trash::image_id_from_key(it->first)], it->second);
     }
 
     if (!more) {
@@ -5266,7 +6031,7 @@ int trash_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     last_read = raw_data.rbegin()->first;
   }
 
-  ::encode(data, *out);
+  encode(data, *out);
   return 0;
 }
 
@@ -5287,7 +6052,7 @@ int trash_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string id;
   try {
     bufferlist::iterator iter = in->begin();
-    ::decode(id, iter);
+    decode(id, iter);
   } catch (const buffer::error &err) {
     return -EINVAL;
   }
@@ -5298,7 +6063,7 @@ int trash_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   string key = trash::image_key(id);
   bufferlist bl;
   int r = cls_cxx_map_get_val(hctx, key, out);
-  if (r != -ENOENT) {
+  if (r < 0 && r != -ENOENT) {
     CLS_ERR("error reading image from trash '%s': '%s'", id.c_str(),
             cpp_strerror(r).c_str());
   }
@@ -5324,6 +6089,8 @@ CLS_INIT(rbd)
   cls_method_handle_t h_get_create_timestamp;
   cls_method_handle_t h_get_flags;
   cls_method_handle_t h_set_flags;
+  cls_method_handle_t h_op_features_get;
+  cls_method_handle_t h_op_features_set;
   cls_method_handle_t h_remove_parent;
   cls_method_handle_t h_add_child;
   cls_method_handle_t h_remove_child;
@@ -5332,11 +6099,12 @@ CLS_INIT(rbd)
   cls_method_handle_t h_get_object_prefix;
   cls_method_handle_t h_get_data_pool;
   cls_method_handle_t h_get_snapshot_name;
-  cls_method_handle_t h_get_snapshot_namespace;
   cls_method_handle_t h_get_snapshot_timestamp;
+  cls_method_handle_t h_snapshot_get;
   cls_method_handle_t h_snapshot_add;
   cls_method_handle_t h_snapshot_remove;
   cls_method_handle_t h_snapshot_rename;
+  cls_method_handle_t h_snapshot_trash_add;
   cls_method_handle_t h_get_all_features;
   cls_method_handle_t h_copyup;
   cls_method_handle_t h_get_id;
@@ -5359,6 +6127,9 @@ CLS_INIT(rbd)
   cls_method_handle_t h_metadata_get;
   cls_method_handle_t h_snapshot_get_limit;
   cls_method_handle_t h_snapshot_set_limit;
+  cls_method_handle_t h_child_attach;
+  cls_method_handle_t h_child_detach;
+  cls_method_handle_t h_children_list;
   cls_method_handle_t h_old_snapshots_list;
   cls_method_handle_t h_old_snapshot_add;
   cls_method_handle_t h_old_snapshot_remove;
@@ -5389,16 +6160,20 @@ CLS_INIT(rbd)
   cls_method_handle_t h_mirror_image_map_list;
   cls_method_handle_t h_mirror_image_map_update;
   cls_method_handle_t h_mirror_image_map_remove;
-  cls_method_handle_t h_group_create;
   cls_method_handle_t h_group_dir_list;
   cls_method_handle_t h_group_dir_add;
   cls_method_handle_t h_group_dir_remove;
+  cls_method_handle_t h_group_dir_rename;
   cls_method_handle_t h_group_image_remove;
   cls_method_handle_t h_group_image_list;
   cls_method_handle_t h_group_image_set;
-  cls_method_handle_t h_image_add_group;
-  cls_method_handle_t h_image_remove_group;
-  cls_method_handle_t h_image_get_group;
+  cls_method_handle_t h_image_group_add;
+  cls_method_handle_t h_image_group_remove;
+  cls_method_handle_t h_image_group_get;
+  cls_method_handle_t h_group_snap_set;
+  cls_method_handle_t h_group_snap_remove;
+  cls_method_handle_t h_group_snap_get_by_id;
+  cls_method_handle_t h_group_snap_list;
   cls_method_handle_t h_trash_add;
   cls_method_handle_t h_trash_remove;
   cls_method_handle_t h_trash_list;
@@ -5431,12 +6206,12 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "get_snapshot_name",
 			  CLS_METHOD_RD,
 			  get_snapshot_name, &h_get_snapshot_name);
-  cls_register_cxx_method(h_class, "get_snapshot_namespace",
-			  CLS_METHOD_RD,
-			  get_snapshot_namespace, &h_get_snapshot_namespace);
   cls_register_cxx_method(h_class, "get_snapshot_timestamp",
 			  CLS_METHOD_RD,
 			  get_snapshot_timestamp, &h_get_snapshot_timestamp);
+  cls_register_cxx_method(h_class, "snapshot_get",
+                          CLS_METHOD_RD,
+                          snapshot_get, &h_snapshot_get);
   cls_register_cxx_method(h_class, "snapshot_add",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  snapshot_add, &h_snapshot_add);
@@ -5446,6 +6221,9 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "snapshot_rename",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  snapshot_rename, &h_snapshot_rename);
+  cls_register_cxx_method(h_class, "snapshot_trash_add",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          snapshot_trash_add, &h_snapshot_trash_add);
   cls_register_cxx_method(h_class, "get_all_features",
 			  CLS_METHOD_RD,
 			  get_all_features, &h_get_all_features);
@@ -5482,6 +6260,11 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "set_flags",
                           CLS_METHOD_RD | CLS_METHOD_WR,
                           set_flags, &h_set_flags);
+  cls_register_cxx_method(h_class, "op_features_get", CLS_METHOD_RD,
+                          op_features_get, &h_op_features_get);
+  cls_register_cxx_method(h_class, "op_features_set",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          op_features_set, &h_op_features_set);
   cls_register_cxx_method(h_class, "metadata_list",
                           CLS_METHOD_RD,
 			  metadata_list, &h_metadata_list);
@@ -5500,6 +6283,15 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "snapshot_set_limit",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  snapshot_set_limit, &h_snapshot_set_limit);
+  cls_register_cxx_method(h_class, "child_attach",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          child_attach, &h_child_attach);
+  cls_register_cxx_method(h_class, "child_detach",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          child_detach, &h_child_detach);
+  cls_register_cxx_method(h_class, "children_list",
+                          CLS_METHOD_RD,
+                          children_list, &h_children_list);
 
   /* methods for the rbd_children object */
   cls_register_cxx_method(h_class, "add_child",
@@ -5649,10 +6441,8 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "mirror_image_map_remove",
                           CLS_METHOD_WR, mirror_image_map_remove,
                           &h_mirror_image_map_remove);
-  /* methods for the consistency groups feature */
-  cls_register_cxx_method(h_class, "group_create",
-			  CLS_METHOD_RD | CLS_METHOD_WR,
-			  group_create, &h_group_create);
+
+  /* methods for the groups feature */
   cls_register_cxx_method(h_class, "group_dir_list",
 			  CLS_METHOD_RD,
 			  group_dir_list, &h_group_dir_list);
@@ -5662,6 +6452,9 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "group_dir_remove",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  group_dir_remove, &h_group_dir_remove);
+  cls_register_cxx_method(h_class, "group_dir_rename",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          group_dir_rename, &h_group_dir_rename);
   cls_register_cxx_method(h_class, "group_image_remove",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  group_image_remove, &h_group_image_remove);
@@ -5671,15 +6464,27 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "group_image_set",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
 			  group_image_set, &h_group_image_set);
-  cls_register_cxx_method(h_class, "image_add_group",
+  cls_register_cxx_method(h_class, "image_group_add",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
-			  image_add_group, &h_image_add_group);
-  cls_register_cxx_method(h_class, "image_remove_group",
+			  image_group_add, &h_image_group_add);
+  cls_register_cxx_method(h_class, "image_group_remove",
 			  CLS_METHOD_RD | CLS_METHOD_WR,
-			  image_remove_group, &h_image_remove_group);
-  cls_register_cxx_method(h_class, "image_get_group",
+			  image_group_remove, &h_image_group_remove);
+  cls_register_cxx_method(h_class, "image_group_get",
 			  CLS_METHOD_RD,
-			  image_get_group, &h_image_get_group);
+			  image_group_get, &h_image_group_get);
+  cls_register_cxx_method(h_class, "group_snap_set",
+			  CLS_METHOD_RD | CLS_METHOD_WR,
+			  group_snap_set, &h_group_snap_set);
+  cls_register_cxx_method(h_class, "group_snap_remove",
+			  CLS_METHOD_RD | CLS_METHOD_WR,
+			  group_snap_remove, &h_group_snap_remove);
+  cls_register_cxx_method(h_class, "group_snap_get_by_id",
+			  CLS_METHOD_RD,
+			  group_snap_get_by_id, &h_group_snap_get_by_id);
+  cls_register_cxx_method(h_class, "group_snap_list",
+			  CLS_METHOD_RD,
+			  group_snap_list, &h_group_snap_list);
 
   /* rbd_trash object methods */
   cls_register_cxx_method(h_class, "trash_add",

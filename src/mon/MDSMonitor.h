@@ -73,7 +73,8 @@ class MDSMonitor : public PaxosService {
   FSMap pending_fsmap;  // current + pending updates
 
   // my helpers
-  void print_map(FSMap &m, int dbl=7);
+  template<int dblV = 7>
+  void print_map(FSMap &m);
 
   void _updated(MonOpRequestRef op);
 
@@ -98,7 +99,7 @@ class MDSMonitor : public PaxosService {
   int filesystem_command(
       MonOpRequestRef op,
       std::string const &prefix,
-      map<string, cmd_vartype> &cmdmap,
+      const cmdmap_t& cmdmap,
       std::stringstream &ss);
 
   // beacons

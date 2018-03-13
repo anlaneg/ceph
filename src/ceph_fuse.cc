@@ -77,11 +77,13 @@ int main(int argc, const char **argv, const char *envp[]) {
   if (args.empty()) {
     usage();
   }
-  env_to_vec(args);
 
-  std::vector<const char*> def_args{"--pid-file="};
+  std::map<std::string,std::string> defaults = {
+    { "pid_file", "" },
+    { "chdir", "/" }  // FUSE will chdir("/"); be ready.
+  };
 
-  auto cct = global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto cct = global_init(&defaults, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_DAEMON,
 			 CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
 
@@ -104,10 +106,6 @@ int main(int argc, const char **argv, const char *envp[]) {
   const char **newargv;
   int newargc;
   vec_to_argv(argv[0], args, &newargc, &newargv);
-
-  // FUSE will chdir("/"); be ready.
-  g_ceph_context->_conf->set_val("chdir", "/");
-  g_ceph_context->_conf->apply_changes(nullptr);
 
   // check for 32-bit arch
 #ifndef __LP64__
@@ -145,6 +143,9 @@ int main(int argc, const char **argv, const char *envp[]) {
 
   {
     common_init_finish(g_ceph_context);
+   
+    init_async_signal_handler();
+    register_async_signal_handler(SIGHUP, sighup_handler);
 
     //cout << "child, mounting" << std::endl;
     class RemountTest : public Thread {
@@ -239,9 +240,6 @@ int main(int argc, const char **argv, const char *envp[]) {
       cerr << "ceph-fuse[" << getpid() << "]: ceph messenger failed with " << cpp_strerror(-r) << std::endl;
       goto out_messenger_start_failed;
     }
-
-    init_async_signal_handler();
-    register_async_signal_handler(SIGHUP, sighup_handler);
 
     // start client
     r = client->init();

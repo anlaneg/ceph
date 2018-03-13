@@ -32,22 +32,23 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-#include <iostream>
 #include <fstream>
-#include <boost/regex.hpp>
+#include <iostream>
+#include <memory>
+#include <regex>
 #include <boost/algorithm/string/predicate.hpp>
 
-#include "mon/MonClient.h"
+#include "common/Formatter.h"
+#include "common/Preforker.h"
+#include "common/TextTable.h"
+#include "common/ceph_argparse.h"
 #include "common/config.h"
 #include "common/dout.h"
-
 #include "common/errno.h"
 #include "common/module.h"
 #include "common/safe_io.h"
-#include "common/TextTable.h"
-#include "common/ceph_argparse.h"
-#include "common/Preforker.h"
 #include "common/version.h"
+
 #include "global/global_init.h"
 #include "global/signal_handler.h"
 
@@ -55,6 +56,8 @@
 #include "include/rbd/librbd.hpp"
 #include "include/stringify.h"
 #include "include/xlist.h"
+
+#include "mon/MonClient.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd
@@ -74,20 +77,27 @@ struct Config {
   std::string imgname;
   std::string snapname;
   std::string devpath;
+
+  std::string format;
+  bool pretty_format = false;
 };
 
 static void usage()
 {
   std::cout << "Usage: rbd-nbd [options] map <image-or-snap-spec>  Map an image to nbd device\n"
             << "               unmap <device|image-or-snap-spec>   Unmap nbd device\n"
-            << "               list-mapped                         List mapped nbd devices\n"
-            << "Options:\n"
+            << "               [options] list-mapped               List mapped nbd devices\n"
+            << "Map options:\n"
             << "  --device <device path>  Specify nbd device path\n"
             << "  --read-only             Map read-only\n"
             << "  --nbds_max <limit>      Override for module param nbds_max\n"
             << "  --max_part <limit>      Override for module param max_part\n"
             << "  --exclusive             Forbid writes by other clients\n"
             << "  --timeout <seconds>     Set nbd request timeout\n"
+            << "\n"
+            << "List options:\n"
+            << "  --format plain|json|xml Output format (default: plain)\n"
+            << "  --pretty-format         Pretty formatting (json and xml)\n"
             << std::endl;
   generic_server_usage();
 }
@@ -438,7 +448,7 @@ std::ostream &operator<<(std::ostream &os, const NBDServer::IOContext &ctx) {
     os << " TRIM ";
     break;
   default:
-    os << " UNKNOW(" << ctx.command << ") ";
+    os << " UNKNOWN(" << ctx.command << ") ";
     break;
   }
 
@@ -655,7 +665,6 @@ static int do_map(int argc, const char *argv[], Config *cfg)
 
   vector<const char*> args;
   argv_to_vec(argc, argv, args);
-  env_to_vec(args);
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
                          CODE_ENVIRONMENT_DAEMON,
@@ -669,14 +678,13 @@ static int do_map(int argc, const char *argv[], Config *cfg)
       cerr << err << std::endl;
       return r;
     }
-
     if (forker.is_parent()) {
-      global_init_postfork_start(g_ceph_context);
       if (forker.parent_wait(err) != 0) {
         return -ENXIO;
       }
       return 0;
     }
+    global_init_postfork_start(g_ceph_context);
   }
 
   common_init_finish(g_ceph_context);
@@ -845,9 +853,8 @@ static int do_map(int argc, const char *argv[], Config *cfg)
     cout << cfg->devpath << std::endl;
 
     if (g_conf->daemonize) {
-      forker.daemonize();
-      global_init_postfork_start(g_ceph_context);
       global_init_postfork_finish(g_ceph_context);
+      forker.daemonize();
     }
 
     {
@@ -913,10 +920,10 @@ static int do_unmap(const std::string &devpath)
 
 static int parse_imgpath(const std::string &imgpath, Config *cfg,
                          std::ostream *err_msg) {
-  boost::regex pattern("^(?:([^/@]+)/)?([^/@]+)(?:@([^/@]+))?$");
-  boost::smatch match;
-  if (!boost::regex_match(imgpath, match, pattern)) {
-    *err_msg << "rbd-nbd: invalid spec '" << imgpath << "'";
+  std::regex pattern("^(?:([^/@]+)/)?([^/@]+)(?:@([^/@]+))?$");
+  std::smatch match;
+  if (!std::regex_match(imgpath, match, pattern)) {
+    std::cerr << "rbd-nbd: invalid spec '" << imgpath << "'" << std::endl;
     return -EINVAL;
   }
 
@@ -932,31 +939,59 @@ static int parse_imgpath(const std::string &imgpath, Config *cfg,
   return 0;
 }
 
-static int do_list_mapped_devices()
+static int do_list_mapped_devices(const std::string &format, bool pretty_format)
 {
   bool should_print = false;
+  std::unique_ptr<ceph::Formatter> f;
   TextTable tbl;
 
-  tbl.define_column("pid", TextTable::LEFT, TextTable::LEFT);
-  tbl.define_column("pool", TextTable::LEFT, TextTable::LEFT);
-  tbl.define_column("image", TextTable::LEFT, TextTable::LEFT);
-  tbl.define_column("snap", TextTable::LEFT, TextTable::LEFT);
-  tbl.define_column("device", TextTable::LEFT, TextTable::LEFT);
+  if (format == "json") {
+    f.reset(new JSONFormatter(pretty_format));
+  } else if (format == "xml") {
+    f.reset(new XMLFormatter(pretty_format));
+  } else if (!format.empty() && format != "plain") {
+    std::cerr << "rbd-nbd: invalid output format: " << format << std::endl;
+    return -EINVAL;
+  }
+
+  if (f) {
+    f->open_array_section("devices");
+  } else {
+    tbl.define_column("id", TextTable::LEFT, TextTable::LEFT);
+    tbl.define_column("pool", TextTable::LEFT, TextTable::LEFT);
+    tbl.define_column("image", TextTable::LEFT, TextTable::LEFT);
+    tbl.define_column("snap", TextTable::LEFT, TextTable::LEFT);
+    tbl.define_column("device", TextTable::LEFT, TextTable::LEFT);
+  }
 
   int pid;
   Config cfg;
   NBDListIterator it;
   while (it.get(&pid, &cfg)) {
-    should_print = true;
-    if (cfg.snapname.empty()) {
-      cfg.snapname = "-";
+    if (f) {
+      f->open_object_section("device");
+      f->dump_int("id", pid);
+      f->dump_string("pool", cfg.poolname);
+      f->dump_string("image", cfg.imgname);
+      f->dump_string("snap", cfg.snapname);
+      f->dump_string("device", cfg.devpath);
+      f->close_section();
+    } else {
+      should_print = true;
+      if (cfg.snapname.empty()) {
+        cfg.snapname = "-";
+      }
+      tbl << pid << cfg.poolname << cfg.imgname << cfg.snapname << cfg.devpath
+          << TextTable::endrow;
     }
-    tbl << pid << cfg.poolname << cfg.imgname << cfg.snapname << cfg.devpath
-        << TextTable::endrow;
   }
 
+  if (f) {
+    f->close_section(); // devices
+    f->flush(std::cout);
+  }
   if (should_print) {
-    cout << tbl;
+    std::cout << tbl;
   }
   return 0;
 }
@@ -1038,6 +1073,10 @@ static int parse_args(vector<const char*>& args, std::ostream *err_msg,
         *err_msg << "rbd-nbd: Invalid argument for timeout!";
         return -EINVAL;
       }
+    } else if (ceph_argparse_witharg(args, i, &cfg->format, err, "--format",
+                                     (char *)NULL)) {
+    } else if (ceph_argparse_flag(args, i, "--pretty-format", (char *)NULL)) {
+      cfg->pretty_format = true;
     } else {
       ++i;
     }
@@ -1144,7 +1183,7 @@ static int rbd_nbd(int argc, const char *argv[])
         return -EINVAL;
       break;
     case List:
-      r = do_list_mapped_devices();
+      r = do_list_mapped_devices(cfg.format, cfg.pretty_format);
       if (r < 0)
         return -EINVAL;
       break;

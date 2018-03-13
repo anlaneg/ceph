@@ -40,13 +40,7 @@ OpRequest::OpRequest(Message *req, OpTracker *tracker) :
   } else if (req->get_type() == MSG_OSD_REPOPREPLY) {
     reqid = static_cast<MOSDRepOpReply*>(req)->reqid;
   }
-  if (tracker->is_tracking()) {
-    req_src_inst = req->get_source_inst();
-    mark_event("header_read", request->get_recv_stamp());
-    mark_event("throttled", request->get_throttle_stamp());
-    mark_event("all_read", request->get_recv_complete_stamp());
-    mark_event("dispatched", request->get_dispatch_stamp());
-  }
+  req_src_inst = req->get_source_inst();
 }
 
 void OpRequest::_dump(Formatter *f) const
@@ -195,7 +189,7 @@ bool OpRequest::filter_out(const set<string>& filters)
 
 ostream& operator<<(ostream& out, const OpRequest::ClassInfo& i)
 {
-  out << "class " << i.name << " rd " << i.read
-    << " wr " << i.write << " wl " << i.whitelisted;
+  out << "class " << i.class_name << " method " << i.method_name
+      << " rd " << i.read << " wr " << i.write << " wl " << i.whitelisted;
   return out;
 }

@@ -202,10 +202,7 @@ COMMAND_WITH_FLAG("injectargs " \
 	     "name=injected_args,type=CephString,n=N",			\
 	     "inject config arguments into monitor", "mon", "rw", "cli,rest",
 	     FLAG(NOFORWARD))
-COMMAND("config set " \
-	"name=key,type=CephString name=value,type=CephString",
-	"Set a configuration option at runtime (not persistent)",
-	"mon", "rw", "cli,rest")
+
 COMMAND("status", "show cluster status", "mon", "r", "cli,rest")
 COMMAND("health name=detail,type=CephChoices,strings=detail,req=false", \
 	"show cluster health", "mon", "r", "cli,rest")
@@ -242,7 +239,7 @@ COMMAND_WITH_FLAG("version", "show mon daemon version", "mon", "r", "cli,rest",
                   FLAG(NOFORWARD))
 
 COMMAND("node ls " \
-	"name=type,type=CephChoices,strings=all|osd|mon|mds,req=false",
+	"name=type,type=CephChoices,strings=all|osd|mon|mds|mgr,req=false",
 	"list all nodes in cluster [type]", "mon", "r", "cli,rest")
 /*
  * Monitor-specific commands under module 'mon'
@@ -291,7 +288,7 @@ COMMAND("fs dump "
 COMMAND_WITH_FLAG("mds getmap " \
 	"name=epoch,type=CephInt,req=false,range=0", \
 	"get MDS map, optionally from epoch", "mds", "r", "cli,rest", FLAG(OBSOLETE))
-COMMAND("mds metadata name=role,type=CephString,req=false",
+COMMAND("mds metadata name=who,type=CephString,req=false",
 	"fetch metadata for mds <role>",
 	"mds", "r", "cli,rest")
 COMMAND("mds count-metadata name=property,type=CephString",
@@ -453,6 +450,11 @@ COMMAND("osd tree " \
 	"name=epoch,type=CephInt,range=0,req=false " \
 	"name=states,type=CephChoices,strings=up|down|in|out|destroyed,n=N,req=false", \
 	"print OSD tree", "osd", "r", "cli,rest")
+COMMAND("osd tree-from " \
+	"name=epoch,type=CephInt,range=0,req=false " \
+	"name=bucket,type=CephString " \
+	"name=states,type=CephChoices,strings=up|down|in|out|destroyed,n=N,req=false", \
+	"print OSD tree in bucket", "osd", "r", "cli,rest")
 COMMAND("osd ls " \
 	"name=epoch,type=CephInt,range=0,req=false", \
 	"show all OSD ids", "osd", "r", "cli,rest")
@@ -704,6 +706,9 @@ COMMAND("osd set-nearfull-ratio " \
 	"name=ratio,type=CephFloat,range=0.0|1.0", \
 	"set usage ratio at which OSDs are marked near-full",
 	"osd", "rw", "cli,rest")
+COMMAND("osd get-require-min-compat-client",
+        "get the minimum client version we will maintain compatibility with",
+        "osd", "r", "cli,rest")
 COMMAND("osd set-require-min-compat-client " \
 	"name=version,type=CephString " \
 	"name=sure,type=CephChoices,strings=--yes-i-really-mean-it,req=false", \
@@ -1050,7 +1055,8 @@ COMMAND("config-key exists " \
 COMMAND_WITH_FLAG("config-key list ", "list keys", "config-key", "r", "cli,rest",
 		  FLAG(DEPRECATED))
 COMMAND("config-key ls ", "list keys", "config-key", "r", "cli,rest")
-COMMAND("config-key dump", "dump keys and values", "config-key", "r", "cli,rest")
+COMMAND("config-key dump " \
+	"name=key,type=CephString,req=false", "dump keys and values (with optional prefix)", "config-key", "r", "cli,rest")
 
 
 /*
@@ -1083,3 +1089,31 @@ COMMAND("mgr count-metadata name=property,type=CephString",
 COMMAND("mgr versions", \
 	"check running versions of ceph-mgr daemons",
 	"mgr", "r", "cli,rest")
+
+// ConfigMonitor
+COMMAND("config set" \
+	" name=who,type=CephString" \
+	" name=name,type=CephString" \
+	" name=value,type=CephString", \
+	"Set a configuration option for one or more entities",
+	"config", "rw", "cli,rest")
+COMMAND("config rm"						\
+	" name=who,type=CephString" \
+	" name=name,type=CephString",
+	"Clear a configuration option for one or more entities",
+	"config", "rw", "cli,rest")
+COMMAND("config get " \
+	"name=who,type=CephString " \
+	"name=key,type=CephString,req=False",
+	"Show configuration option(s) for an entity",
+	"config", "r", "cli,rest")
+COMMAND("config dump",
+	"Show all configuration option(s)",
+	"mon", "r", "cli,rest")
+COMMAND("config help " \
+	"name=key,type=CephString",
+	"Describe a configuration option",
+	"config", "r", "cli,rest")
+COMMAND("config assimilate-conf",
+	"Assimilate options from a conf, and return a new, minimal conf file",
+	"config", "rw", "cli,rest")

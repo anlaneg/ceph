@@ -11,7 +11,6 @@
 #include "common/Formatter.h"
 #include "common/ceph_json.h"
 #include "common/RWLock.h"
-#include "common/backport_std.h"
 #include "rgw_rados.h"
 #include "rgw_acl.h"
 
@@ -193,11 +192,11 @@ int rgw_store_user_info(RGWRados *store,
   ui.user_id = info.user_id;
 
   bufferlist link_bl;
-  ::encode(ui, link_bl);
+  encode(ui, link_bl);
 
   bufferlist data_bl;
-  ::encode(ui, data_bl);
-  ::encode(info, data_bl);
+  encode(ui, data_bl);
+  encode(info, data_bl);
 
   string key;
   info.user_id.to_str(key);
@@ -210,7 +209,7 @@ int rgw_store_user_info(RGWRados *store,
     if (!old_info ||
         old_info->user_email.compare(info.user_email) != 0) { /* only if new index changed */
       ret = rgw_put_system_obj(store, store->get_zone_params().user_email_pool, info.user_email,
-                               link_bl.c_str(), link_bl.length(), exclusive, NULL, real_time());
+                               link_bl, exclusive, NULL, real_time());
       if (ret < 0)
         return ret;
     }
@@ -224,8 +223,7 @@ int rgw_store_user_info(RGWRados *store,
 	continue;
 
       ret = rgw_put_system_obj(store, store->get_zone_params().user_keys_pool, k.id,
-                               link_bl.c_str(), link_bl.length(), exclusive,
-                               NULL, real_time());
+                               link_bl, exclusive, NULL, real_time());
       if (ret < 0)
         return ret;
     }
@@ -238,8 +236,7 @@ int rgw_store_user_info(RGWRados *store,
       continue;
 
     ret = rgw_put_system_obj(store, store->get_zone_params().user_swift_pool, k.id,
-                             link_bl.c_str(), link_bl.length(), exclusive,
-                             NULL, real_time());
+                             link_bl, exclusive, NULL, real_time());
     if (ret < 0)
       return ret;
   }
@@ -284,7 +281,7 @@ int rgw_get_user_info_from_index(RGWRados * const store,
 
   bufferlist::iterator iter = bl.begin();
   try {
-    ::decode(uid, iter);
+    decode(uid, iter);
     int ret = rgw_get_user_info_by_uid(store, uid.user_id, e.info, &e.objv_tracker, NULL, &cache_info);
     if (ret < 0) {
       return ret;
@@ -329,13 +326,13 @@ int rgw_get_user_info_by_uid(RGWRados *store,
 
   bufferlist::iterator iter = bl.begin();
   try {
-    ::decode(user_id, iter);
+    decode(user_id, iter);
     if (user_id.user_id.compare(uid) != 0) {
       lderr(store->ctx())  << "ERROR: rgw_get_user_info_by_uid(): user id mismatch: " << user_id.user_id << " != " << uid << dendl;
       return -EIO;
     }
     if (!iter.end()) {
-      ::decode(info, iter);
+      decode(info, iter);
     }
   } catch (buffer::error& err) {
     ldout(store->ctx(), 0) << "ERROR: failed to decode user info, caught buffer::error" << dendl;
@@ -528,7 +525,7 @@ static struct rgw_flags_desc rgw_perms[] = {
  { RGW_PERM_READ, "read" },
  { RGW_PERM_WRITE, "write" },
  { RGW_PERM_READ_ACP, "read-acp" },
- { RGW_PERM_WRITE_ACP, "read-acp" },
+ { RGW_PERM_WRITE_ACP, "write-acp" },
  { 0, NULL }
 };
 

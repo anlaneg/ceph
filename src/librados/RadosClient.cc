@@ -237,8 +237,6 @@ int librados::RadosClient::ping_monitor(const string mon_id, string *result)
 
 int librados::RadosClient::connect()
 {
-  common_init_finish(cct);
-
   int err;
 
   // already connected?
@@ -247,6 +245,15 @@ int librados::RadosClient::connect()
   if (state == CONNECTED)
     return -EISCONN;//已经连接上了
   state = CONNECTING;//开始连接
+
+  {
+    MonClient mc_bootstrap(cct);
+    err = mc_bootstrap.get_monmap_and_config();
+    if (err < 0)
+      return err;
+  }
+
+  common_init_finish(cct);
 
   // get monmap
   err = monclient.build_initial_monmap();
@@ -442,6 +449,22 @@ uint64_t librados::RadosClient::get_instance_id()
   return instance_id;
 }
 
+int librados::RadosClient::get_min_compatible_client(int8_t* min_compat_client,
+                                                     int8_t* require_min_compat_client)
+{
+  int r = wait_for_osdmap();
+  if (r < 0) {
+    return r;
+  }
+
+  objecter->with_osdmap(
+    [min_compat_client, require_min_compat_client](const OSDMap& o) {
+      *min_compat_client = o.get_min_compat_client();
+      *require_min_compat_client = o.get_require_min_compat_client();
+    });
+  return 0;
+}
+
 librados::RadosClient::~RadosClient()
 {
   if (messenger)
@@ -551,14 +574,12 @@ int librados::RadosClient::wait_for_osdmap()
 
     if (objecter->with_osdmap(std::mem_fn(&OSDMap::get_epoch)) == 0) {
       ldout(cct, 10) << __func__ << " waiting" << dendl;
-      utime_t start = ceph_clock_now();
       while (objecter->with_osdmap(std::mem_fn(&OSDMap::get_epoch)) == 0) {
         if (timeout.is_zero()) {
           cond.Wait(lock);
         } else {
-          cond.WaitInterval(lock, timeout);
-          utime_t elapsed = ceph_clock_now() - start;
-          if (elapsed > timeout) {
+          int r = cond.WaitInterval(lock, timeout);
+          if (r == ETIMEDOUT) {
             lderr(cct) << "timed out waiting for first osdmap from monitors"
                        << dendl;
             return -ETIMEDOUT;

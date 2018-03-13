@@ -31,26 +31,26 @@ static ostream& _prefix(std::ostream *_dout, mds_rank_t rank) {
 void PurgeItem::encode(bufferlist &bl) const
 {
   ENCODE_START(1, 1, bl);
-  ::encode((uint8_t)action, bl);
-  ::encode(ino, bl);
-  ::encode(size, bl);
-  ::encode(layout, bl, CEPH_FEATURE_FS_FILE_LAYOUT_V2);
-  ::encode(old_pools, bl);
-  ::encode(snapc, bl);
-  ::encode(fragtree, bl);
+  encode((uint8_t)action, bl);
+  encode(ino, bl);
+  encode(size, bl);
+  encode(layout, bl, CEPH_FEATURE_FS_FILE_LAYOUT_V2);
+  encode(old_pools, bl);
+  encode(snapc, bl);
+  encode(fragtree, bl);
   ENCODE_FINISH(bl);
 }
 
 void PurgeItem::decode(bufferlist::iterator &p)
 {
   DECODE_START(1, p);
-  ::decode((uint8_t&)action, p);
-  ::decode(ino, p);
-  ::decode(size, p);
-  ::decode(layout, p);
-  ::decode(old_pools, p);
-  ::decode(snapc, p);
-  ::decode(fragtree, p);
+  decode((uint8_t&)action, p);
+  decode(ino, p);
+  decode(size, p);
+  decode(layout, p);
+  decode(old_pools, p);
+  decode(snapc, p);
+  decode(fragtree, p);
   DECODE_FINISH(p);
 }
 
@@ -252,7 +252,7 @@ void PurgeQueue::create(Context *fin)
  */
 void PurgeQueue::push(const PurgeItem &pi, Context *completion)
 {
-  dout(4) << "pushing inode 0x" << std::hex << pi.ino << std::dec << dendl;
+  dout(4) << "pushing inode " << pi.ino << dendl;
   Mutex::Locker l(lock);
 
   // Callers should have waited for open() before using us
@@ -260,7 +260,7 @@ void PurgeQueue::push(const PurgeItem &pi, Context *completion)
 
   bufferlist bl;
 
-  ::encode(pi, bl);
+  encode(pi, bl);
   journaler.append_entry(bl);
   journaler.wait_for_flush(completion);
 
@@ -385,14 +385,13 @@ bool PurgeQueue::_consume()
     PurgeItem item;
     bufferlist::iterator q = bl.begin();
     try {
-      ::decode(item, q);
+      decode(item, q);
     } catch (const buffer::error &err) {
       derr << "Decode error at read_pos=0x" << std::hex
            << journaler.get_read_pos() << dendl;
       on_error->complete(0);
     }
-    dout(20) << " executing item (0x" << std::hex << item.ino
-             << std::dec << ")" << dendl;
+    dout(20) << " executing item (" << item.ino << ")" << dendl;
     _execute_item(item, journaler.get_read_pos());
   }
 
@@ -527,8 +526,7 @@ void PurgeQueue::_execute_item_complete(
   ops_in_flight -= _calculate_ops(iter->second);
   logger->set(l_pq_executing_ops, ops_in_flight);
 
-  dout(10) << "completed item for ino 0x" << std::hex << iter->second.ino
-           << std::dec << dendl;
+  dout(10) << "completed item for ino " << iter->second.ino << dendl;
 
   in_flight.erase(iter);
   logger->set(l_pq_executing, in_flight.size());

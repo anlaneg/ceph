@@ -4,6 +4,8 @@
 #ifndef __CEPH_LOG_LOG_H
 #define __CEPH_LOG_LOG_H
 
+#include <memory>
+
 #include "common/Thread.h"
 
 #include "EntryQueue.h"
@@ -53,7 +55,7 @@ class Log : private Thread
 
   std::string m_log_stderr_prefix;
 
-  shared_ptr<Graylog> m_graylog;
+  std::shared_ptr<Graylog> m_graylog;
 
   bool m_stop;//标记线程是否需要停止
 
@@ -92,7 +94,7 @@ public:
   void start_graylog();
   void stop_graylog();
 
-  shared_ptr<Graylog> graylog() { return m_graylog; }
+  std::shared_ptr<Graylog> graylog() { return m_graylog; }
 
   Entry *create_entry(int level, int subsys, const char* msg = nullptr);
   Entry *create_entry(int level, int subsys, size_t* expected_size);

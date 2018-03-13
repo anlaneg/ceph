@@ -24,6 +24,7 @@
 #include "include/str_list.h"
 #include "include/stringify.h"
 #include "global/global_init.h"
+#include "global/signal_handler.h"
 #include "common/config.h"
 #include "common/errno.h"
 #include "common/Timer.h"
@@ -58,6 +59,11 @@
 #define dout_subsys ceph_subsys_rgw
 
 bool global_stop = false;
+
+static void handle_sigterm(int signum)
+{
+  dout(20) << __func__ << " SIGUSR1 ignored" << dendl;
+}
 
 namespace rgw {
 
@@ -460,12 +466,13 @@ namespace rgw {
     int r = 0;
 
     /* alternative default for module */
-    vector<const char *> def_args;
-    def_args.push_back("--debug-rgw=1/5");
-    def_args.push_back("--keyring=$rgw_data/keyring");
-    def_args.push_back("--log-file=/var/log/radosgw/$cluster-$name.log");
+    map<string,string> defaults = {
+      { "debug_rgw", "1/5" },
+      { "keyring", "$rgw_data/keyring" },
+      { "log_file", "/var/log/radosgw/$cluster-$name.log" }
+    };
 
-    cct = global_init(&def_args, args,
+    cct = global_init(&defaults, args,
 		      CEPH_ENTITY_TYPE_CLIENT,
 		      CODE_ENVIRONMENT_DAEMON,
 		      CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
@@ -543,6 +550,9 @@ namespace rgw {
     fec = new RGWFrontendConfig("rgwlib");
     fe = new RGWLibFrontend(env, fec);
 
+    init_async_signal_handler();
+    register_async_signal_handler(SIGUSR1, handle_sigterm);
+
     map<string, string> service_map_meta;
     service_map_meta["pid"] = stringify(getpid());
     service_map_meta["frontend_type#" + fe_count] = "rgw-nfs";
@@ -576,6 +586,9 @@ namespace rgw {
     delete fe;
     delete fec;
     delete ldh;
+
+    unregister_async_signal_handler(SIGUSR1, handle_sigterm);
+    shutdown_async_signal_handler();
 
     rgw_log_usage_finalize();
 
@@ -677,7 +690,6 @@ int librgw_create(librgw_t* rgw, int argc, char **argv)
       for (const auto& elt : spl_args) {
 	args.push_back(elt.c_str());
       }
-      env_to_vec(args);
       rc = rgwlib.init(args);
     }
   }

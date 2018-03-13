@@ -12,6 +12,7 @@
  * 
  */
 
+#include <string_view>
 
 #include "MDSRank.h"
 #include "MDCache.h"
@@ -1856,7 +1857,7 @@ void Locker::file_update_finish(CInode *in, MutationRef& mut, bool share_max, bo
     dout(10) << " client_snap_caps " << in->client_snap_caps << dendl;
     // check for snap writeback completion
     bool gather = false;
-    compact_map<int,set<client_t> >::iterator p = in->client_snap_caps.begin();
+    auto p = in->client_snap_caps.begin();
     while (p != in->client_snap_caps.end()) {
       auto q = p->second.find(client);
       if (q != p->second.end()) {
@@ -1915,7 +1916,7 @@ Capability* Locker::issue_new_caps(CInode *in,
 
   // my needs
   assert(session->info.inst.name.is_client());
-  client_t my_client = session->info.inst.name.num();
+  client_t my_client = session->get_client();
   int my_want = ceph_caps_for_mode(mode);
 
   // register a capability
@@ -2293,7 +2294,7 @@ public:
   }
 };
 
-uint64_t Locker::calc_new_max_size(inode_t *pi, uint64_t size)
+uint64_t Locker::calc_new_max_size(CInode::mempool_inode *pi, uint64_t size)
 {
   uint64_t new_max = (size + 1) << 1;
   uint64_t max_inc = g_conf->mds_client_writeable_range_max_inc_objs;
@@ -2301,14 +2302,14 @@ uint64_t Locker::calc_new_max_size(inode_t *pi, uint64_t size)
     max_inc *= pi->layout.object_size;
     new_max = std::min(new_max, size + max_inc);
   }
-  return ROUND_UP_TO(new_max, pi->get_layout_size_increment());
+  return round_up_to(new_max, pi->get_layout_size_increment());
 }
 
 void Locker::calc_new_client_ranges(CInode *in, uint64_t size,
-				    map<client_t,client_writeable_range_t> *new_ranges,
+				    CInode::mempool_inode::client_range_map *new_ranges,
 				    bool *max_increased)
 {
-  inode_t *latest = in->get_projected_inode();
+  auto latest = in->get_projected_inode();
   uint64_t ms;
   if(latest->has_layout()) {
     ms = calc_new_max_size(latest, size);
@@ -2347,8 +2348,8 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
   assert(in->is_auth());
   assert(in->is_file());
 
-  inode_t *latest = in->get_projected_inode();
-  map<client_t, client_writeable_range_t> new_ranges;
+  CInode::mempool_inode *latest = in->get_projected_inode();
+  CInode::mempool_inode::client_range_map new_ranges;
   uint64_t size = latest->size;
   bool update_size = new_size > 0;
   bool update_max = false;
@@ -2408,20 +2409,20 @@ bool Locker::check_inode_max_size(CInode *in, bool force_wrlock,
   MutationRef mut(new MutationImpl());
   mut->ls = mds->mdlog->get_current_segment();
     
-  inode_t *pi = in->project_inode();
-  pi->version = in->pre_dirty();
+  auto &pi = in->project_inode();
+  pi.inode.version = in->pre_dirty();
 
   if (update_max) {
-    dout(10) << "check_inode_max_size client_ranges " << pi->client_ranges << " -> " << new_ranges << dendl;
-    pi->client_ranges = new_ranges;
+    dout(10) << "check_inode_max_size client_ranges " << pi.inode.client_ranges << " -> " << new_ranges << dendl;
+    pi.inode.client_ranges = new_ranges;
   }
 
   if (update_size) {
-    dout(10) << "check_inode_max_size size " << pi->size << " -> " << new_size << dendl;
-    pi->size = new_size;
-    pi->rstat.rbytes = new_size;
-    dout(10) << "check_inode_max_size mtime " << pi->mtime << " -> " << new_mtime << dendl;
-    pi->mtime = new_mtime;
+    dout(10) << "check_inode_max_size size " << pi.inode.size << " -> " << new_size << dendl;
+    pi.inode.size = new_size;
+    pi.inode.rstat.rbytes = new_size;
+    dout(10) << "check_inode_max_size mtime " << pi.inode.mtime << " -> " << new_mtime << dendl;
+    pi.inode.mtime = new_mtime;
   }
 
   // use EOpen if the file is still open; otherwise, use EUpdate.
@@ -2614,7 +2615,7 @@ void Locker::_do_null_snapflush(CInode *head_in, client_t client, snapid_t last)
   for (auto p = head_in->client_need_snapflush.begin();
        p != head_in->client_need_snapflush.end() && p->first < last; ) {
     snapid_t snapid = p->first;
-    set<client_t>& clients = p->second;
+    auto &clients = p->second;
     ++p;  // be careful, q loop below depends on this
 
     if (clients.count(client)) {
@@ -2652,9 +2653,7 @@ bool Locker::should_defer_client_cap_frozen(CInode *in)
  */
 void Locker::handle_client_caps(MClientCaps *m)
 {
-  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
   client_t client = m->get_source().num();
-
   snapid_t follows = m->get_snap_follows();
   dout(7) << "handle_client_caps "
 	  << " on " << m->get_ino()
@@ -2662,6 +2661,7 @@ void Locker::handle_client_caps(MClientCaps *m)
 	  << " op " << ceph_cap_op_name(m->get_op())
 	  << " flags 0x" << hex << m->flags << dendl;
 
+  Session *session = mds->get_session(m);
   if (!mds->is_clientreplay() && !mds->is_active() && !mds->is_stopping()) {
     if (!session) {
       dout(5) << " no session, dropping " << *m << dendl;
@@ -2868,36 +2868,13 @@ void Locker::handle_client_caps(MClientCaps *m)
       caps &= cap->issued();
     }
     
-    cap->confirm_receipt(m->get_seq(), caps);
     dout(10) << " follows " << follows
 	     << " retains " << ccap_string(m->get_caps())
 	     << " dirty " << ccap_string(m->get_dirty())
 	     << " on " << *in << dendl;
 
-
-    // missing/skipped snapflush?
-    //  The client MAY send a snapflush if it is issued WR/EXCL caps, but
-    //  presently only does so when it has actual dirty metadata.  But, we
-    //  set up the need_snapflush stuff based on the issued caps.
-    //  We can infer that the client WONT send a FLUSHSNAP once they have
-    //  released all WR/EXCL caps (the FLUSHSNAP always comes before the cap
-    //  update/release).
-    if (!head_in->client_need_snapflush.empty()) {
-      if ((m->flags & MClientCaps::FLAG_NO_CAPSNAP) ||
-	  (!(cap->issued() & CEPH_CAP_ANY_FILE_WR) &&
-	   !(m->flags & MClientCaps::FLAG_PENDING_CAPSNAP))) {
-	head_in->auth_pin(this); // prevent subtree frozen
-	need_unpin = true;
-	_do_null_snapflush(head_in, client);
-      } else {
-	dout(10) << " revocation in progress, not making any conclusions about null snapflushes" << dendl;
-      }
-    }
-    if (cap->need_snapflush() && (m->flags & MClientCaps::FLAG_NO_CAPSNAP))
-      cap->clear_needsnapflush();
-    
     if (m->get_dirty() && in->is_auth()) {
-      dout(7) << " flush client." << client << " dirty " << ccap_string(m->get_dirty()) 
+      dout(7) << " flush client." << client << " dirty " << ccap_string(m->get_dirty())
 	      << " seq " << m->get_seq() << " on " << *in << dendl;
       ack = new MClientCaps(CEPH_CAP_OP_FLUSH_ACK, in->ino(), 0, cap->get_cap_id(), m->get_seq(),
 			    m->get_caps(), 0, m->get_dirty(), 0, mds->get_osd_epoch_barrier());
@@ -2905,8 +2882,33 @@ void Locker::handle_client_caps(MClientCaps *m)
       ack->set_oldest_flush_tid(m->get_oldest_flush_tid());
     }
 
-    // filter wanted based on what we could ever give out (given auth/replica status)
     bool need_flush = m->flags & MClientCaps::FLAG_SYNC;
+    bool updated = in->is_auth() &&
+		   _do_cap_update(in, cap, m->get_dirty(), follows, m, ack, &need_flush);
+
+    cap->confirm_receipt(m->get_seq(), caps);
+
+    // missing/skipped snapflush?
+    //  The client MAY send a snapflush if it is issued WR/EXCL caps,
+    //  but only does so when it has actual dirty metadata. We set up
+    //  the need_snapflush stuff based on the issued caps. We can infer
+    //  that the client WONT send a FLUSHSNAP once they have released
+    //  all WR/EXCL caps (the FLUSHSNAP always comes before the cap
+    //  update/release).
+    if (!head_in->client_need_snapflush.empty()) {
+      if (!(cap->issued() & CEPH_CAP_ANY_FILE_WR) &&
+	  !(m->flags & MClientCaps::FLAG_PENDING_CAPSNAP)) {
+	head_in->auth_pin(this); // prevent subtree frozen
+	need_unpin = true;
+	_do_null_snapflush(head_in, client);
+      } else {
+	dout(10) << " revocation in progress, not making any conclusions about null snapflushes" << dendl;
+      }
+    }
+    if (cap->need_snapflush() && !(m->flags & MClientCaps::FLAG_PENDING_CAPSNAP))
+      cap->clear_needsnapflush();
+
+    // filter wanted based on what we could ever give out (given auth/replica status)
     int new_wanted = m->get_wanted() & head_in->get_caps_allowed_ever();
     if (new_wanted != cap->wanted()) {
       if (!need_flush && (new_wanted & ~cap->pending())) {
@@ -2917,8 +2919,7 @@ void Locker::handle_client_caps(MClientCaps *m)
       adjust_cap_wanted(cap, new_wanted, m->get_issue_seq());
     }
       
-    if (in->is_auth() &&
-	_do_cap_update(in, cap, m->get_dirty(), follows, m, ack, &need_flush)) {
+    if (updated) {
       // updated
       eval(in, CEPH_CAP_LOCKS);
 
@@ -2965,7 +2966,7 @@ public:
 };
 
 void Locker::process_request_cap_release(MDRequestRef& mdr, client_t client, const ceph_mds_request_release& item,
-					 const string &dname)
+					 std::string_view dname)
 {
   inodeno_t ino = (uint64_t)item.ino;
   uint64_t cap_id = item.cap_id;
@@ -3118,53 +3119,55 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
   // normal metadata updates that we can apply to the head as well.
 
   // update xattrs?
-  bool xattrs = false;
-  map<string,bufferptr> *px = 0;
-  if ((dirty & CEPH_CAP_XATTR_EXCL) && 
-      m->xattrbl.length() &&
-      m->head.xattr_version > in->get_projected_inode()->xattr_version)
-    xattrs = true;
+  CInode::mempool_xattr_map *px = nullptr;
+  bool xattrs = (dirty & CEPH_CAP_XATTR_EXCL) &&
+                m->xattrbl.length() &&
+                m->head.xattr_version > in->get_projected_inode()->xattr_version;
 
-  old_inode_t *oi = 0;
+  CInode::mempool_old_inode *oi = 0;
   if (in->is_multiversion()) {
     oi = in->pick_old_inode(snap);
   }
 
-  inode_t *pi;
+  CInode::mempool_inode *i;
   if (oi) {
     dout(10) << " writing into old inode" << dendl;
-    pi = in->project_inode();
-    pi->version = in->pre_dirty();
+    auto &pi = in->project_inode();
+    pi.inode.version = in->pre_dirty();
     if (snap > oi->first)
       in->split_old_inode(snap);
-    pi = &oi->inode;
+    i = &oi->inode;
     if (xattrs)
       px = &oi->xattrs;
   } else {
+    auto &pi = in->project_inode(xattrs);
+    pi.inode.version = in->pre_dirty();
+    i = &pi.inode;
     if (xattrs)
-      px = new map<string,bufferptr>;
-    pi = in->project_inode(px);
-    pi->version = in->pre_dirty();
+      px = pi.xattrs.get();
   }
 
-  _update_cap_fields(in, dirty, m, pi);
+  _update_cap_fields(in, dirty, m, i);
 
   // xattr
-  if (px) {
-    dout(7) << " xattrs v" << pi->xattr_version << " -> " << m->head.xattr_version
+  if (xattrs) {
+    dout(7) << " xattrs v" << i->xattr_version << " -> " << m->head.xattr_version
 	    << " len " << m->xattrbl.length() << dendl;
-    pi->xattr_version = m->head.xattr_version;
+    i->xattr_version = m->head.xattr_version;
     bufferlist::iterator p = m->xattrbl.begin();
-    ::decode(*px, p);
+    decode(*px, p);
   }
 
-  if (pi->client_ranges.count(client)) {
-    if (in->last == snap) {
-      dout(10) << "  removing client_range entirely" << dendl;
-      pi->client_ranges.erase(client);
-    } else {
-      dout(10) << "  client_range now follows " << snap << dendl;
-      pi->client_ranges[client].follows = snap;
+  {
+    auto it = i->client_ranges.find(client);
+    if (it != i->client_ranges.end()) {
+      if (in->last == snap) {
+        dout(10) << "  removing client_range entirely" << dendl;
+        i->client_ranges.erase(it);
+      } else {
+        dout(10) << "  client_range now follows " << snap << dendl;
+        it->second.follows = snap;
+      }
     }
   }
 
@@ -3181,7 +3184,7 @@ void Locker::_do_snap_update(CInode *in, snapid_t snap, int dirty, snapid_t foll
 							      client, ack));
 }
 
-void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, inode_t *pi)
+void Locker::_update_cap_fields(CInode *in, int dirty, MClientCaps *m, CInode::mempool_inode *pi)
 {
   if (dirty == 0)
     return;
@@ -3289,7 +3292,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	   << " on " << *in << dendl;
   assert(in->is_auth());
   client_t client = m->get_source().num();
-  inode_t *latest = in->get_projected_inode();
+  CInode::mempool_inode *latest = in->get_projected_inode();
 
   // increase or zero max_size?
   uint64_t size = m->get_size();
@@ -3359,18 +3362,18 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (m->flockbl.length()) {
     int32_t num_locks;
     bufferlist::iterator bli = m->flockbl.begin();
-    ::decode(num_locks, bli);
+    decode(num_locks, bli);
     for ( int i=0; i < num_locks; ++i) {
       ceph_filelock decoded_lock;
-      ::decode(decoded_lock, bli);
+      decode(decoded_lock, bli);
       in->get_fcntl_lock_state()->held_locks.
 	insert(pair<uint64_t, ceph_filelock>(decoded_lock.start, decoded_lock));
       ++in->get_fcntl_lock_state()->client_held_lock_counts[(client_t)(decoded_lock.client)];
     }
-    ::decode(num_locks, bli);
+    decode(num_locks, bli);
     for ( int i=0; i < num_locks; ++i) {
       ceph_filelock decoded_lock;
-      ::decode(decoded_lock, bli);
+      decode(decoded_lock, bli);
       in->get_flock_lock_state()->held_locks.
 	insert(pair<uint64_t, ceph_filelock>(decoded_lock.start, decoded_lock));
       ++in->get_flock_lock_state()->client_held_lock_counts[(client_t)(decoded_lock.client)];
@@ -3380,43 +3383,39 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (!dirty && !change_max)
     return false;
 
-  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
+  Session *session = mds->get_session(m);
   if (session->check_access(in, MAY_WRITE,
 			    m->caller_uid, m->caller_gid, NULL, 0, 0) < 0) {
-    session->put();
     dout(10) << "check_access failed, dropping cap update on " << *in << dendl;
     return false;
   }
-  session->put();
 
   // do the update.
   EUpdate *le = new EUpdate(mds->mdlog, "cap update");
   mds->mdlog->start_entry(le);
 
-  // xattrs update?
-  map<string,bufferptr> *px = 0;
-  if ((dirty & CEPH_CAP_XATTR_EXCL) && 
-      m->xattrbl.length() &&
-      m->head.xattr_version > in->get_projected_inode()->xattr_version)
-    px = new map<string,bufferptr>;
+  bool xattr = (dirty & CEPH_CAP_XATTR_EXCL) &&
+               m->xattrbl.length() &&
+               m->head.xattr_version > in->get_projected_inode()->xattr_version;
 
-  inode_t *pi = in->project_inode(px);
-  pi->version = in->pre_dirty();
+  auto &pi = in->project_inode(xattr);
+  pi.inode.version = in->pre_dirty();
 
   MutationRef mut(new MutationImpl());
   mut->ls = mds->mdlog->get_current_segment();
 
-  _update_cap_fields(in, dirty, m, pi);
+  _update_cap_fields(in, dirty, m, &pi.inode);
 
   if (change_max) {
     dout(7) << "  max_size " << old_max << " -> " << new_max
 	    << " for " << *in << dendl;
     if (new_max) {
-      pi->client_ranges[client].range.first = 0;
-      pi->client_ranges[client].range.last = new_max;
-      pi->client_ranges[client].follows = in->first - 1;
+      auto &cr = pi.inode.client_ranges[client];
+      cr.range.first = 0;
+      cr.range.last = new_max;
+      cr.follows = in->first - 1;
     } else 
-      pi->client_ranges.erase(client);
+      pi.inode.client_ranges.erase(client);
   }
     
   if (change_max || (dirty & (CEPH_CAP_FILE_EXCL|CEPH_CAP_FILE_WR))) 
@@ -3426,13 +3425,12 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
   if (dirty & CEPH_CAP_AUTH_EXCL)
     wrlock_force(&in->authlock, mut);
 
-  // xattr
-  if (px) {
-    dout(7) << " xattrs v" << pi->xattr_version << " -> " << m->head.xattr_version << dendl;
-    pi->xattr_version = m->head.xattr_version;
+  // xattrs update?
+  if (xattr) {
+    dout(7) << " xattrs v" << pi.inode.xattr_version << " -> " << m->head.xattr_version << dendl;
+    pi.inode.xattr_version = m->head.xattr_version;
     bufferlist::iterator p = m->xattrbl.begin();
-    ::decode(*px, p);
-
+    decode(*pi.xattrs, p);
     wrlock_force(&in->xattrlock, mut);
   }
   
@@ -3477,7 +3475,7 @@ void Locker::handle_client_cap_release(MClientCapRelease *m)
     mds->set_osd_epoch_barrier(m->osd_epoch_barrier);
   }
 
-  Session *session = static_cast<Session *>(m->get_connection()->get_priv());
+  Session *session = mds->get_session(m);
 
   for (vector<ceph_mds_cap_item>::iterator p = m->caps.begin(); p != m->caps.end(); ++p) {
     _do_cap_release(client, inodeno_t((uint64_t)p->ino) , p->cap_id, p->migrate_seq, p->seq);
@@ -3764,7 +3762,7 @@ void Locker::issue_client_lease(CDentry *dn, client_t client,
     e.mask = 1 | CEPH_LOCK_DN;  // old and new bit values
     e.seq = ++l->seq;
     e.duration_ms = (int)(1000 * mdcache->client_lease_durations[pool]);
-    ::encode(e, bl);
+    encode(e, bl);
     dout(20) << "issue_client_lease seq " << e.seq << " dur " << e.duration_ms << "ms "
 	     << " on " << *dn << dendl;
   } else {
@@ -3773,7 +3771,7 @@ void Locker::issue_client_lease(CDentry *dn, client_t client,
     e.mask = 0;
     e.seq = 0;
     e.duration_ms = 0;
-    ::encode(e, bl);
+    encode(e, bl);
     dout(20) << "issue_client_lease no/null lease on " << *dn << dendl;
   }
 }
@@ -4433,8 +4431,8 @@ void Locker::scatter_writebehind(ScatterLock *lock)
 
   in->pre_cow_old_inode();  // avoid cow mayhem
 
-  inode_t *pi = in->project_inode();
-  pi->version = in->pre_dirty();
+  auto &pi = in->project_inode();
+  pi.inode.version = in->pre_dirty();
 
   in->finish_scatter_gather_update(lock->get_type());
   lock->start_flush();

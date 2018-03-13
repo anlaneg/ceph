@@ -317,7 +317,6 @@ int main(int argc, const char *argv[])
 {
   vector<const char*> args;
   argv_to_vec(argc, argv, args);
-  env_to_vec(args);
 
   auto cct = global_init(
       NULL, args,
@@ -483,7 +482,7 @@ int main(int argc, const char *argv[])
         std::cerr << "error reading version: " << errstr << std::endl;
         return 1;
       }
-      ::encode(v, val);
+      encode(v, val);
     } else if (subcmd == "in") {
       int ret = val.read_file(argv[7], &errstr);
       if (ret < 0 || !errstr.empty()) {

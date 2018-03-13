@@ -24,6 +24,8 @@
 #include "include/timegm.h"
 #include "common/strtol.h"
 #include "common/ceph_time.h"
+#include "common/safe_io.h"
+#include "common/SubProcess.h"
 #include "include/denc.h"
 
 
@@ -60,6 +62,8 @@ public:
   }
   utime_t(const struct timespec v)
   {
+    // NOTE: this is used by ceph_clock_now() so should be kept
+    // as thin as possible.
     tv.tv_sec = v.tv_sec;
     tv.tv_nsec = v.tv_nsec;
   }
@@ -125,16 +129,18 @@ public:
 #if defined(CEPH_LITTLE_ENDIAN)
     bl.append((char *)(this), sizeof(__u32) + sizeof(__u32));
 #else
-    ::encode(tv.tv_sec, bl);
-    ::encode(tv.tv_nsec, bl);
+    using ceph::encode;
+    encode(tv.tv_sec, bl);
+    encode(tv.tv_nsec, bl);
 #endif
   }
   void decode(bufferlist::iterator &p) {
 #if defined(CEPH_LITTLE_ENDIAN)
     p.copy(sizeof(__u32) + sizeof(__u32), (char *)(this));
 #else
-    ::decode(tv.tv_sec, p);
-    ::decode(tv.tv_nsec, p);
+    using ceph::decode;
+    decode(tv.tv_sec, p);
+    decode(tv.tv_nsec, p);
 #endif
   }
 
@@ -333,6 +339,32 @@ public:
         bdt.tm_year + 1900, bdt.tm_mon + 1, bdt.tm_mday,
         bdt.tm_hour, bdt.tm_min, bdt.tm_sec);
   }
+
+  static int invoke_date(const std::string& date_str, utime_t *result) {
+     char buf[256];
+
+     SubProcess bin_date("/bin/date", SubProcess::CLOSE, SubProcess::PIPE, SubProcess::KEEP);
+     bin_date.add_cmd_args("-d", date_str.c_str(), "+%s %N", NULL);
+
+     int r = bin_date.spawn();
+     if (r < 0) return r;
+
+     ssize_t n = safe_read(bin_date.get_stdout(), buf, sizeof(buf));
+
+     r = bin_date.join();
+     if (r || n <= 0) return -EINVAL;
+
+     uint64_t epoch, nsec;
+     std::istringstream iss(buf);
+
+     iss >> epoch;
+     iss >> nsec;
+
+     *result = utime_t(epoch, nsec);
+
+     return 0;
+  }
+
 
   static int parse_date(const string& date, uint64_t *epoch, uint64_t *nsec,
                         string *out_date=NULL, string *out_time=NULL) {

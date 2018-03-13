@@ -39,17 +39,19 @@ namespace CrushTreeDumper {
 
 WRITE_RAW_ENCODER(crush_rule_mask)   // it's all u8's
 
-inline static void encode(const crush_rule_step &s, bufferlist &bl)
+inline void encode(const crush_rule_step &s, bufferlist &bl)
 {
-  ::encode(s.op, bl);
-  ::encode(s.arg1, bl);
-  ::encode(s.arg2, bl);
+  using ceph::encode;
+  encode(s.op, bl);
+  encode(s.arg1, bl);
+  encode(s.arg2, bl);
 }
-inline static void decode(crush_rule_step &s, bufferlist::iterator &p)
+inline void decode(crush_rule_step &s, bufferlist::iterator &p)
 {
-  ::decode(s.op, p);
-  ::decode(s.arg1, p);
-  ::decode(s.arg2, p);
+  using ceph::decode;
+  decode(s.op, p);
+  decode(s.arg1, p);
+  decode(s.arg2, p);
 }
 
 class CrushWrapper {
@@ -697,6 +699,13 @@ public:
    */
   map<string, string> get_full_location(int id) const;
 
+  /**
+   * return location map for a item, by name
+   */
+  int get_full_location(
+    const string& name,
+    std::map<string,string> *ploc);
+
   /*
    * identical to get_full_location(int id) although it returns the type/name
    * pairs in the order they occur in the hierarchy.
@@ -727,6 +736,13 @@ public:
    * @return number of items, or error
    */
   int get_children(int id, list<int> *children) const;
+
+  /**
+    * get failure-domain type of a specific crush rule
+    * @param rule_id crush rule id
+    * @return type of failure-domain or a negative errno on error.
+    */
+  int get_rule_failure_domain(int rule_id);
 
   /**
     * enumerate leaves(devices) of given node
@@ -897,6 +913,7 @@ public:
 			   std::map<string,string> *ploc);
   static int parse_loc_multimap(const std::vector<string>& args,
 				std::multimap<string,string> *ploc);
+
 
   /**
    * get an item's weight
@@ -1253,6 +1270,10 @@ public:
   void finalize() {
     assert(crush);
     crush_finalize(crush);
+    if (!name_map.empty() &&
+	name_map.rbegin()->first >= crush->max_devices) {
+      crush->max_devices = name_map.rbegin()->first + 1;
+    }
     have_uniform_rules = !has_legacy_rule_ids();
   }
   int bucket_set_alg(int id, int alg);
@@ -1393,9 +1414,9 @@ public:
     free(arg_map.args);
   }
 
-  void create_choose_args(int64_t id, int positions) {
+  bool create_choose_args(int64_t id, int positions) {
     if (choose_args.count(id))
-      return;
+      return false;
     assert(positions);
     auto &cmap = choose_args[id];
     cmap.args = (crush_choose_arg*)calloc(sizeof(crush_choose_arg),
@@ -1424,6 +1445,7 @@ public:
 	carg.weight_set_size = 0;
       }
     }
+    return true;
   }
 
   void rm_choose_args(int64_t id) {

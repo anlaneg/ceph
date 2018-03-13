@@ -1,6 +1,12 @@
 #ifndef CEPH_RGW_DATA_SYNC_H
 #define CEPH_RGW_DATA_SYNC_H
 
+#include "include/encoding.h"
+
+#include "common/RWLock.h"
+#include "common/ceph_json.h"
+
+
 #include "rgw_coroutine.h"
 #include "rgw_http_client.h"
 #include "rgw_bucket.h"
@@ -8,11 +14,8 @@
 #include "rgw_sync_module.h"
 #include "rgw_sync_trace.h"
 
-#include "common/RWLock.h"
-#include "common/ceph_json.h"
-
 namespace rgw {
-class BucketChangeObserver;
+struct BucketChangeObserver;
 }
 
 struct rgw_datalog_info {
@@ -37,18 +40,18 @@ struct rgw_data_sync_info {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(2, 1, bl);
-    ::encode(state, bl);
-    ::encode(num_shards, bl);
-    ::encode(instance_id, bl);
+    encode(state, bl);
+    encode(num_shards, bl);
+    encode(instance_id, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(2, bl);
-     ::decode(state, bl);
-     ::decode(num_shards, bl);
+     decode(state, bl);
+     decode(num_shards, bl);
      if (struct_v >= 2) {
-       ::decode(instance_id, bl);
+       decode(instance_id, bl);
      }
      DECODE_FINISH(bl);
   }
@@ -108,23 +111,23 @@ struct rgw_data_sync_marker {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(state, bl);
-    ::encode(marker, bl);
-    ::encode(next_step_marker, bl);
-    ::encode(total_entries, bl);
-    ::encode(pos, bl);
-    ::encode(timestamp, bl);
+    encode(state, bl);
+    encode(marker, bl);
+    encode(next_step_marker, bl);
+    encode(total_entries, bl);
+    encode(pos, bl);
+    encode(timestamp, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-    ::decode(state, bl);
-    ::decode(marker, bl);
-    ::decode(next_step_marker, bl);
-    ::decode(total_entries, bl);
-    ::decode(pos, bl);
-    ::decode(timestamp, bl);
+    decode(state, bl);
+    decode(marker, bl);
+    decode(next_step_marker, bl);
+    decode(total_entries, bl);
+    decode(pos, bl);
+    decode(timestamp, bl);
      DECODE_FINISH(bl);
   }
 
@@ -160,14 +163,14 @@ struct rgw_data_sync_status {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(sync_info, bl);
+    encode(sync_info, bl);
     /* sync markers are encoded separately */
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-    ::decode(sync_info, bl);
+    decode(sync_info, bl);
     /* sync markers are decoded separately */
      DECODE_FINISH(bl);
   }
@@ -280,6 +283,7 @@ public:
   int read_source_log_shards_info(map<int, RGWDataChangesLogInfo> *shards_info);
   int read_source_log_shards_next(map<int, string> shard_markers, map<int, rgw_datalog_shard_data> *result);
   int read_sync_status(rgw_data_sync_status *sync_status);
+  int read_recovering_shards(const int num_shards, set<int>& recovering_shards);
   int init_sync_status(int num_shards);
   int run_sync(int num_shards);
 
@@ -329,6 +333,11 @@ public:
   int read_sync_status(rgw_data_sync_status *sync_status) {
     return source_log.read_sync_status(sync_status);
   }
+
+  int read_recovering_shards(const int num_shards, set<int>& recovering_shards) {
+    return source_log.read_recovering_shards(num_shards, recovering_shards);
+  }
+
   int init_sync_status() { return source_log.init_sync_status(num_shards); }
 
   int read_log_info(rgw_datalog_info *log_info) {
@@ -362,15 +371,15 @@ struct rgw_bucket_shard_full_sync_marker {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(position, bl);
-    ::encode(count, bl);
+    encode(position, bl);
+    encode(count, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-    ::decode(position, bl);
-    ::decode(count, bl);
+    decode(position, bl);
+    decode(count, bl);
      DECODE_FINISH(bl);
   }
 
@@ -388,13 +397,13 @@ struct rgw_bucket_shard_inc_sync_marker {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(position, bl);
+    encode(position, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-    ::decode(position, bl);
+    decode(position, bl);
      DECODE_FINISH(bl);
   }
 
@@ -424,17 +433,17 @@ struct rgw_bucket_shard_sync_info {
 
   void encode(bufferlist& bl) const {
     ENCODE_START(1, 1, bl);
-    ::encode(state, bl);
-    ::encode(full_marker, bl);
-    ::encode(inc_marker, bl);
+    encode(state, bl);
+    encode(full_marker, bl);
+    encode(inc_marker, bl);
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::iterator& bl) {
      DECODE_START(1, bl);
-     ::decode(state, bl);
-     ::decode(full_marker, bl);
-     ::decode(inc_marker, bl);
+     decode(state, bl);
+     decode(full_marker, bl);
+     decode(inc_marker, bl);
      DECODE_FINISH(bl);
   }
 

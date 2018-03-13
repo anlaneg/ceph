@@ -36,9 +36,6 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
-using boost::none;
-using boost::optional;
-
 using rgw::IAM::ARN;
 using rgw::IAM::Effect;
 using rgw::IAM::op_to_perm;
@@ -75,6 +72,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_TOO_MANY_BUCKETS, {400, "TooManyBuckets" }},
     { ERR_MALFORMED_XML, {400, "MalformedXML" }},
     { ERR_AMZ_CONTENT_SHA256_MISMATCH, {400, "XAmzContentSHA256Mismatch" }},
+    { ERR_MALFORMED_DOC, {400, "MalformedPolicyDocument"}},
     { ERR_INVALID_TAG, {400, "InvalidTag"}},
     { ERR_MALFORMED_ACL_ERROR, {400, "MalformedACLError" }},
     { ERR_INVALID_ENCRYPTION_ALGORITHM, {400, "InvalidEncryptionAlgorithmError" }},
@@ -94,6 +92,7 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_NO_SUCH_LC, {404, "NoSuchLifecycleConfiguration"}},
     { ERR_NO_SUCH_BUCKET_POLICY, {404, "NoSuchBucketPolicy"}},
     { ERR_NO_SUCH_USER, {404, "NoSuchUser"}},
+    { ERR_NO_ROLE_FOUND, {404, "NoSuchEntity"}},
     { ERR_NO_SUCH_SUBUSER, {404, "NoSuchSubUser"}},
     { ERR_METHOD_NOT_ALLOWED, {405, "MethodNotAllowed" }},
     { ETIMEDOUT, {408, "RequestTimeout" }},
@@ -102,6 +101,8 @@ rgw_http_errors rgw_http_s3_errors({
     { ERR_EMAIL_EXIST, {409, "EmailExists" }},
     { ERR_KEY_EXIST, {409, "KeyExists"}},
     { ERR_TAG_CONFLICT, {409, "OperationAborted"}},
+    { ERR_ROLE_EXISTS, {409, "EntityAlreadyExists"}},
+    { ERR_DELETE_CONFLICT, {409, "DeleteConflict"}},
     { ERR_INVALID_SECRET_KEY, {400, "InvalidSecretKey"}},
     { ERR_INVALID_KEY_TYPE, {400, "InvalidKeyType"}},
     { ERR_INVALID_CAP, {400, "InvalidCapability"}},
@@ -137,6 +138,10 @@ rgw_http_errors rgw_http_swift_errors({
 int rgw_perf_start(CephContext *cct)
 {
   PerfCountersBuilder plb(cct, cct->_conf->name.to_str(), l_rgw_first, l_rgw_last);
+
+  // RGW emits comparatively few metrics, so let's be generous
+  // and mark them all USEFUL to get transmission to ceph-mgr by default.
+  plb.set_prio_default(PerfCountersBuilder::PRIO_USEFUL);
 
   plb.add_u64_counter(l_rgw_req, "req", "Requests");
   plb.add_u64_counter(l_rgw_failed_req, "failed_req", "Aborted requests");
@@ -303,14 +308,13 @@ req_state::~req_state() {
   delete formatter;
 }
 
-bool search_err(rgw_http_errors& errs, int err_no, bool is_website_redirect, int& http_ret, string& code)
+bool search_err(rgw_http_errors& errs, int err_no, int& http_ret, string& code)
 {
   auto r = errs.find(err_no);
   if (r != errs.end()) {
-    if (! is_website_redirect)
-      http_ret = r->second.first;
-     code = r->second.second;
-     return true;
+    http_ret = r->second.first;
+    code = r->second.second;
+    return true;
   }
   return false;
 }
@@ -323,17 +327,14 @@ void set_req_state_err(struct rgw_err& err,	/* out */
     err_no = -err_no;
 
   err.ret = -err_no;
-  bool is_website_redirect = false;
 
   if (prot_flags & RGW_REST_SWIFT) {
-    if (search_err(rgw_http_swift_errors, err_no, is_website_redirect, err.http_ret, err.err_code))
+    if (search_err(rgw_http_swift_errors, err_no, err.http_ret, err.err_code))
       return;
   }
 
   //Default to searching in s3 errors
-  is_website_redirect |= (prot_flags & RGW_REST_WEBSITE)
-		&& err_no == ERR_WEBSITE_REDIRECT && err.is_clear();
-  if (search_err(rgw_http_s3_errors, err_no, is_website_redirect, err.http_ret, err.err_code))
+  if (search_err(rgw_http_s3_errors, err_no, err.http_ret, err.err_code))
       return;
   dout(0) << "WARNING: set_req_state_err err_no=" << err_no
 	<< " resorting to 500" << dendl;
@@ -1087,11 +1088,11 @@ bool verify_requester_payer_permission(struct req_state *s)
 }
 
 namespace {
-Effect eval_or_pass(const optional<Policy>& policy,
-			   const rgw::IAM::Environment& env,
-			   const rgw::auth::Identity& id,
-			   const uint64_t op,
-			   const ARN& arn) {
+Effect eval_or_pass(const boost::optional<Policy>& policy,
+		    const rgw::IAM::Environment& env,
+		    const rgw::auth::Identity& id,
+		    const uint64_t op,
+		    const ARN& arn) {
   if (!policy)
     return Effect::Pass;
   else
@@ -1103,7 +1104,7 @@ bool verify_bucket_permission(struct req_state * const s,
 			      const rgw_bucket& bucket,
                               RGWAccessControlPolicy * const user_acl,
                               RGWAccessControlPolicy * const bucket_acl,
-			      const optional<Policy>& bucket_policy,
+			      const boost::optional<Policy>& bucket_policy,
                               const uint64_t op)
 {
   if (!verify_requester_payer_permission(s))
@@ -1188,7 +1189,7 @@ static inline bool check_deferred_bucket_perms(struct req_state * const s,
 					       const rgw_bucket& bucket,
 					       RGWAccessControlPolicy * const user_acl,
 					       RGWAccessControlPolicy * const bucket_acl,
-					       const optional<Policy>& bucket_policy,
+					       const boost::optional<Policy>& bucket_policy,
 					       const uint8_t deferred_check,
 					       const uint64_t op)
 {
@@ -1211,7 +1212,7 @@ bool verify_object_permission(struct req_state * const s,
                               RGWAccessControlPolicy * const user_acl,
                               RGWAccessControlPolicy * const bucket_acl,
                               RGWAccessControlPolicy * const object_acl,
-                              const optional<Policy>& bucket_policy,
+                              const boost::optional<Policy>& bucket_policy,
                               const uint64_t op)
 {
   if (!verify_requester_payer_permission(s))
@@ -1737,7 +1738,8 @@ bool RGWUserCaps::is_valid_cap_type(const string& tp)
                                     "bilog",
                                     "mdlog",
                                     "datalog",
-                                    "opstate" };
+                                    "opstate",
+                                    "roles"};
 
   for (unsigned int i = 0; i < sizeof(cap_type) / sizeof(char *); ++i) {
     if (tp.compare(cap_type[i]) == 0) {
@@ -1818,8 +1820,9 @@ string rgw_pool::to_str() const
 
 void rgw_raw_obj::decode_from_rgw_obj(bufferlist::iterator& bl)
 {
+  using ceph::decode;
   rgw_obj old_obj;
-  ::decode(old_obj, bl);
+  decode(old_obj, bl);
 
   get_obj_bucket_and_oid_loc(old_obj, oid, loc);
   pool = old_obj.get_explicit_data_pool();

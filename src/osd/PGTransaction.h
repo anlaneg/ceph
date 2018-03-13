@@ -455,7 +455,7 @@ public:
     map<string, bufferlist> &keys  ///< [in] omap keys, may be cleared
     ) {
     bufferlist bl;
-    ::encode(keys, bl);
+    encode(keys, bl);
     omap_setkeys(hoid, bl);
   }
   void omap_rmkeys(
@@ -473,7 +473,7 @@ public:
     set<string> &keys              ///< [in] omap keys, may be cleared
     ) {
     bufferlist bl;
-    ::encode(keys, bl);
+    encode(keys, bl);
     omap_rmkeys(hoid, bl);
   }
   void omap_setheader(

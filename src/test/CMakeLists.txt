@@ -7,7 +7,6 @@ add_library(unit-main OBJECT unit.cc)
 set_source_files_properties(unit.cc PROPERTIES
   COMPILE_FLAGS ${UNITTEST_CXX_FLAGS})
 
-add_subdirectory(bench)
 add_subdirectory(cls_hello)
 add_subdirectory(cls_lock)
 add_subdirectory(cls_log)
@@ -60,7 +59,7 @@ if(WITH_RBD)
   add_subdirectory(rbd_mirror)
 endif(WITH_RBD)
 add_subdirectory(system)
-if(WITH_FIO)
+if(WITH_FIO OR WITH_SYSTEM_FIO)
   add_subdirectory(fio)
 endif()
 
@@ -202,7 +201,6 @@ if(${WITH_RADOSGW})
     cls_rgw_client
     cls_user_client
     cls_lock_client
-    Boost::regex
     ${BLKID_LIBRARIES}
     ${CURL_LIBRARIES}
     ${EXPAT_LIBRARIES}
@@ -232,7 +230,6 @@ if(${WITH_RADOSGW})
     cls_rgw_client
     cls_user_client
     cls_lock_client
-    Boost::regex
     ${BLKID_LIBRARIES}
     ${CURL_LIBRARIES}
     ${EXPAT_LIBRARIES}
@@ -415,29 +412,12 @@ if(PERF_LOCAL_FLAGS)
 endif()
 target_link_libraries(ceph_perf_local os global ${UNITTEST_LIBS})
 
-# ceph_xattr_bench
-add_executable(ceph_xattr_bench
-  xattr_bench.cc
-  )
-set_target_properties(ceph_xattr_bench PROPERTIES COMPILE_FLAGS
-  ${UNITTEST_CXX_FLAGS})
-target_link_libraries(ceph_xattr_bench
-  os
-  ceph-common
-  ${UNITTEST_LIBS}
-  global
-  ${EXTRALIBS}
-  ${BLKID_LIBRARIES}
-  ${CMAKE_DL_LIBS}
-  )
-
 install(TARGETS
   ceph_bench_log
   ceph_multi_stress_watch
   ceph_objectstore_bench
   ceph_omapbench
   ceph_perf_local
-  ceph_xattr_bench
   DESTINATION bin)
 
 # ceph_test_filejournal
@@ -527,9 +507,14 @@ add_executable(ceph_test_admin_socket_output
   admin_socket_output_tests.cc
   )
 target_link_libraries(ceph_test_admin_socket_output
-  ceph-common
-  ${Boost_FILESYSTEM_LIBRARY}
-  )
+  ceph-common)
+if(CXX_STDLIB STREQUAL "libstdc++")
+  target_link_libraries(ceph_test_admin_socket_output
+    -lstdc++fs)
+elseif(CXX_STDLIB STREQUAL "libc++")
+  target_link_libraries(ceph_test_admin_socket_output
+    -lc++experimental)
+endif()
 install(TARGETS
   ceph_test_admin_socket_output
   DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -569,7 +554,7 @@ if(WITH_RBD)
   endif(FREEBSD)
 endif(WITH_RBD)
 if(WITH_RADOSGW)
-  add_dependencies(tests radosgw-admin)
+  add_dependencies(tests radosgw radosgw-admin)
 endif(WITH_RADOSGW)
 if(NOT FREEBSD)
   add_dependencies(tests ceph-detect-init)
@@ -593,13 +578,20 @@ add_ceph_test(unittest_bufferlist.sh ${CMAKE_SOURCE_DIR}/src/unittest_bufferlist
 
 add_test(NAME run-tox-ceph-disk COMMAND bash ${CMAKE_SOURCE_DIR}/src/ceph-disk/run-tox.sh)
 add_test(NAME run-tox-ceph-detect-init COMMAND bash ${CMAKE_SOURCE_DIR}/src/ceph-detect-init/run-tox.sh)
+if(WITH_MGR)
+    add_test(NAME run-tox-mgr-dashboard_v2 COMMAND bash ${CMAKE_SOURCE_DIR}/src/pybind/mgr/dashboard_v2/run-tox.sh)
+endif(WITH_MGR)
 
 set(CEPH_DISK_VIRTUALENV ${CEPH_BUILD_VIRTUALENV}/ceph-disk-virtualenv)
 set(CEPH_DETECT_INIT_VIRTUALENV ${CEPH_BUILD_VIRTUALENV}/ceph-detect-init-virtualenv)
+if(WITH_MGR)
+    set(MGR_DASHBOARD_V2_VIRTUALENV ${CEPH_BUILD_VIRTUALENV}/mgr-dashboard_v2-virtualenv)
+endif(WITH_MGR)
 
 set_property(TEST 
   run-tox-ceph-disk
   run-tox-ceph-detect-init
+  run-tox-mgr-dashboard_v2
   PROPERTY ENVIRONMENT
   CEPH_BUILD_DIR=${CMAKE_BINARY_DIR}
   CEPH_ROOT=${CMAKE_SOURCE_DIR}
@@ -608,9 +600,11 @@ set_property(TEST
   CEPH_BUILD_VIRTUALENV=${CEPH_BUILD_VIRTUALENV}
   CEPH_DISK_VIRTUALENV=${CEPH_DISK_VIRTUALENV}
   CEPH_DETECT_INIT_VIRTUALENV=${CEPH_DETECT_INIT_VIRTUALENV}
+  MGR_DASHBOARD_V2_VIRTUALENV=${MGR_DASHBOARD_V2_VIRTUALENV}
   LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib
   PATH=$ENV{PATH}:${CMAKE_RUNTIME_OUTPUT_DIRECTORY}:${CMAKE_SOURCE_DIR}/src
   PYTHONPATH=${CMAKE_SOURCE_DIR}/src/pybind
+  WITH_PYTHON3=${WITH_PYTHON3}
   )
 
 # unittest_admin_socket
@@ -918,5 +912,9 @@ add_executable(unittest_pageset test_pageset.cc)
 add_ceph_unittest(unittest_pageset)
 target_link_libraries(unittest_pageset global)
 
-#make check ends here
+# unittest_any_
+add_executable(unittest_any test_any.cc)
+add_ceph_unittest(unittest_any)
+target_link_libraries(unittest_any)
 
+#make check ends here

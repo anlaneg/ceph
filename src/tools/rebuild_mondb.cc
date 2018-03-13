@@ -46,12 +46,12 @@ static void add_auth(KeyServerData::Incremental& auth_inc,
 {
   AuthMonitor::Incremental inc;
   inc.inc_type = AuthMonitor::AUTH_DATA;
-  ::encode(auth_inc, inc.auth_data);
+  encode(auth_inc, inc.auth_data);
   inc.auth_type = CEPH_AUTH_CEPHX;
 
   bufferlist bl;
   __u8 v = 1;
-  ::encode(v, bl);
+  encode(v, bl);
   inc.encode(bl, CEPH_FEATURES_ALL);
 
   const string prefix("auth");
@@ -100,7 +100,7 @@ static int get_auth_inc(const string& keyring_path,
     }
     auto bp = bl.begin();
     try {
-      ::decode(keyring, bp);
+      decode(keyring, bp);
     } catch (const buffer::error& e) {
       cerr << "error decoding keyring: " << keyring_path << std::endl;
       return -EINVAL;
@@ -122,8 +122,8 @@ static int get_auth_inc(const string& keyring_path,
     // fallback to default caps for an OSD
     //   osd 'allow *' mon 'allow rwx'
     // as suggested by document.
-    ::encode(string("allow *"), caps["osd"]);
-    ::encode(string("allow rwx"), caps["mon"]);
+    encode(string("allow *"), caps["osd"]);
+    encode(string("allow rwx"), caps["mon"]);
   } else {
     caps = new_inc.caps;
   }
@@ -240,6 +240,7 @@ int update_osdmap(ObjectStore& fs, OSDSuperblock& sb, MonitorDBStore& ms)
 
   unsigned nadded = 0;
 
+  auto ch = fs.open_collection(coll_t::meta());
   OSDMap osdmap;
   for (auto e = std::max(last_committed+1, sb.oldest_map);
        e <= sb.newest_map; e++) {
@@ -250,7 +251,7 @@ int update_osdmap(ObjectStore& fs, OSDSuperblock& sb, MonitorDBStore& ms)
     {
       const auto oid = OSD::get_inc_osdmap_pobject_name(e);
       bufferlist bl;
-      int nread = fs.read(coll_t::meta(), oid, 0, 0, bl);
+      int nread = fs.read(ch, oid, 0, 0, bl);
       if (nread <= 0) {
         cerr << "missing " << oid << std::endl;
         return -EINVAL;
@@ -285,7 +286,7 @@ int update_osdmap(ObjectStore& fs, OSDSuperblock& sb, MonitorDBStore& ms)
     {
       const auto oid = OSD::get_osdmap_pobject_name(e);
       bufferlist bl;
-      int nread = fs.read(coll_t::meta(), oid, 0, 0, bl);
+      int nread = fs.read(ch, oid, 0, 0, bl);
       if (nread <= 0) {
         cerr << "missing " << oid << std::endl;
         return -EINVAL;
@@ -380,12 +381,12 @@ int update_pgmap_pg(ObjectStore& fs, MonitorDBStore& ms)
     if (r >= 0) {
       pg_stat_t pg_stat;
       auto bp = bl.begin();
-      ::decode(pg_stat, bp);
+      decode(pg_stat, bp);
       latest_epoch = pg_stat.reported_epoch;
     }
     if (info.stats.reported_epoch > latest_epoch) {
       bufferlist bl;
-      ::encode(info.stats, bl);
+      encode(info.stats, bl);
       t->put(prefix, stringify(pgid.pgid), bl);
       npg++;
     }

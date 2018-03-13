@@ -223,7 +223,7 @@ TEST_P(CompressorTest, sharded_input_decompress)
   size_t left = out.length()-small_prefix_size;
   size_t offs = small_prefix_size;
   while( left > 0 ){
-    size_t shard_size = MIN( 2048, left );
+    size_t shard_size = std::min<size_t>(2048, left);
     tmp.substr_of(out, offs, shard_size );
     out2.append( tmp );
     left -= shard_size;
@@ -248,6 +248,7 @@ void test_compress(CompressorRef compressor, size_t size)
     int res = compressor->compress(in, out);
     EXPECT_EQ(res, 0);
   }
+  free(data);
 }
 
 void test_decompress(CompressorRef compressor, size_t size)
@@ -265,6 +266,7 @@ void test_decompress(CompressorRef compressor, size_t size)
     int res = compressor->decompress(out, out_dec);
     EXPECT_EQ(res, 0);
   }
+  free(data);
 }
 
 TEST_P(CompressorTest, compress_1024)
@@ -330,6 +332,9 @@ INSTANTIATE_TEST_CASE_P(
 #endif
     "zlib/noisal",
     "snappy",
+#ifdef HAVE_BROTLI
+    "brotli",
+#endif
     "zstd"));
 
 #ifdef __x86_64__
@@ -361,7 +366,7 @@ TEST(ZlibCompressor, zlib_isal_compatibility)
   res = zlib->decompress(out, after);
   EXPECT_EQ(res, 0);
   bufferlist exp;
-  exp.append(test);
+  exp.append(static_cast<char*>(test));
   EXPECT_TRUE(exp.contents_equal(after));
   after.clear();
   out.clear();
@@ -371,15 +376,13 @@ TEST(ZlibCompressor, zlib_isal_compatibility)
   EXPECT_EQ(res, 0);
   res = isal->decompress(out, after);
   EXPECT_EQ(res, 0);
-  exp.append(test);
+  exp.append(static_cast<char*>(test));
   EXPECT_TRUE(exp.contents_equal(after));
 }
 #endif
 
 TEST(CompressionPlugin, all)
 {
-  const char* env = getenv("CEPH_LIB");
-  std::string directory(env ? env : ".libs");
   CompressorRef compressor;
   PluginRegistry *reg = g_ceph_context->get_plugin_registry();
   EXPECT_TRUE(reg);

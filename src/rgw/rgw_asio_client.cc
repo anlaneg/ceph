@@ -20,7 +20,7 @@ ClientIO::ClientIO(tcp::socket& socket,
 
 ClientIO::~ClientIO() = default;
 
-void ClientIO::init_env(CephContext *cct)
+int ClientIO::init_env(CephContext *cct)
 {
   env.init(cct);
 
@@ -65,11 +65,12 @@ void ClientIO::init_env(CephContext *cct)
   // split uri from query
   auto url = request.target();
   auto pos = url.find('?');
-  auto query = url.substr(pos + 1);
-  url = url.substr(0, pos);
-
+  if (pos != url.npos) {
+    auto query = url.substr(pos + 1);
+    env.set("QUERY_STRING", query.to_string());
+    url = url.substr(0, pos);
+  }
   env.set("REQUEST_URI", url.to_string());
-  env.set("QUERY_STRING", query.to_string());
   env.set("SCRIPT_URI", url.to_string()); /* FIXME */
 
   char port_buf[16];
@@ -78,6 +79,7 @@ void ClientIO::init_env(CephContext *cct)
   env.set("REMOTE_ADDR", socket.remote_endpoint().address().to_string());
   // TODO: set SERVER_PORT_SECURE if using ssl
   // TODO: set REMOTE_USER if authenticated
+  return 0;
 }
 
 size_t ClientIO::write_data(const char* buf, size_t len)
@@ -171,7 +173,7 @@ size_t ClientIO::complete_header()
     sent += txbuf.sputn(timestr, strlen(timestr));
   }
 
-  if (parser.is_keep_alive()) {
+  if (parser.keep_alive()) {
     constexpr char CONN_KEEP_ALIVE[] = "Connection: Keep-Alive\r\n";
     sent += txbuf.sputn(CONN_KEEP_ALIVE, sizeof(CONN_KEEP_ALIVE) - 1);
   } else {

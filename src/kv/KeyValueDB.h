@@ -54,12 +54,12 @@ public:
       ) {
       bufferlist::iterator p = to_set_bl.begin();
       uint32_t num;
-      ::decode(num, p);
+      decode(num, p);
       while (num--) {
 	string key;
 	bufferlist value;
-	::decode(key, p);
-	::decode(value, p);
+	decode(key, p);
+	decode(value, p);
 	set(prefix, key, value);
       }
     }
@@ -85,10 +85,10 @@ public:
     ) {
       bufferlist::iterator p = keys_bl.begin();
       uint32_t num;
-      ::decode(num, p);
+      decode(num, p);
       while (num--) {
 	string key;
-	::decode(key, p);
+	decode(key, p);
 	rmkey(prefix, key);
       }
     }
@@ -151,6 +151,7 @@ public:
   /// create a new instance
   static KeyValueDB *create(CephContext *cct, const std::string& type,
 			    const std::string& dir,
+			    map<std::string,std::string> options = {},
 			    void *p = NULL);
 
   /// test whether we can successfully initialize; may have side effects (e.g., create)

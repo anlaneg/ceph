@@ -30,7 +30,7 @@ Build-Depends: bc,
                libbabeltrace-dev,
                libblkid-dev (>= 2.17),
                libcunit1-dev,
-               libcurl4-gnutls-dev,
+               libcurl4-openssl-dev,
                libexpat1-dev,
                libfuse-dev,
                libgoogle-perftools-dev [i386 amd64 arm64],
@@ -53,6 +53,9 @@ Build-Depends: bc,
                python-cherrypy3,
                python-nose,
                python-pecan,
+               python-bcrypt,
+               python-tox,
+               python-coverage,
                python-prettytable,
                python-setuptools,
                python-sphinx,
@@ -170,8 +173,10 @@ Package: ceph-mgr
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
          python-cherrypy3,
+         python-jinja2,
          python-openssl,
          python-pecan,
+         python-bcrypt,
          python-werkzeug,
          ${misc:Depends},
          ${python:Depends},
@@ -202,7 +207,6 @@ Description: debugging symbols for ceph-mgr
 Package: ceph-mon
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
-         python-flask,
          ${misc:Depends},
          ${shlibs:Depends},
 Recommends: ceph-common,
@@ -235,6 +239,7 @@ Package: ceph-osd
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
          parted,
+         lvm2,
          ${misc:Depends},
          ${python:Depends},
          ${shlibs:Depends},
@@ -762,6 +767,23 @@ Description: Python 2 libraries for the Ceph librados library
  This package contains Python 2 libraries for interacting with Ceph's
  RADOS object storage.
 
+Package: python-rados-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python-rados (= ${binary:Version}),
+         python-dbg,
+         ${misc:Depends},
+Description: Python 2 libraries for the Ceph librados library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 2 libraries for interacting with Ceph's
+ RADOS object storage.
+ .
+ This package contains the debugging symbols for python-rados.
+
 Package: python3-rados
 Architecture: linux-any
 Section: python
@@ -776,6 +798,23 @@ Description: Python 3 libraries for the Ceph librados library
  .
  This package contains Python 3 libraries for interacting with Ceph's
  RADOS object storage.
+
+Package: python3-rados-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python3-rados (= ${binary:Version}),
+         python3-dbg,
+         ${misc:Depends}
+Description: Python 3 libraries for the Ceph librados library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 3 libraries for interacting with Ceph's
+ RADOS object storage.
+ .
+ This package contains the debugging symbols for python-rados.
 
 Package: python-rbd
 Architecture: linux-any
@@ -794,6 +833,23 @@ Description: Python 2 libraries for the Ceph librbd library
  This package contains Python 2 libraries for interacting with Ceph's
  RBD block device library.
 
+Package: python-rbd-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python-rbd (= ${binary:Version}),
+         python-dbg,
+         ${misc:Depends},
+Description: Python 2 libraries for the Ceph librbd library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 2 libraries for interacting with Ceph's
+ RBD block device library.
+ .
+ This package contains the debugging symbols for python-rbd.
+
 Package: python3-rbd
 Architecture: linux-any
 Section: python
@@ -808,6 +864,23 @@ Description: Python 3 libraries for the Ceph librbd library
  .
  This package contains Python 3 libraries for interacting with Ceph's
  RBD block device library.
+
+Package: python3-rbd-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python3-rbd (= ${binary:Version}),
+         python3-dbg,
+         ${misc:Depends},
+Description: Python 3 libraries for the Ceph librbd library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 3 libraries for interacting with Ceph's
+ RBD block device library.
+ .
+ This package contains the debugging symbols for python-rbd.
 
 Package: python-rgw
 Architecture: linux-any
@@ -826,6 +899,23 @@ Description: Python 2 libraries for the Ceph librgw library
  This package contains Python 2 libraries for interacting with Ceph's
  RGW library.
 
+Package: python-rgw-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python-rgw (= ${binary:Version}),
+         python-dbg,
+         ${misc:Depends},
+Description: Python 2 libraries for the Ceph librgw library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 2 libraries for interacting with Ceph's
+ RGW library.
+ .
+ This package contains the debugging symbols for python-rgw.
+
 Package: python3-rgw
 Architecture: linux-any
 Section: python
@@ -840,6 +930,23 @@ Description: Python 3 libraries for the Ceph librgw library
  .
  This package contains Python 3 libraries for interacting with Ceph's
  RGW library.
+
+Package: python3-rgw-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python3-rgw (= ${binary:Version}),
+         python3-dbg,
+         ${misc:Depends},
+Description: Python 3 libraries for the Ceph librgw library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 3 libraries for interacting with Ceph's
+ RGW library.
+ .
+ This package contains the debugging symbols for python3-rgw.
 
 Package: python-cephfs
 Architecture: linux-any
@@ -858,6 +965,23 @@ Description: Python 2 libraries for the Ceph libcephfs library
  This package contains Python 2 libraries for interacting with Ceph's
  CephFS file system client library.
 
+Package: python-cephfs-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python-cephfs (= ${binary:Version}),
+         python-dbg,
+         ${misc:Depends},
+Description: Python 2 libraries for the Ceph libcephfs library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 2 libraries for interacting with Ceph's
+ CephFS file system client library.
+ .
+ This package contains the debugging symbols for python-cephfs.
+
 Package: python3-cephfs
 Architecture: linux-any
 Section: python
@@ -872,6 +996,23 @@ Description: Python 3 libraries for the Ceph libcephfs library
  .
  This package contains Python 3 libraries for interacting with Ceph's
  CephFS file system client library.
+
+Package: python3-cephfs-dbg
+Architecture: linux-any
+Section: debug
+Priority: extra
+Depends: python3-cephfs (= ${binary:Version}),
+         python3-dbg,
+         ${misc:Depends},
+Description: Python 3 libraries for the Ceph libcephfs library
+ Ceph is a massively scalable, open-source, distributed
+ storage system that runs on commodity hardware and delivers object,
+ block and file system storage.
+ .
+ This package contains Python 3 libraries for interacting with Ceph's
+ CephFS file system client library.
+ .
+ This package contains the debugging symbols for python3-cephfs.
 
 Package: python3-ceph-argparse
 Architecture: linux-any

@@ -89,9 +89,9 @@ int stress_test(uint64_t num_ops, uint64_t num_objs,
 
   for (uint64_t i = 0; i < num_ops; ++i) {
     uint64_t offset = random() % max_obj_size;
-    uint64_t max_len = MIN(max_obj_size - offset, max_op_len);
+    uint64_t max_len = std::min(max_obj_size - offset, max_op_len);
     // no zero-length operations
-    uint64_t length = random() % (MAX(max_len - 1, 1)) + 1;
+    uint64_t length = random() % (std::max<uint64_t>(max_len - 1, 1)) + 1;
     std::string oid = "test" + stringify(random() % num_objs);
     bool is_read = random() < percent_reads * RAND_MAX;
     ceph::shared_ptr<op_data> op(new op_data(oid, offset, length, is_read));
@@ -355,9 +355,9 @@ int main(int argc, const char **argv)
 {
   std::vector<const char*> args;
   argv_to_vec(argc, argv, args);
-  env_to_vec(args);
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
-			 CODE_ENVIRONMENT_UTILITY, 0);
+			 CODE_ENVIRONMENT_UTILITY,
+			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
 
   long long delay_ns = 0;
   long long num_ops = 1000;

@@ -47,7 +47,7 @@ void SessionMap::register_perfcounters()
   PerfCountersBuilder plb(g_ceph_context, "mds_sessions",
       l_mdssm_first, l_mdssm_last);
   plb.add_u64(l_mdssm_session_count, "session_count",
-      "Session count", "sess", PerfCountersBuilder::PRIO_USEFUL);
+      "Session count", "sess", PerfCountersBuilder::PRIO_INTERESTING);
   plb.add_u64_counter(l_mdssm_session_add, "session_add",
       "Sessions added");
   plb.add_u64_counter(l_mdssm_session_remove, "session_remove",
@@ -111,7 +111,7 @@ void SessionMapStore::decode_header(
 {
   bufferlist::iterator q = header_bl.begin();
   DECODE_START(1, q)
-  ::decode(version, q);
+  decode(version, q);
   DECODE_FINISH(q);
 }
 
@@ -119,7 +119,7 @@ void SessionMapStore::encode_header(
     bufferlist *header_bl)
 {
   ENCODE_START(1, 1, *header_bl);
-  ::encode(version, *header_bl);
+  encode(version, *header_bl);
   ENCODE_FINISH(*header_bl);
 }
 
@@ -482,16 +482,16 @@ void SessionMapStore::decode_legacy(bufferlist::iterator& p)
 {
   utime_t now = ceph_clock_now();
   uint64_t pre;
-  ::decode(pre, p);
+  decode(pre, p);
   if (pre == (uint64_t)-1) {
     DECODE_START_LEGACY_COMPAT_LEN(3, 3, 3, p);
     assert(struct_v >= 2);
     
-    ::decode(version, p);
+    decode(version, p);
     
     while (!p.end()) {
       entity_inst_t inst;
-      ::decode(inst.name, p);
+      decode(inst.name, p);
       Session *s = get_or_add_session(inst);
       if (s->is_closed())
         s->set_state(Session::STATE_OPEN);
@@ -505,7 +505,7 @@ void SessionMapStore::decode_legacy(bufferlist::iterator& p)
 
     // this is a meaningless upper bound.  can be ignored.
     __u32 n;
-    ::decode(n, p);
+    decode(n, p);
     
     while (n-- && !p.end()) {
       bufferlist::iterator p2 = p;
@@ -972,7 +972,7 @@ int SessionFilter::parse(
        * Strict boolean parser.  Allow true/false/0/1.
        * Anything else is -EINVAL.
        */
-      auto is_true = [](const std::string &bstr, bool *out) -> bool
+      auto is_true = [](std::string_view bstr, bool *out) -> bool
       {
         assert(out != nullptr);
 
@@ -1043,10 +1043,10 @@ bool SessionFilter::match(
 
 std::ostream& operator<<(std::ostream &out, const Session &s)
 {
- if (s.get_human_name() == stringify(s.info.inst.name.num())) {
+ if (s.get_human_name() == stringify(s.get_client())) {
    out << s.get_human_name();
  } else {
-   out << s.get_human_name() << " (" << std::dec << s.info.inst.name.num() << ")";
+   out << s.get_human_name() << " (" << std::dec << s.get_client() << ")";
  }
  return out;
 }

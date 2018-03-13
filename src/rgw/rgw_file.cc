@@ -23,9 +23,9 @@
 #include "rgw_auth_s3.h"
 #include "rgw_user.h"
 #include "rgw_bucket.h"
-
 #include "rgw_file.h"
 #include "rgw_lib_frontend.h"
+#include "common/errno.h"
 
 #include <atomic>
 
@@ -201,8 +201,6 @@ namespace rgw {
 	  if (req.matched) {
 	    /* we need rgw object's key name equal to file name, if
 	     * not return NULL */
-#if 0 /* original behavior which motivated FLAG_EXACT_MATCH
-       * no longer reproduces */
 	    if ((flags & RGWFileHandle::FLAG_EXACT_MATCH) &&
 		!req.exact_matched) {
 	      lsubdout(get_context(), rgw, 15)
@@ -211,7 +209,6 @@ namespace rgw {
 		<< path << dendl;
 	      goto done;
 	    }
-#endif
 	    fhr = lookup_fh(parent, path,
 			    RGWFileHandle::FLAG_CREATE|
 			    ((req.is_dir) ?
@@ -954,10 +951,6 @@ namespace rgw {
   }
 
   RGWFileHandle::~RGWFileHandle() {
-    /* in the non-delete case, handle may still be in handle table */
-    if (fh_hook.is_linked()) {
-      fs->fh_cache.remove(fh.fh_hk.object, this, FHCache::FLAG_LOCK);
-    }
     /* cond-unref parent */
     if (parent && (! parent->is_mount())) {
       /* safe because if parent->unref causes its deletion,
@@ -974,18 +967,20 @@ namespace rgw {
   void RGWFileHandle::encode_attrs(ceph::buffer::list& ux_key1,
 				   ceph::buffer::list& ux_attrs1)
   {
+    using ceph::encode;
     fh_key fhk(this->fh.fh_hk);
-    rgw::encode(fhk, ux_key1);
-    rgw::encode(*this, ux_attrs1);
+    encode(fhk, ux_key1);
+    encode(*this, ux_attrs1);
   } /* RGWFileHandle::encode_attrs */
 
   DecodeAttrsResult RGWFileHandle::decode_attrs(const ceph::buffer::list* ux_key1,
                                                 const ceph::buffer::list* ux_attrs1)
   {
+    using ceph::decode;
     DecodeAttrsResult dar { false, false };
     fh_key fhk;
     auto bl_iter_key1  = const_cast<buffer::list*>(ux_key1)->begin();
-    rgw::decode(fhk, bl_iter_key1);
+    decode(fhk, bl_iter_key1);
     if (fhk.version >= 2) {
       assert(this->fh.fh_hk == fhk.fh_hk);
     } else {
@@ -993,7 +988,7 @@ namespace rgw {
     }
 
     auto bl_iter_unix1 = const_cast<buffer::list*>(ux_attrs1)->begin();
-    rgw::decode(*this, bl_iter_unix1);
+    decode(*this, bl_iter_unix1);
     if (this->state.version < 2) {
       get<1>(dar) = true;
     }
@@ -1005,9 +1000,11 @@ namespace rgw {
     lsubdout(fs->get_context(), rgw, 17)
       << __func__ << " " << *this
       << dendl;
-    /* remove if still in fh_cache */
+    /* in the non-delete case, handle may still be in handle table */
     if (fh_hook.is_linked()) {
-      fs->fh_cache.remove(fh.fh_hk.object, this, FHCache::FLAG_LOCK);
+      /* in this case, we are being called from a context which holds
+       * the partition lock */
+      fs->fh_cache.remove(fh.fh_hk.object, this, FHCache::FLAG_NONE);
     }
     return true;
   } /* RGWFileHandle::reclaim */
@@ -1363,7 +1360,7 @@ namespace rgw {
     if (need_to_wait) {
       orig_data = data;
     }
-    hash.Update((const byte *)data.c_str(), data.length());
+    hash.Update((const unsigned char *)data.c_str(), data.length());
     op_ret = put_data_and_throttle(filter, data, ofs, need_to_wait);
     if (op_ret < 0) {
       if (!need_to_wait || op_ret != -EEXIST) {
@@ -1448,7 +1445,7 @@ namespace rgw {
       cs_info.compression_type = plugin->get_type_name();
       cs_info.orig_size = s->obj_size;
       cs_info.blocks = std::move(compressor->get_compression_blocks());
-      ::encode(cs_info, tmp);
+      encode(cs_info, tmp);
       attrs[RGW_ATTR_COMPRESSION] = tmp;
       ldout(s->cct, 20) << "storing " << RGW_ATTR_COMPRESSION
 			<< " with type=" << cs_info.compression_type
@@ -1492,13 +1489,14 @@ namespace rgw {
      * processing any input from user in order to prohibit overwriting. */
     if (unlikely(!! slo_info)) {
       buffer::list slo_userindicator_bl;
-      ::encode("True", slo_userindicator_bl);
+      using ceph::encode;
+      encode("True", slo_userindicator_bl);
       emplace_attr(RGW_ATTR_SLO_UINDICATOR, std::move(slo_userindicator_bl));
     }
 
     op_ret = processor->complete(s->obj_size, etag, &mtime, real_time(), attrs,
                                  (delete_at ? *delete_at : real_time()),
-				 if_match, if_nomatch);
+                                if_match, if_nomatch);
     if (op_ret != 0) {
       /* revert attr updates */
       rgw_fh->set_mtime(omtime);
@@ -1622,16 +1620,25 @@ int rgw_statfs(struct rgw_fs *rgw_fs,
 	       struct rgw_statvfs *vfs_st, uint32_t flags)
 {
   RGWLibFS *fs = static_cast<RGWLibFS*>(rgw_fs->fs_private);
+  struct rados_cluster_stat_t stats;
 
-  /* XXX for now, just publish a huge capacity and
-   * limited utiliztion */
-  vfs_st->f_bsize = 1024*1024 /* 1M */;
-  vfs_st->f_frsize = 1024;    /* minimal allocation unit (who cares) */
-  vfs_st->f_blocks = UINT64_MAX;
-  vfs_st->f_bfree = UINT64_MAX;
-  vfs_st->f_bavail = UINT64_MAX;
-  vfs_st->f_files = 1024; /* object count, do we have an est? */
-  vfs_st->f_ffree = UINT64_MAX;
+  RGWGetClusterStatReq req(fs->get_context(), fs->get_user(), stats);
+  int rc = rgwlib.get_fe()->execute_req(&req);
+  if (rc < 0) {
+    lderr(fs->get_context()) << "ERROR: getting total cluster usage"
+                             << cpp_strerror(-rc) << dendl;
+    return rc;
+  }
+
+  //Set block size to 1M.
+  constexpr uint32_t CEPH_BLOCK_SHIFT = 20;
+  vfs_st->f_bsize = 1 << CEPH_BLOCK_SHIFT;
+  vfs_st->f_frsize = 1 << CEPH_BLOCK_SHIFT;
+  vfs_st->f_blocks = stats.kb >> (CEPH_BLOCK_SHIFT - 10);
+  vfs_st->f_bfree = stats.kb_avail >> (CEPH_BLOCK_SHIFT - 10);
+  vfs_st->f_bavail = stats.kb_avail >> (CEPH_BLOCK_SHIFT - 10);
+  vfs_st->f_files = stats.num_objects;
+  vfs_st->f_ffree = -1;
   vfs_st->f_fsid[0] = fs->get_fsid();
   vfs_st->f_fsid[1] = fs->get_fsid();
   vfs_st->f_flag = 0;
@@ -1867,7 +1874,7 @@ int rgw_open(struct rgw_fs *rgw_fs,
 {
   RGWFileHandle* rgw_fh = get_rgwfh(fh);
 
-  /* XXX 
+  /* XXX
    * need to track specific opens--at least read opens and
    * a write open;  we need to know when a write open is returned,
    * that closes a write transaction
@@ -1938,7 +1945,7 @@ int rgw_readdir2(struct rgw_fs *rgw_fs,
 
   lsubdout(parent->get_fs()->get_context(), rgw, 15)
     << __func__
-    << " offset=" << name
+    << " offset=" << ((name) ? name : "(nil)")
     << dendl;
 
   if ((! name) &&

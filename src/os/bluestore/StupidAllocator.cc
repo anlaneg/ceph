@@ -8,7 +8,7 @@
 #define dout_context cct
 #define dout_subsys ceph_subsys_bluestore
 #undef dout_prefix
-#define dout_prefix *_dout << "stupidalloc "
+#define dout_prefix *_dout << "stupidalloc 0x" << this << " "
 
 StupidAllocator::StupidAllocator(CephContext* cct)
   : cct(cct), num_free(0),
@@ -169,7 +169,7 @@ int64_t StupidAllocator::allocate_int(
   if (skew)
     skew = alloc_unit - skew;
   *offset = p.get_start() + skew;//清除边角料
-  *length = std::min(std::max(alloc_unit, want_size), P2ALIGN((p.get_len() - skew), alloc_unit));
+  *length = std::min(std::max(alloc_unit, want_size), p2align((p.get_len() - skew), alloc_unit));
   if (cct->_conf->bluestore_debug_small_allocations) {
     uint64_t max =
       alloc_unit * (rand() % cct->_conf->bluestore_debug_small_allocations);
@@ -221,7 +221,7 @@ int64_t StupidAllocator::allocate(
   uint64_t alloc_unit,//块大小
   uint64_t max_alloc_size,//最大需要的大小
   int64_t hint,//最后一片的结束位置（暗示）
-  mempool::bluestore_alloc::vector<AllocExtent> *extents)//出参，申请后填充
+  PExtentVector *extents)//出参，申请后填充
 {
   uint64_t allocated_size = 0;//已申请了多少字节
   uint64_t offset = 0;
@@ -232,8 +232,6 @@ int64_t StupidAllocator::allocate(
     max_alloc_size = want_size;
   }
 
-  ExtentList block_list = ExtentList(extents, 1, max_alloc_size);
-
   while (allocated_size < want_size) {
     res = allocate_int(std::min(max_alloc_size, (want_size - allocated_size)),
        alloc_unit, hint, &offset, &length);
@@ -243,7 +241,19 @@ int64_t StupidAllocator::allocate(
        */
       break;
     }
-    block_list.add_extents(offset, length);//将刚申请的加入
+    bool can_append = true;
+    if (!extents->empty()) {
+      bluestore_pextent_t &last_extent  = extents->back();
+      if ((last_extent.end() == offset) &&
+	  ((last_extent.length + length) <= max_alloc_size)) {
+	can_append = false;
+	last_extent.length += length;
+      }
+    }
+    if (can_append) {
+      extents->emplace_back(bluestore_pextent_t(offset, length));
+    }
+
     allocated_size += length;//更新已申请到的
     hint = offset + length;//更新暗示
   }
@@ -316,7 +326,26 @@ void StupidAllocator::init_rm_free(uint64_t offset, uint64_t length)
     if (!overlap.empty()) {
       ldout(cct, 20) << __func__ << " bin " << i << " rm 0x" << std::hex << overlap
 		     << std::dec << dendl;
-      free[i].subtract(overlap);
+      auto it = overlap.begin();
+      auto it_end = overlap.end();
+      while (it != it_end) {
+        auto o = it.get_start();
+        auto l = it.get_len();
+
+        free[i].erase(o, l,
+          [&](uint64_t off, uint64_t len) {
+            unsigned newbin = _choose_bin(len);
+            if (newbin != i) {
+              ldout(cct, 30) << __func__ << " demoting1 0x" << std::hex << off << "~" << len
+                             << std::dec << " to bin " << newbin << dendl;
+              _insert_free(off, len);
+              return true;
+            }
+            return false;
+          });
+        ++it;
+      }
+
       rm.subtract(overlap);
     }
   }

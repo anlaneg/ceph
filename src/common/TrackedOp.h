@@ -22,7 +22,32 @@
 #define OPTRACKER_PREALLOC_EVENTS 20
 
 class TrackedOp;
+class OpHistory;
+
 typedef boost::intrusive_ptr<TrackedOp> TrackedOpRef;
+
+class OpHistoryServiceThread : public Thread
+{
+private:
+  list<pair<utime_t, TrackedOpRef>> _external_queue;
+  OpHistory* _ophistory;
+  mutable ceph::spinlock queue_spinlock;
+  bool _break_thread;
+public:
+  explicit OpHistoryServiceThread(OpHistory* parent)
+    : _ophistory(parent),
+      _break_thread(false) { }
+
+  void break_thread();
+  void insert_op(const utime_t& now, TrackedOpRef op) {
+    queue_spinlock.lock();
+    _external_queue.emplace_back(now, op);
+    queue_spinlock.unlock();
+  }
+
+  void *entry() override;
+};
+
 
 class OpHistory {
   set<pair<utime_t, TrackedOpRef> > arrived;
@@ -30,22 +55,35 @@ class OpHistory {
   set<pair<utime_t, TrackedOpRef> > slow_op;
   Mutex ops_history_lock;
   void cleanup(utime_t now);//针对now进行history维护
-  bool shutdown;//指示是否关闭
   uint32_t history_size;//最大数
   uint32_t history_duration;//持续时间的最大数
   uint32_t history_slow_op_size;
   uint32_t history_slow_op_threshold;
+  std::atomic_bool shutdown;
+  OpHistoryServiceThread opsvc;
+  friend class OpHistoryServiceThread;
 
 public:
-  OpHistory() : ops_history_lock("OpHistory::Lock"), shutdown(false),
+  OpHistory() : ops_history_lock("OpHistory::Lock"),
     history_size(0), history_duration(0),
-    history_slow_op_size(0), history_slow_op_threshold(0) {}
+    history_slow_op_size(0), history_slow_op_threshold(0),
+    shutdown(false), opsvc(this) {
+    opsvc.create("OpHistorySvc");
+  }
   ~OpHistory() {
     assert(arrived.empty());
     assert(duration.empty());
     assert(slow_op.empty());
   }
-  void insert(utime_t now, TrackedOpRef op);
+  void insert(const utime_t& now, TrackedOpRef op)
+  {
+    if (shutdown)
+      return;
+
+    opsvc.insert_op(now, op);
+  }
+
+  void _insert_delayed(const utime_t& now, TrackedOpRef op);
   void dump_ops(utime_t now, Formatter *f, set<string> filters = {""});
   void dump_ops_by_duration(utime_t now, Formatter *f, set<string> filters = {""});
   void dump_slow_ops(utime_t now, Formatter *f, set<string> filters = {""});
@@ -67,9 +105,8 @@ class OpTracker {
   //用seq实现在sharded_in_flight_list之间的轮转，num_optracker_shards取余，决定了用哪个桶内的成员
   std::atomic<int64_t> seq = { 0 };
   vector<ShardedTrackingData*> sharded_in_flight_list;
-  uint32_t num_optracker_shards;
-
   OpHistory history;
+  uint32_t num_optracker_shards;
   float complaint_time;
   int log_threshold;
   //跟踪是否被启用
@@ -150,6 +187,14 @@ public:
   {
     typename T::Ref retval(new T(params, this));
     retval->tracking_start();
+
+    if (is_tracking()) {
+      retval->mark_event("header_read", params->get_recv_stamp());
+      retval->mark_event("throttled", params->get_throttle_stamp());
+      retval->mark_event("all_read", params->get_recv_complete_stamp());
+      retval->mark_event("dispatched", params->get_dispatch_stamp());
+    }
+
     return retval;
   }
 };
@@ -328,7 +373,7 @@ public:
 
   void tracking_start() {
     if (tracker->register_inflight_op(this)) {
-      events.push_back(Event(initiated_at, "initiated"));
+      events.emplace_back(initiated_at, "initiated");
       state = STATE_LIVE;
     }
   }

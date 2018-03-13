@@ -106,6 +106,7 @@
     log rm                     remove log object
     usage show                 show usage (by user, date range)
     usage trim                 trim usage (by user, date range)
+    usage clear                reset all the usage stats for the cluster
     gc list                    dump expired garbage collection objects (specify
                                --include-all to list all entries, including unexpired)
     gc process                 manually process garbage (specify
@@ -150,6 +151,8 @@
     reshard status             read bucket resharding status
     reshard process            process of scheduled reshard jobs
     reshard cancel             cancel resharding a bucket
+    sync error list            list sync error
+    sync error trim            trim sync error
   options:
      --tenant=<tenant>         tenant name
      --uid=<id>                user id
@@ -284,7 +287,7 @@
      --path-prefix             path prefix for filtering roles
   
     --conf/-c FILE    read configuration from the given configuration file
-    --id/-i ID        set ID portion of my name
+    --id ID           set ID portion of my name
     --name/-n TYPE.ID set name
     --cluster NAME    set cluster name (default: ceph)
     --setuser USER    set uid to user or uid (and gid to user's gid)

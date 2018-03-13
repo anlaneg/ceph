@@ -9,6 +9,7 @@ from mgr_module import MgrModule
 try:
     from influxdb import InfluxDBClient
     from influxdb.exceptions import InfluxDBClientError
+    from requests.exceptions import ConnectionError
 except ImportError:
     InfluxDBClient = None
 
@@ -44,7 +45,9 @@ class Module(MgrModule):
         'database': 'ceph',
         'username': None,
         'password': None,
-        'interval': 5
+        'interval': 5,
+        'ssl': 'false',
+        'verify_ssl': 'true'
     }
 
     def __init__(self, *args, **kwargs):
@@ -55,6 +58,13 @@ class Module(MgrModule):
 
     def get_fsid(self):
         return self.get('mon_map')['fsid']
+
+    @staticmethod
+    def can_run():
+        if InfluxDBClient is not None:
+            return True, ""
+        else:
+            return False, "influxdb python module not found"
 
     def get_latest(self, daemon_type, daemon_name, stat):
         data = self.get_counter(daemon_type, daemon_name, stat)[stat]
@@ -69,12 +79,17 @@ class Module(MgrModule):
 
         df_types = [
             'bytes_used',
+            'kb_used',
             'dirty',
+            'rd',
             'rd_bytes',
             'raw_bytes_used',
+            'wr',
             'wr_bytes',
             'objects',
-            'max_avail'
+            'max_avail',
+            'quota_objects',
+            'quota_bytes'
         ]
 
         for df_type in df_types:
@@ -139,6 +154,9 @@ class Module(MgrModule):
         if option == 'interval' and value < 5:
             raise RuntimeError('interval should be set to at least 5 seconds')
 
+        if option in ['ssl', 'verify_ssl']:
+            value = value.lower() == 'true'
+
         self.config[option] = value
 
     def init_module_config(self):
@@ -155,11 +173,23 @@ class Module(MgrModule):
         self.config['interval'] = \
             int(self.get_config("interval",
                                 default=self.config_keys['interval']))
+        ssl = self.get_config("ssl", default=self.config_keys['ssl'])
+        self.config['ssl'] = ssl.lower() == 'true'
+        verify_ssl = \
+            self.get_config("verify_ssl", default=self.config_keys['verify_ssl'])
+        self.config['verify_ssl'] = verify_ssl.lower() == 'true'
 
     def send_to_influx(self):
         if not self.config['hostname']:
             self.log.error("No Influx server configured, please set one using: "
                            "ceph influx config-set hostname <hostname>")
+            self.set_health_checks({
+                'MGR_INFLUX_NO_SERVER': {
+                    'severity': 'warning',
+                    'summary': 'No InfluxDB server configured',
+                    'detail': ['Configuration option hostname not set']
+                }
+            })
             return
 
         # If influx server has authentication turned off then
@@ -169,7 +199,9 @@ class Module(MgrModule):
         client = InfluxDBClient(self.config['hostname'], self.config['port'],
                                 self.config['username'],
                                 self.config['password'],
-                                self.config['database'])
+                                self.config['database'],
+                                self.config['ssl'],
+                                self.config['verify_ssl'])
 
         # using influx client get_list_database requires admin privs,
         # instead we'll catch the not found exception and inform the user if
@@ -177,6 +209,19 @@ class Module(MgrModule):
         try:
             client.write_points(self.get_df_stats(), 'ms')
             client.write_points(self.get_daemon_stats(), 'ms')
+            self.set_health_checks(dict())
+        except ConnectionError as e:
+            self.log.exception("Failed to connect to Influx host %s:%d",
+                               self.config['hostname'], self.config['port'])
+            self.set_health_checks({
+                'MGR_INFLUX_SEND_FAILED': {
+                    'severity': 'warning',
+                    'summary': 'Failed to send data to InfluxDB server at %s:%d'
+                               ' due to an connection error'
+                               % (self.config['hostname'], self.config['port']),
+                    'detail': [str(e)]
+                }
+            })
         except InfluxDBClientError as e:
             if e.code == 404:
                 self.log.info("Database '%s' not found, trying to create "
@@ -186,6 +231,13 @@ class Module(MgrModule):
                               self.config['username'])
                 client.create_database(self.config['database'])
             else:
+                self.set_health_checks({
+                    'MGR_INFLUX_SEND_FAILED': {
+                        'severity': 'warning',
+                        'summary': 'Failed to send data to InfluxDB',
+                        'detail': [str(e)]
+                    }
+                })
                 raise
 
     def shutdown(self):

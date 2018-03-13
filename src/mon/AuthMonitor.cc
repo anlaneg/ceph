@@ -20,6 +20,7 @@
 #include "mon/ConfigKeyService.h"
 #include "mon/OSDMonitor.h"
 #include "mon/MDSMonitor.h"
+#include "mon/ConfigMonitor.h"
 
 #include "messages/MMonCommand.h"
 #include "messages/MAuth.h"
@@ -103,7 +104,7 @@ void AuthMonitor::create_initial()
       KeyRing keyring;
       bufferlist::iterator p = bl.begin();
 
-      ::decode(keyring, p);
+      decode(keyring, p);
       import_keyring(keyring);
     }
   }
@@ -141,9 +142,9 @@ void AuthMonitor::update_from_paxos(bool *need_bootstrap)
     dout(7) << __func__ << " latest length " << latest_bl.length() << dendl;
     bufferlist::iterator p = latest_bl.begin();
     __u8 struct_v;
-    ::decode(struct_v, p);
-    ::decode(max_global_id, p);
-    ::decode(mon->key_server, p);
+    decode(struct_v, p);
+    decode(max_global_id, p);
+    decode(mon->key_server, p);
     mon->key_server.set_ver(latest_full);
     keys_ver = latest_full;
   }
@@ -168,10 +169,10 @@ void AuthMonitor::update_from_paxos(bool *need_bootstrap)
 
     bufferlist::iterator p = bl.begin();
     __u8 v;
-    ::decode(v, p);
+    decode(v, p);
     while (!p.end()) {
       Incremental inc;
-      ::decode(inc, p);
+      decode(inc, p);
       switch (inc.inc_type) {
       case GLOBAL_ID:
 	max_global_id = inc.max_global_id;
@@ -181,7 +182,7 @@ void AuthMonitor::update_from_paxos(bool *need_bootstrap)
         {
           KeyServerData::Incremental auth_inc;
           bufferlist::iterator iter = inc.auth_data.begin();
-          ::decode(auth_inc, iter);
+          decode(auth_inc, iter);
           mon->key_server.apply_data_incremental(auth_inc);
           break;
         }
@@ -237,7 +238,7 @@ void AuthMonitor::encode_pending(MonitorDBStore::TransactionRef t)
   bufferlist bl;
 
   __u8 v = 1;
-  ::encode(v, bl);
+  encode(v, bl);
   vector<Incremental>::iterator p;
   for (p = pending_auth.begin(); p != pending_auth.end(); ++p)
     p->encode(bl, mon->get_quorum_con_features());
@@ -263,9 +264,9 @@ void AuthMonitor::encode_full(MonitorDBStore::TransactionRef t)
            << (mon->key_server.has_secrets() ? "" : "no ")
            << "secrets!" << dendl;
   __u8 v = 1;
-  ::encode(v, full_bl);
-  ::encode(max_global_id, full_bl);
-  ::encode(mon->key_server, full_bl);
+  encode(v, full_bl);
+  encode(max_global_id, full_bl);
+  encode(mon->key_server, full_bl);
 
   put_version_full(t, version, full_bl);
   put_version_latest_full(t, version);
@@ -374,6 +375,7 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
   bufferlist::iterator indata = m->auth_payload.begin();
   __u32 proto = m->protocol;
   bool start = false;
+  bool finished = false;
   EntityName entity_name;
 
   // set up handler?
@@ -382,10 +384,10 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
 
     try {
       __u8 struct_v = 1;
-      ::decode(struct_v, indata);
-      ::decode(supported, indata);
-      ::decode(entity_name, indata);
-      ::decode(s->global_id, indata);
+      decode(struct_v, indata);
+      decode(supported, indata);
+      decode(entity_name, indata);
+      decode(s->global_id, indata);
     } catch (const buffer::error &e) {
       dout(10) << "failed to decode initial auth message" << dendl;
       ret = -EINVAL;
@@ -483,8 +485,10 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
 
       proto = s->auth_handler->start_session(entity_name, indata, response_bl, caps_info);
       ret = 0;
-      if (caps_info.allow_all)
+      if (caps_info.allow_all) {
 	s->caps.set_allow_all();
+	s->authenticated = true;
+      }
     } else {
       // request
       ret = s->auth_handler->handle_request(indata, response_bl, s->global_id, caps_info, &auid);
@@ -497,13 +501,15 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
       bufferlist::iterator p = caps_info.caps.begin();
       string str;
       try {
-	::decode(str, p);
+	decode(str, p);
       } catch (const buffer::error &err) {
 	derr << "corrupt cap data for " << entity_name << " in auth db" << dendl;
 	str.clear();
       }
       s->caps.parse(str, NULL);
       s->auid = auid;
+      s->authenticated = true;
+      finished = true;
     }
   } catch (const buffer::error &err) {
     ret = -EINVAL;
@@ -513,6 +519,9 @@ bool AuthMonitor::prep_auth(MonOpRequestRef op, bool paxos_writable)
 reply:
   reply = new MAuthReply(proto, &response_bl, ret, s->global_id);
   mon->send_reply(op, reply);
+  if (finished) {
+    mon->configmon()->check_sub(s);
+  }
 done:
   return true;
 }
@@ -524,7 +533,7 @@ bool AuthMonitor::preprocess_command(MonOpRequestRef op)
   bufferlist rdata;
   stringstream ss, ds;
 
-  map<string, cmd_vartype> cmdmap;
+  cmdmap_t cmdmap;
   if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
     // ss has reason for failure
     string rs = ss.str();
@@ -689,7 +698,7 @@ bool AuthMonitor::entity_is_pending(EntityName& entity)
     if (p.inc_type == AUTH_DATA) {
       KeyServerData::Incremental inc;
       bufferlist::iterator q = p.auth_data.begin();
-      ::decode(inc, q);
+      decode(inc, q);
       if (inc.op == KeyServerData::AUTH_INC_ADD &&
           inc.name == entity) {
         return true;
@@ -843,7 +852,7 @@ int AuthMonitor::do_osd_destroy(
 bufferlist _encode_cap(const string& cap)
 {
   bufferlist bl;
-  ::encode(cap, bl);
+  encode(cap, bl);
   return bl;
 }
 
@@ -1011,7 +1020,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
   string rs;
   int err = -EINVAL;
 
-  map<string, cmd_vartype> cmdmap;
+  cmdmap_t cmdmap;
   if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
     // ss has reason for failure
     string rs = ss.str();
@@ -1061,7 +1070,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
     bufferlist::iterator iter = bl.begin();
     KeyRing keyring;
     try {
-      ::decode(keyring, iter);
+      decode(keyring, iter);
     } catch (const buffer::error &ex) {
       ss << "error decoding keyring" << " " << ex.what();
       err = -EINVAL;
@@ -1096,7 +1105,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
     if (has_keyring) {
       bufferlist::iterator iter = bl.begin();
       try {
-        ::decode(new_keyring, iter);
+        decode(new_keyring, iter);
       } catch (const buffer::error &ex) {
         ss << "error decoding keyring";
         err = -EINVAL;
@@ -1117,7 +1126,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 	 it += 2) {
       string sys = *it;
       bufferlist cap;
-      ::encode(*(it+1), cap);
+      encode(*(it+1), cap);
       new_caps[sys] = cap;
     }
 
@@ -1188,7 +1197,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
 	 it += 2) {
       const std::string &sys = *it;
       bufferlist cap;
-      ::encode(*(it+1), cap);
+      encode(*(it+1), cap);
       wanted_caps[sys] = cap;
     }
 
@@ -1232,7 +1241,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
       if (p->inc_type == AUTH_DATA) {
 	KeyServerData::Incremental auth_inc;
 	bufferlist::iterator q = p->auth_data.begin();
-	::decode(auth_inc, q);
+	decode(auth_inc, q);
 	if (auth_inc.op == KeyServerData::AUTH_INC_ADD &&
 	    auth_inc.name == entity) {
 	  wait_for_finished_proposal(op, new Monitor::C_Command(mon, op, 0, rs,
@@ -1382,7 +1391,7 @@ bool AuthMonitor::prepare_command(MonOpRequestRef op)
     map<string,bufferlist> newcaps;
     for (vector<string>::iterator it = caps_vec.begin();
 	 it != caps_vec.end(); it += 2)
-      ::encode(*(it+1), newcaps[*it]);
+      encode(*(it+1), newcaps[*it]);
 
     auth_inc.op = KeyServerData::AUTH_INC_ADD;
     auth_inc.auth.caps = newcaps;
@@ -1451,7 +1460,7 @@ void AuthMonitor::upgrade_format()
 	continue;
       try {
 	bufferlist::iterator it = p->second.caps["mon"].begin();
-	::decode(mon_caps, it);
+	decode(mon_caps, it);
       }
       catch (buffer::error) {
 	dout(10) << __func__ << " unable to parse mon cap for "
@@ -1481,7 +1490,7 @@ void AuthMonitor::upgrade_format()
 		<< mon_caps << " to " << new_caps << dendl;
 
 	bufferlist bl;
-	::encode(new_caps, bl);
+	encode(new_caps, bl);
 
 	KeyServerData::Incremental auth_inc;
 	auth_inc.name = p->first;
@@ -1520,7 +1529,7 @@ void AuthMonitor::upgrade_format()
       if (newcap.length() > 0) {
 	dout(5) << " giving " << n << " mgr '" << newcap << "'" << dendl;
 	bufferlist bl;
-	::encode(newcap, bl);
+	encode(newcap, bl);
 
 	KeyServerData::Incremental auth_inc;
 	auth_inc.name = p->first;
@@ -1535,12 +1544,12 @@ void AuthMonitor::upgrade_format()
 	// the kraken ceph-mgr@.service set the mon cap to 'allow *'.
 	auto blp = p->second.caps["mon"].begin();
 	string oldcaps;
-	::decode(oldcaps, blp);
+	decode(oldcaps, blp);
 	if (oldcaps == "allow *") {
 	  dout(5) << " fixing " << n << " mon cap to 'allow profile mgr'"
 		  << dendl;
 	  bufferlist bl;
-	  ::encode("allow profile mgr", bl);
+	  encode("allow profile mgr", bl);
 	  KeyServerData::Incremental auth_inc;
 	  auth_inc.name = p->first;
 	  auth_inc.auth = p->second;
@@ -1560,7 +1569,7 @@ void AuthMonitor::upgrade_format()
     if (!mon->key_server.contains(bootstrap_mgr_name)) {
       KeyServerData::Incremental auth_inc;
       auth_inc.name = bootstrap_mgr_name;
-      ::encode("allow profile bootstrap-mgr", auth_inc.auth.caps["mon"]);
+      encode("allow profile bootstrap-mgr", auth_inc.auth.caps["mon"]);
       auth_inc.op = KeyServerData::AUTH_INC_ADD;
       // generate key
       auth_inc.auth.key.create(g_ceph_context, CEPH_CRYPTO_AES);

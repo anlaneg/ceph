@@ -6,6 +6,7 @@ the single-call helper
 """
 import os
 import logging
+import json
 from ceph_volume import process, conf
 from ceph_volume.util import system, constants
 
@@ -13,33 +14,77 @@ logger = logging.getLogger(__name__)
 
 
 def create_key():
-    stdout, stderr, returncode = process.call(['ceph-authtool', '--gen-print-key'])
+    stdout, stderr, returncode = process.call(
+        ['ceph-authtool', '--gen-print-key'],
+        show_command=True)
     if returncode != 0:
         raise RuntimeError('Unable to generate a new auth key')
     return ' '.join(stdout).strip()
 
 
-def write_keyring(osd_id, secret):
-    # FIXME this only works for cephx, but there will be other types of secrets
-    # later
-    osd_keyring = '/var/lib/ceph/osd/%s-%s/keyring' % (conf.cluster, osd_id)
+def write_keyring(osd_id, secret, keyring_name='keyring', name=None):
+    """
+    Create a keyring file with the ``ceph-authtool`` utility. Constructs the
+    path over well-known conventions for the OSD, and allows any other custom
+    ``name`` to be set.
+
+    :param osd_id: The ID for the OSD to be used
+    :param secret: The key to be added as (as a string)
+    :param name: Defaults to 'osd.{ID}' but can be used to add other client
+                 names, specifically for 'lockbox' type of keys
+    :param keyring_name: Alternative keyring name, for supporting other
+                         types of keys like for lockbox
+    """
+    osd_keyring = '/var/lib/ceph/osd/%s-%s/%s' % (conf.cluster, osd_id, keyring_name)
+    name = name or 'osd.%s' % str(osd_id)
     process.run(
         [
             'ceph-authtool', osd_keyring,
             '--create-keyring',
-            '--name', 'osd.%s' % str(osd_id),
+            '--name', name,
             '--add-key', secret
         ])
     system.chown(osd_keyring)
-    # TODO: do the restorecon dance on the osd_keyring path
 
 
-def create_id(fsid, json_secrets):
+def create_id(fsid, json_secrets, osd_id=None):
     """
     :param fsid: The osd fsid to create, always required
     :param json_secrets: a json-ready object with whatever secrets are wanted
                          to be passed to the monitor
+    :param osd_id: Reuse an existing ID from an OSD that's been destroyed, if the
+                   id does not exist in the cluster a new ID will be created
     """
+    bootstrap_keyring = '/var/lib/ceph/bootstrap-osd/%s.keyring' % conf.cluster
+    cmd = [
+        'ceph',
+        '--cluster', conf.cluster,
+        '--name', 'client.bootstrap-osd',
+        '--keyring', bootstrap_keyring,
+        '-i', '-',
+        'osd', 'new', fsid
+    ]
+    if check_id(osd_id):
+        cmd.append(osd_id)
+    stdout, stderr, returncode = process.call(
+        cmd,
+        stdin=json_secrets,
+        show_command=True
+    )
+    if returncode != 0:
+        raise RuntimeError('Unable to create a new OSD id')
+    return ' '.join(stdout).strip()
+
+
+def check_id(osd_id):
+    """
+    Checks to see if an osd ID exists or not. Returns True
+    if it does exist, False if it doesn't.
+
+    :param osd_id: The osd ID to check
+    """
+    if osd_id is None:
+        return False
     bootstrap_keyring = '/var/lib/ceph/bootstrap-osd/%s.keyring' % conf.cluster
     stdout, stderr, returncode = process.call(
         [
@@ -47,14 +92,18 @@ def create_id(fsid, json_secrets):
             '--cluster', conf.cluster,
             '--name', 'client.bootstrap-osd',
             '--keyring', bootstrap_keyring,
-            '-i', '-',
-            'osd', 'new', fsid
+            'osd',
+            'tree',
+            '-f', 'json',
         ],
-        stdin=json_secrets
+        show_command=True
     )
     if returncode != 0:
-        raise RuntimeError('Unable to create a new OSD id')
-    return ' '.join(stdout).strip()
+        raise RuntimeError('Unable check if OSD id exists: %s' % osd_id)
+
+    output = json.loads(''.join(stdout).strip())
+    osds = output['nodes']
+    return any([str(osd['id']) == str(osd_id) for osd in osds])
 
 
 def mount_tmpfs(path):
@@ -95,6 +144,34 @@ def format_device(device):
     process.run(command)
 
 
+def _normalize_mount_flags(flags):
+    """
+    Mount flag options have to be a single string, separated by a comma. If the
+    flags are separated by spaces, or with commas and spaces in ceph.conf, the
+    mount options will be passed incorrectly.
+
+    This will help when parsing ceph.conf values return something like::
+
+        ["rw,", "exec,"]
+
+    Or::
+
+        [" rw ,", "exec"]
+
+    :param flags: A list of flags, or a single string of mount flags
+    """
+    if isinstance(flags, list):
+        # ensure that spaces and commas are removed so that they can join
+        # correctly
+        return ','.join([f.strip().strip(',') for f in flags if f])
+
+    # split them, clean them, and join them back again
+    flags = flags.strip().split(' ')
+    return ','.join(
+        [f.strip().strip(',') for f in flags if f]
+    )
+
+
 def mount_osd(device, osd_id):
     destination = '/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id)
     command = ['mount', '-t', 'xfs', '-o']
@@ -104,7 +181,7 @@ def mount_osd(device, osd_id):
         default=constants.mount.get('xfs'),
         split=' ',
     )
-    command.append(flags)
+    command.append(_normalize_mount_flags(flags))
     command.append(device)
     command.append(destination)
     process.run(command)
@@ -218,10 +295,10 @@ def osd_mkfs_bluestore(osd_id, fsid, keyring=None, wal=False, db=False):
 
     command = base_command + supplementary_command
 
-    process.call(command, stdin=keyring)
+    process.call(command, stdin=keyring, show_command=True)
 
 
-def osd_mkfs_filestore(osd_id, fsid):
+def osd_mkfs_filestore(osd_id, fsid, keyring):
     """
     Create the files for the OSD to function. A normal call will look like:
 
@@ -241,7 +318,7 @@ def osd_mkfs_filestore(osd_id, fsid):
     system.chown(journal)
     system.chown(path)
 
-    process.run([
+    command = [
         'ceph-osd',
         '--cluster', conf.cluster,
         # undocumented flag, sets the `type` file to contain 'filestore'
@@ -249,9 +326,11 @@ def osd_mkfs_filestore(osd_id, fsid):
         '--mkfs',
         '-i', osd_id,
         '--monmap', monmap,
+        '--keyfile', '-', # goes through stdin
         '--osd-data', path,
         '--osd-journal', journal,
         '--osd-uuid', fsid,
         '--setuser', 'ceph',
         '--setgroup', 'ceph'
-    ])
+    ]
+    process.call(command, stdin=keyring, terminal_verbose=True, show_command=True)

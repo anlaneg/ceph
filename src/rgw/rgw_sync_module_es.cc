@@ -149,7 +149,7 @@ struct ElasticConfig {
   }
 
   string get_obj_path(const RGWBucketInfo& bucket_info, const rgw_obj_key& key) {
-    return index_path +  "/object/" + bucket_info.bucket.bucket_id + ":" + key.name + ":" + (key.instance.empty() ? "null" : key.instance);
+    return index_path +  "/object/" + url_encode(bucket_info.bucket.bucket_id + ":" + key.name + ":" + (key.instance.empty() ? "null" : key.instance));
   }
 
   bool should_handle_operation(RGWBucketInfo& bucket_info) {
@@ -285,7 +285,7 @@ struct es_obj_metadata {
       if (name == "acl") {
         try {
           auto i = val.begin();
-          ::decode(policy, i);
+          decode(policy, i);
         } catch (buffer::error& err) {
           ldout(cct, 0) << "ERROR: failed to decode acl for " << bucket_info.bucket << "/" << key << dendl;
         }
@@ -305,7 +305,7 @@ struct es_obj_metadata {
         }
       } else if (name == "x-amz-tagging") {
         auto tags_bl = val.begin();
-        ::decode(obj_tags, tags_bl);
+        decode(obj_tags, tags_bl);
       } else {
         if (name != "pg_ver" &&
             name != "source_zone" &&

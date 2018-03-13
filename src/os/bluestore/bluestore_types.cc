@@ -17,29 +17,6 @@
 #include "common/Checksummer.h"
 #include "include/stringify.h"
 
-//添加新申请到的物理范围
-void ExtentList::add_extents(int64_t start, int64_t count) {
-  AllocExtent *last_extent = NULL;
-  bool can_merge = false;
-
-  if (!m_extents->empty()) {//只有多于一个范围时，才有可合并的可能，检查能否合并
-    last_extent = &(m_extents->back());
-    uint64_t last_offset = last_extent->end() / m_block_size;
-    uint32_t last_length = last_extent->length / m_block_size;
-    if ((last_offset == (uint64_t) start) &&
-        (!m_max_blocks || (last_length + count) <= m_max_blocks)) {
-      can_merge = true;
-    }
-  }
-
-  if (can_merge) {//可以合并时，直接更新最后一个段
-    last_extent->length += (count * m_block_size);
-  } else {//不能合并，直接新起一个段
-    m_extents->emplace_back(AllocExtent(start * m_block_size,
-					count * m_block_size));
-  }
-}
-
 // bluestore_bdev_label_t
 
 void bluestore_bdev_label_t::encode(bufferlist& bl) const
@@ -49,11 +26,11 @@ void bluestore_bdev_label_t::encode(bufferlist& bl) const
   bl.append(stringify(osd_uuid));
   bl.append("\n");
   ENCODE_START(2, 1, bl);
-  ::encode(osd_uuid, bl);
-  ::encode(size, bl);
-  ::encode(btime, bl);
-  ::encode(description, bl);
-  ::encode(meta, bl);
+  encode(osd_uuid, bl);
+  encode(size, bl);
+  encode(btime, bl);
+  encode(description, bl);
+  encode(meta, bl);
   ENCODE_FINISH(bl);
 }
 
@@ -61,12 +38,12 @@ void bluestore_bdev_label_t::decode(bufferlist::iterator& p)
 {
   p.advance(60); // see above
   DECODE_START(2, p);
-  ::decode(osd_uuid, p);
-  ::decode(size, p);
-  ::decode(btime, p);
-  ::decode(description, p);
+  decode(osd_uuid, p);
+  decode(size, p);
+  decode(btime, p);
+  decode(description, p);
   if (struct_v >= 2) {
-    ::decode(meta, p);
+    decode(meta, p);
   }
   DECODE_FINISH(p);
 }
@@ -174,7 +151,7 @@ void bluestore_extent_ref_map_t::get(uint64_t offset, uint32_t length)
       //这种情况下当前的位置p指向的offset大于offset,则说明offset起始的这一段没有被
       //加入引用表，我们需要将这没重叠的这一段加入，且引用数为1
       // gap
-      uint64_t newlen = MIN(p->first - offset, length);
+      uint64_t newlen = std::min<uint64_t>(p->first - offset, length);
       p = ref_map.insert(
 	map<uint64_t,record_t>::value_type(offset,
 					   record_t(newlen, 1))).first;
@@ -431,7 +408,7 @@ void bluestore_blob_use_tracker_t::init(
   assert(_au_size > 0);
   assert(full_length > 0);
   clear();  
-  uint32_t _num_au = ROUND_UP_TO(full_length, _au_size) / _au_size;
+  uint32_t _num_au = round_up_to(full_length, _au_size) / _au_size;
   au_size = _au_size;
   if( _num_au > 1 ) {
     num_au = _num_au;
@@ -451,7 +428,7 @@ void bluestore_blob_use_tracker_t::get(
     while (offset < end) {
       auto phase = offset % au_size;
       bytes_per_au[offset / au_size] += 
-	MIN(au_size - phase, end - offset);
+	std::min(au_size - phase, end - offset);
       offset += (phase ? au_size - phase : au_size);
     }
   }
@@ -475,7 +452,7 @@ bool bluestore_blob_use_tracker_t::put(
     while (offset < end) {
       auto phase = offset % au_size;
       size_t pos = offset / au_size;
-      auto diff = MIN(au_size - phase, end - offset);
+      auto diff = std::min(au_size - phase, end - offset);
       assert(diff <= bytes_per_au[pos]);
       bytes_per_au[pos] -= diff;
       offset += (phase ? au_size - phase : au_size);
@@ -810,7 +787,7 @@ int bluestore_blob_t::verify_csum(uint64_t b_off, const bufferlist& bl,
     return 0;
 }
 
-void bluestore_blob_t::allocated(uint32_t b_off, uint32_t length, const AllocExtentVector& allocs)
+void bluestore_blob_t::allocated(uint32_t b_off, uint32_t length, const PExtentVector& allocs)
 {
   if (extents.size() == 0) {
     // if blob is compressed then logical length to be already configured
@@ -822,6 +799,7 @@ void bluestore_blob_t::allocated(uint32_t b_off, uint32_t length, const AllocExt
     if (b_off) {
       extents.emplace_back(
         bluestore_pextent_t(bluestore_pextent_t::INVALID_OFFSET, b_off));
+
     }
     uint32_t new_len = b_off;
     for (auto& a : allocs) {
@@ -902,7 +880,8 @@ struct vecbuilder {
   void flush() {
     if (invalid) {
       v.emplace_back(bluestore_pextent_t(bluestore_pextent_t::INVALID_OFFSET,
-	invalid));
+        invalid));
+
       invalid = 0;
     }
   }
@@ -912,7 +891,7 @@ struct vecbuilder {
     }
     else {
       flush();
-      v.emplace_back(bluestore_pextent_t(offset, length));
+      v.emplace_back(offset, length);
     }
   }
 };
@@ -983,7 +962,7 @@ bool bluestore_blob_t::release_extents(bool all,
       uint32_t to_release = loffs_it->length;
       do {
 	uint32_t to_release_part =
-	  MIN(pext_it->length - delta0 - delta, to_release);
+	  std::min(pext_it->length - delta0 - delta, to_release);
 	auto o = pext_it->offset + delta0 + delta;
 	if (last_r != r->end() && last_r->offset + last_r->length == o) {
 	  last_r->length += to_release_part;

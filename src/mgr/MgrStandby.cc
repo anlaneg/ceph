@@ -22,6 +22,7 @@
 #include "global/signal_handler.h"
 
 #include "mgr/MgrContext.h"
+#include "mgr/mgr_commands.h"
 
 #include "messages/MMgrBeacon.h"
 #include "messages/MMgrMap.h"
@@ -38,9 +39,16 @@
 MgrStandby::MgrStandby(int argc, const char **argv) :
   Dispatcher(g_ceph_context),
   monc{g_ceph_context},
-  client_messenger(Messenger::create_client_messenger(g_ceph_context, "mgr")),
+  client_messenger(Messenger::create(
+		     g_ceph_context,
+		     cct->_conf->get_val<std::string>("ms_type"),
+		     entity_name_t::MGR(),
+		     "mgr",
+		     getpid(),
+		     0)),
   objecter{g_ceph_context, client_messenger.get(), &monc, NULL, 0, 0},
   client{client_messenger.get(), &monc, &objecter},
+  mgrc(g_ceph_context, client_messenger.get()),
   log_client(g_ceph_context, client_messenger.get(), &monc.monmap, LogClient::NO_FLAGS),
   clog(log_client.create_channel(CLOG_CHANNEL_CLUSTER)),
   audit_clog(log_client.create_channel(CLOG_CHANNEL_AUDIT)),
@@ -94,6 +102,9 @@ void MgrStandby::handle_conf_change(
 
 int MgrStandby::init()
 {
+  init_async_signal_handler();
+  register_async_signal_handler(SIGHUP, sighup_handler);
+
   Mutex::Locker l(lock);
 
   // Initialize Messenger
@@ -121,6 +132,9 @@ int MgrStandby::init()
     client_messenger->wait();
     return r;
   }
+  mgrc.init();
+  client_messenger->add_dispatcher_tail(&mgrc);
+
   r = monc.authenticate();
   if (r < 0) {
     derr << "Authentication failed, did you specify a mgr ID with a valid keyring?" << dendl;
@@ -131,7 +145,7 @@ int MgrStandby::init()
   }
 
   client_t whoami = monc.get_global_id();
-  client_messenger->set_myname(entity_name_t::CLIENT(whoami.v));
+  client_messenger->set_myname(entity_name_t::MGR(whoami.v));
   monc.set_log_client(&log_client);
   _update_log_config();
   objecter.set_client_incarnation(0);
@@ -151,8 +165,18 @@ void MgrStandby::send_beacon()
   assert(lock.is_locked_by_me());
   dout(1) << state_str() << dendl;
 
-  set<string> modules;
-  PyModuleRegistry::list_modules(&modules);
+  std::list<PyModuleRef> modules = py_module_registry.get_modules();
+
+  // Construct a list of the info about each loaded module
+  // which we will transmit to the monitor.
+  std::vector<MgrMap::ModuleInfo> module_info;
+  for (const auto &module : modules) {
+    MgrMap::ModuleInfo info;
+    info.name = module->get_name();
+    info.error_string = module->get_error_string();
+    info.can_run = module->get_can_run();
+    module_info.push_back(std::move(info));
+  }
 
   // Whether I think I am available (request MgrMonitor to set me
   // as available in the map)
@@ -170,7 +194,7 @@ void MgrStandby::send_beacon()
                                  g_conf->name.get_id(),
                                  addr,
                                  available,
-				 modules,
+				 std::move(module_info),
 				 std::move(metadata));
 
   if (available) {
@@ -178,7 +202,10 @@ void MgrStandby::send_beacon()
       // We are informing the mon that we are done initializing: inform
       // it of our command set.  This has to happen after init() because
       // it needs the python modules to have loaded.
-      m->set_command_descs(active_mgr->get_command_set());
+      std::vector<MonCommand> commands = mgr_commands;
+      std::vector<MonCommand> py_commands = py_module_registry.get_commands();
+      commands.insert(commands.end(), py_commands.begin(), py_commands.end());
+      m->set_command_descs(commands);
       dout(4) << "going active, including " << m->get_command_descs().size()
               << " commands in beacon" << dendl;
     }
@@ -198,7 +225,8 @@ void MgrStandby::tick()
     active_mgr->tick();
   }
 
-  timer.add_event_after(g_conf->get_val<int64_t>("mgr_tick_period"),
+  timer.add_event_after(
+      g_conf->get_val<std::chrono::seconds>("mgr_tick_period").count(),
       new FunctionContext([this](int r){
           tick();
       }
@@ -224,6 +252,7 @@ void MgrStandby::shutdown()
   timer.shutdown();
   // client uses monc and objecter
   client.shutdown();
+  mgrc.shutdown();
   // stop monc, so mon won't be able to instruct me to shutdown/activate after
   // the active_mgr is stopped
   monc.shutdown();
@@ -363,8 +392,6 @@ void MgrStandby::handle_mgr_map(MMgrMap* mmap)
       }
     }
   }
-
-  mmap->put();
 }
 
 bool MgrStandby::ms_dispatch(Message *m)
@@ -374,16 +401,19 @@ bool MgrStandby::ms_dispatch(Message *m)
 
   if (m->get_type() == MSG_MGR_MAP) {
     handle_mgr_map(static_cast<MMgrMap*>(m));
-    return true;
-  } else if (active_mgr) {
+  }
+  bool handled = false;
+  if (active_mgr) {
     auto am = active_mgr;
     lock.Unlock();
-    bool handled = am->ms_dispatch(m);
+    handled = am->ms_dispatch(m);
     lock.Lock();
-    return handled;
-  } else {
-    return false;
   }
+  if (m->get_type() == MSG_MGR_MAP && !handled) {
+    m->put();
+    handled = true;
+  }
+  return handled;
 }
 
 
@@ -422,8 +452,6 @@ int MgrStandby::main(vector<const char *> args)
 {
   // Enable signal handlers
   signal_mgr = this;
-  init_async_signal_handler();
-  register_async_signal_handler(SIGHUP, sighup_handler);
   register_async_signal_handler_oneshot(SIGINT, handle_mgr_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_mgr_signal);
 

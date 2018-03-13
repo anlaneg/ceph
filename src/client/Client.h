@@ -257,8 +257,8 @@ class Client : public Dispatcher, public md_config_obs_t {
     Client *m_client;
   public:
     explicit CommandHook(Client *client);
-    bool call(std::string command, cmdmap_t &cmdmap, std::string format,
-	      bufferlist& out) override;
+    bool call(std::string_view command, const cmdmap_t& cmdmap,
+              std::string_view format, bufferlist& out) override;
   };
   CommandHook m_command_hook;
 
@@ -423,13 +423,15 @@ protected:
   void _reset_faked_inos();
   vinodeno_t _map_faked_ino(ino_t ino);
 
+  std::map<snapid_t, int> ll_snap_ref;
+
   Inode*                 root;
   map<Inode*, InodeRef>  root_parents;
   Inode*                 root_ancestor;
   LRU                    lru;    // lru list of Dentry's in our local metadata cache.
 
-  // all inodes with caps sit on either cap_list or delayed_caps.
-  xlist<Inode*> delayed_caps, cap_list;
+  // dirty_list keeps all the dirty inodes before flushing.
+  xlist<Inode*> delayed_list, dirty_list;
   int num_flushing_caps;
   ceph::unordered_map<inodeno_t,SnapRealm*> snap_realms;
 
@@ -632,7 +634,6 @@ protected:
   void remove_cap(Cap *cap, bool queue_release);
   void remove_all_caps(Inode *in);
   void remove_session_caps(MetaSession *session);
-  void mark_caps_dirty(Inode *in, int caps);
   int mark_caps_flushing(Inode *in, ceph_tid_t *ptid);
   void adjust_session_flushing_caps(Inode *in, MetaSession *old_s, MetaSession *new_s);
   void flush_caps_sync();
@@ -730,6 +731,7 @@ protected:
   void flush_mdlog_sync();
   void flush_mdlog(MetaSession *session);
   
+  xlist<Inode*> &get_dirty_list() { return dirty_list; }
   // ----------------------
   // fs ops.
 private:
@@ -832,9 +834,11 @@ private:
 	      const char *data_pool, bool *created, const UserPerm &perms);
 
   loff_t _lseek(Fh *fh, loff_t offset, int whence);
-  int _read(Fh *fh, int64_t offset, uint64_t size, bufferlist *bl);
-  int _write(Fh *fh, int64_t offset, uint64_t size, const char *buf,
+  int64_t _read(Fh *fh, int64_t offset, uint64_t size, bufferlist *bl);
+  int64_t _write(Fh *fh, int64_t offset, uint64_t size, const char *buf,
           const struct iovec *iov, int iovcnt);
+  int64_t _preadv_pwritev_locked(Fh *f, const struct iovec *iov,
+	      unsigned iovcnt, int64_t offset, bool write, bool clamp_to_int);
   int _preadv_pwritev(int fd, const struct iovec *iov, unsigned iovcnt, int64_t offset, bool write);
   int _flush(Fh *fh);
   int _fsync(Fh *fh, bool syncdataonly);
@@ -942,6 +946,10 @@ private:
   mds_rank_t _get_random_up_mds() const;
 
   int _ll_getattr(Inode *in, int caps, const UserPerm& perms);
+  int _lookup_parent(Inode *in, const UserPerm& perms, Inode **parent=NULL);
+  int _lookup_name(Inode *in, Inode *parent, const UserPerm& perms);
+  int _lookup_ino(inodeno_t ino, const UserPerm& perms, Inode **inode=NULL);
+  bool _ll_forget(Inode *in, int count);
 
 public:
   int mount(const std::string &mount_root, const UserPerm& perms,
@@ -1141,11 +1149,14 @@ public:
   Inode *ll_get_inode(vinodeno_t vino);
   int ll_lookup(Inode *parent, const char *name, struct stat *attr,
 		Inode **out, const UserPerm& perms);
+  int ll_lookup_inode(struct inodeno_t ino, const UserPerm& perms, Inode **inode);
   int ll_lookupx(Inode *parent, const char *name, Inode **out,
 			struct ceph_statx *stx, unsigned want, unsigned flags,
 			const UserPerm& perms);
   bool ll_forget(Inode *in, int count);
   bool ll_put(Inode *in);
+  int ll_get_snap_ref(snapid_t snap);
+
   int ll_getattr(Inode *in, struct stat *st, const UserPerm& perms);
   int ll_getattrx(Inode *in, struct ceph_statx *stx, unsigned int want,
 		  unsigned int flags, const UserPerm& perms);
@@ -1214,6 +1225,8 @@ public:
 
   int ll_read(Fh *fh, loff_t off, loff_t len, bufferlist *bl);
   int ll_write(Fh *fh, loff_t off, loff_t len, const char *data);
+  int64_t ll_readv(struct Fh *fh, const struct iovec *iov, int iovcnt, int64_t off);
+  int64_t ll_writev(struct Fh *fh, const struct iovec *iov, int iovcnt, int64_t off);
   loff_t ll_lseek(Fh *fh, loff_t offset, int whence);
   int ll_flush(Fh *fh);
   int ll_fsync(Fh *fh, bool syncdataonly);

@@ -177,14 +177,15 @@ protected:
 private:
   int num_rdlock;
 
+  // XXX not in mempool
   struct unstable_bits_t {
     set<__s32> gather_set;  // auth+rep.  >= 0 is mds, < 0 is client
 
     // local state
-    int num_wrlock, num_xlock;
+    int num_wrlock = 0, num_xlock = 0;
     MutationRef xlock_by;
-    client_t xlock_by_client;
-    client_t excl_client;
+    client_t xlock_by_client = -1;
+    client_t excl_client = -1;
 
     bool empty() {
       return
@@ -196,11 +197,7 @@ private:
 	excl_client == -1;
     }
 
-    unstable_bits_t() : num_wrlock(0),
-			num_xlock(0),
-			xlock_by(),
-			xlock_by_client(-1),
-			excl_client(-1) {}
+    unstable_bits_t() {}
   };
 
   mutable std::unique_ptr<unstable_bits_t> _unstable;
@@ -565,35 +562,38 @@ public:
   // encode/decode
   void encode(bufferlist& bl) const {
     ENCODE_START(2, 2, bl);
-    ::encode(state, bl);
+    encode(state, bl);
     if (have_more())
-      ::encode(more()->gather_set, bl);
+      encode(more()->gather_set, bl);
     else
-      ::encode(empty_gather_set, bl);
+      encode(empty_gather_set, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& p) {
     DECODE_START(2, p);
-    ::decode(state, p);
+    decode(state, p);
     set<__s32> g;
-    ::decode(g, p);
+    decode(g, p);
     if (!g.empty())
       more()->gather_set.swap(g);
     DECODE_FINISH(p);
   }
   void encode_state_for_replica(bufferlist& bl) const {
     __s16 s = get_replica_state();
-    ::encode(s, bl);
+    using ceph::encode;
+    encode(s, bl);
   }
   void decode_state(bufferlist::iterator& p, bool is_new=true) {
+    using ceph::decode;
     __s16 s;
-    ::decode(s, p);
+    decode(s, p);
     if (is_new)
       state = s;
   }
   void decode_state_rejoin(bufferlist::iterator& p, list<MDSInternalContextBase*>& waiters, bool survivor) {
     __s16 s;
-    ::decode(s, p);
+    using ceph::decode;
+    decode(s, p);
     set_state_rejoin(s, waiters, survivor);
   }
 
