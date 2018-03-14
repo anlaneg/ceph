@@ -24,7 +24,7 @@
  * The chained keys will have the first xattr's key (with the escaping), and a suffix: "@<id>"
  * where <id> marks the num of xattr in the chain.
  */
-
+//由name填充raw_name,原name中的@需要转义为@@,raw_name格式为:"$(escape,name)@%d" % i
 void get_raw_xattr_name(const char *name, int i, char *raw_name, int raw_len)
 {
   int pos = 0;
@@ -32,20 +32,20 @@ void get_raw_xattr_name(const char *name, int i, char *raw_name, int raw_len)
   while (*name) {
     switch (*name) {
     case '@': /* escape it */
-      pos += 2;
+      pos += 2;//遇见@,转义为@@
       assert (pos < raw_len - 1);
-      *raw_name = '@';
+      *raw_name = '@';//赋@1
       raw_name++;
-      *raw_name = '@';
+      *raw_name = '@';//赋@2
       break;
-    default:
+    default://其它字符，置原字符
       pos++;
       assert(pos < raw_len - 1);
       *raw_name = *name;
       break;
     }
-    name++;
-    raw_name++;
+    name++;//跳过name
+    raw_name++;//raw_name增加
   }
 
   if (!i) {
@@ -190,27 +190,34 @@ int chain_getxattr_buf(const char *fn, const char *name, bufferptr *bp)
   return 0;
 }
 
+//取属性为name的属性值长度
 static int chain_fgetxattr_len(int fd, const char *name)
 {
   int i = 0, total = 0;
   char raw_name[CHAIN_XATTR_MAX_NAME_LEN * 2 + 16];
   int r;
 
+  //从0不断增长i,依次读取name%d的属性值长度，如果读取的长度
   do {
+	//name格式化为raw_name
     get_raw_xattr_name(name, i, raw_name, sizeof(raw_name));
+    //获取名称为raw_name的属性值
     r = sys_fgetxattr(fd, raw_name, 0, 0);
     if (!i && r < 0)
+    	//出错，返回错误信息（需要保证i为0，如果i为0，如果i不为0，
+    	//则可以恰好不存在i+1的属性，而前面恰好是满长度）
       return r;
     if (r < 0)
-      break;
+      break;//i=0时r<0,返回total
     total += r;
-    i++;
+    i++;//增加i
   } while (r == CHAIN_XATTR_MAX_BLOCK_LEN ||
-	   r == CHAIN_XATTR_SHORT_BLOCK_LEN);
+	   r == CHAIN_XATTR_SHORT_BLOCK_LEN);//如果读的长度为满的长度，则说明属性值未结束，继续读取
 
   return total;
 }
 
+//取名称为name的属性值
 int chain_fgetxattr(int fd, const char *name, void *val, size_t size)
 {
   int i = 0, pos = 0;
@@ -220,8 +227,10 @@ int chain_fgetxattr(int fd, const char *name, void *val, size_t size)
   size_t chunk_size;
 
   if (!size)
+	//缓冲区长度为0，则实现为获取name属性值的长度
     return chain_fgetxattr_len(fd, name);
 
+  //否则取属性值
   do {
     chunk_size = size;
     get_raw_xattr_name(name, i, raw_name, sizeof(raw_name));
@@ -245,10 +254,12 @@ int chain_fgetxattr(int fd, const char *name, void *val, size_t size)
   } while (size && (r == CHAIN_XATTR_MAX_BLOCK_LEN ||
 		    r == CHAIN_XATTR_SHORT_BLOCK_LEN));
 
+  //空间不够用
   if (r >= 0) {
     ret = pos;
     /* is there another chunk? that can happen if the last read size span over
        exactly one block */
+    //防止恰好够的情况,如果是这种情况是不能返回-ERANGE
     if (chunk_size == CHAIN_XATTR_MAX_BLOCK_LEN ||
 	chunk_size == CHAIN_XATTR_SHORT_BLOCK_LEN) {
       get_raw_xattr_name(name, i, raw_name, sizeof(raw_name));
@@ -360,6 +371,7 @@ done:
   return r;
 }
 
+//提取fd的属性列表
 int chain_flistxattr(int fd, char *names, size_t len) {
   int r;
   char *p;
@@ -368,6 +380,7 @@ int chain_flistxattr(int fd, char *names, size_t len) {
   char *dest_end;
 
   if (!len)
+	//只实现获取属性列表长度的功能
     return sys_flistxattr(fd, names, len) * 2;
 
   r = sys_flistxattr(fd, 0, 0);

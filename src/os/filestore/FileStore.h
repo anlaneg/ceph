@@ -114,6 +114,7 @@ inline ostream& operator<<(ostream& out, const FSSuperblock& sb)
 class FileStore : public JournalingObjectStore,
                   public md_config_obs_t
 {
+  //当前FileStore创建的collection版本为4
   static const uint32_t target_version = 4;
 public:
   uint32_t get_target_version() {
@@ -145,9 +146,9 @@ public:
 
 private:
   string internal_name;        //内部名称 ///< internal name, used to name the perfcounter instance
-  string basedir, journalpath;//数据存放的位置及日志所在位置
-  osflagbits_t generic_flags;//构造时传入的flag
-  std::string current_fn; //current目录位置(由 $basedir +"/current"获得)
+  string basedir, journalpath; //数据存放的位置及日志所在位置
+  osflagbits_t generic_flags;  //构造时传入的flag
+  std::string current_fn;      //current目录位置(由 $basedir +"/current"获得)
   std::string current_op_seq_fn;// $basedir + "/current/commit_op_seq" 获得
   std::string omap_dir;// $basedir + "/current/omap" 获得
   uuid_d fsid;

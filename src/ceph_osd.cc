@@ -288,8 +288,8 @@ int main(int argc, const char **argv)
       bufferlist bl;
       bl.read_fd(fd, 64);
       if (bl.length()) {
-	store_type = string(bl.c_str(), bl.length() - 1);  // drop \n
-	dout(5) << "object store type is " << store_type << dendl;
+    	  	  store_type = string(bl.c_str(), bl.length() - 1);  // drop \n
+    	  	  dout(5) << "object store type is " << store_type << dendl;
       }
       ::close(fd);
     }

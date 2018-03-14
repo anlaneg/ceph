@@ -68,6 +68,7 @@ ObjectStore *ObjectStore::create(CephContext *cct,
 				 osflagbits_t flags)
 {
   if (type == "filestore") {
+	  //使用filestore存储
     return new FileStore(cct, data, journal, flags);//指定了数据位置,日志位置,flag
   }
   if (type == "memstore") {

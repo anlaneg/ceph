@@ -31,7 +31,7 @@
 #define CHAIN_XATTR_SHORT_LEN_THRESHOLD 1000
 
 // wrappers to hide annoying errno handling.
-
+//获取文件属性值
 static inline int sys_fgetxattr(int fd, const char *name, void *val, size_t size)
 {
   int r = ::ceph_os_fgetxattr(fd, name, val, size);
@@ -59,6 +59,7 @@ static inline int sys_listxattr(const char *fn, char *names, size_t len)
   int r = ::ceph_os_listxattr(fn, names, len);
   return (r < 0 ? -errno : r);
 }
+//提取所有属性列表
 static inline int sys_flistxattr(int fd, char *names, size_t len)
 {
   int r = ::ceph_os_flistxattr(fd, names, len);

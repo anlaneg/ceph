@@ -33,6 +33,7 @@
 
 #include "chain_xattr.h"
 
+//设置path的user.cephos.collection_version的属性值，设置当前数据目录的版本号，以便后续升级
 static int set_version(const char *path, uint32_t version) {
   bufferlist bl;
   encode(version, bl);
@@ -41,7 +42,7 @@ static int set_version(const char *path, uint32_t version) {
     bl.length());
 }
 
-//读取path的cephos.collection_version版本
+//读取path的user.cephos.collection_version的属性值，了解当前数据版本
 static int get_version(const char *path, uint32_t *version) {
   bufferptr bp(PATH_MAX);
   int r = chain_getxattr(path, "user.cephos.collection_version",
@@ -90,11 +91,13 @@ int IndexManager::init_index(coll_t c, const char *path, uint32_t version) {
 }
 
 int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **index) {//构造index
+
+  //升级时进入
   if (upgrade) {
     // Need to check the collection generation
     int r;
     uint32_t version = 0;
-    r = get_version(path, &version);
+    r = get_version(path, &version);//取数据目录的版本号
     if (r < 0)
       return r;
 
@@ -115,6 +118,7 @@ int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **inde
 
   } else {
     // No need to check
+	//非升级情况下，直接创建HashIndex
     *index = new HashIndex(cct, c, path, cct->_conf->filestore_merge_threshold,
 			   cct->_conf->filestore_split_multiple,
 			   CollectionIndex::HOBJECT_WITH_POOL,
@@ -139,10 +143,12 @@ int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {//�
   RWLock::WLocker l(lock);
   ceph::unordered_map<coll_t, CollectionIndex* > ::iterator it = col_indices.find(c);
   if (it == col_indices.end()) {
+	 //没有此目录的index结构，构造一个出来
+	//先构造出collection对应的目录名称（绝对路径）
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/current/%s", baseDir.c_str(), c.to_str().c_str());
     CollectionIndex* colIndex = NULL;
-    int r = build_index(c, path, &colIndex);//构造HashIndex类型
+    int r = build_index(c, path, &colIndex);//再构造HashIndex类型
     if (r < 0)
       return r;
     col_indices[c] = colIndex;//加入缓存

@@ -106,6 +106,7 @@ void *value, size_t size)
 	return (error);
 }
 
+//获取文件属性值
 ssize_t
 ceph_os_fgetxattr(int fd, const char *name, void *value,
     size_t size)
@@ -130,6 +131,7 @@ ceph_os_fgetxattr(int fd, const char *name, void *value,
 		}
 	}
 #elif defined(__linux__)
+	//linux机器，读取fd的名称为name的属性值及属性长度
 	error = fgetxattr(fd, name, value, size);
 #elif defined(__APPLE__)
 	error = fgetxattr(fd, name, value, size, 0, 0 /* no options */);
@@ -231,6 +233,7 @@ ceph_os_flistxattr(int fd, char *list, size_t size)
 		    list, size);
 	}
 #elif defined(__linux__)
+	//提取文件的所有属性列表
 	error = flistxattr(fd, list, size);
 #elif defined(__APPLE__)
 	error = flistxattr(fd, list, size, 0);

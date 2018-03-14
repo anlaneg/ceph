@@ -160,7 +160,7 @@ ostream& operator<<(ostream& out, const FileStore::OpSequencer& s)
   return out << "osr(" << s.cid << ")";
 }
 
-//获取coll的路径名称
+//获取coll的绝对路径名称
 int FileStore::get_cdir(const coll_t& cid, char *s, int len)
 {
   const string &cid_str(cid.to_str());//构造coll_t名称,例如3.abe_head
@@ -174,6 +174,7 @@ int FileStore::get_index(const coll_t& cid, Index *index)//获取index
   return r;
 }
 
+//初始化数据目录的版本号
 int FileStore::init_index(const coll_t& cid)
 {
   char path[PATH_MAX];
@@ -238,20 +239,24 @@ int FileStore::lfn_stat(const coll_t& cid, const ghobject_t& oid, struct stat *b
   return r;
 }
 
-int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获取其index
+//打开或创建指定对象,并获取其index
+int FileStore::lfn_open(const coll_t& cid,
 			const ghobject_t& oid,
-			bool create,
-			FDRef *outfd,
+			bool create,//如果不存在，是否容许创建
+			FDRef *outfd,//出参，打开文件后对应的fd
                         Index *index)
 {
   assert(outfd);
   int r = 0;
   bool need_lock = true;
-  int flags = O_RDWR;
+  int flags = O_RDWR;//默认是读取flags
 
   if (create)
-    flags |= O_CREAT;
+    flags |= O_CREAT;//如果容许创建，则增加create flags
   if (cct->_conf->filestore_odsync_write) {
+	//O_DSYNC告诉内核，当向文件写入数据的时候，只有当数据写到了磁盘时，
+	//写入操作才算完成（write才返回成功）。和O_DSYNC同类的文件标志，
+	//还有O_SYNC,O_RSYNC，O_DIRECT。
     flags |= O_DSYNC;
   }
 
@@ -259,7 +264,7 @@ int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获�
   if (!index) {
     index = &index2;
   }
-  if (!((*index).index)) {//填充index.index
+  if (!((*index).index)) {
     r = get_index(cid, index);
     if (r < 0) {
       dout(10) << __FUNC__ << ": could not get index r = " << r << dendl;
@@ -275,6 +280,8 @@ int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获�
     ((*index).index)->access_lock.get_write();
   }
   if (!replaying) {
+	//非replaying状态下，首先检查fdcache中是否有oid对应的fd
+	//如果有，则使用之前的fd
     *outfd = fdcache.lookup(oid);
     if (*outfd) {
       if (need_lock) {
@@ -302,7 +309,9 @@ int FileStore::lfn_open(const coll_t& cid,//打开或创建指定对象,并获�
       << flags << ": " << cpp_strerror(-r) << dendl;
     goto fail;
   }
-  fd = r;
+  fd = r;//打开成功，设置fd
+
+  //如果不存在，且容许创建，则进行创建
   if (create && (!exist)) {
     r = (*index)->created(oid, (*path)->path());
     if (r < 0) {
@@ -666,15 +675,18 @@ FileStore::~FileStore()
   }
 }
 
+//生成可保存的文件属性前缀
 static void get_attrname(const char *name, char *buf, int len)
 {
   snprintf(buf, len, "user.ceph.%s", name);
 }
 
+//检查是否为可保存的文件属性前缀
 bool parse_attrname(char **name)
 {
+  //检查*name指向的是否以"user.ceph."
   if (strncmp(*name, "user.ceph.", 10) == 0) {
-    *name += 10;
+    *name += 10;//更新name中存的指针前移10字节
     return true;
   }
   return false;
@@ -2833,7 +2845,7 @@ void FileStore::_do_transaction(
         tracepoint(objectstore, rmattrs_enter, osr_name);
         if (_check_replay_guard(cid, oid, spos) > 0)
           r = _rmattrs(cid, oid, spos);
-        tracepoint(objectstore, rmattrs_exit, r);
+          tracepoint(objectstore, rmattrs_exit, r);
       }
       break;
 
@@ -3737,10 +3749,11 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
   {
     char buf[2];
     map<string, bufferptr> aset;
-    r = _fgetattrs(**o, aset);
+    r = _fgetattrs(**o, aset);//取此文件对应的所有属性（user.ceph前缀的属性）
     if (r < 0)
       goto out3;
 
+    //设置xattr_split_out_name
     r = chain_fgetxattr(**o, XATTR_SPILL_OUT_NAME, buf, sizeof(buf));
     if (r >= 0 && !strncmp(buf, XATTR_NO_SPILL_OUT, sizeof(XATTR_NO_SPILL_OUT))) {
       r = chain_fsetxattr<true, true>(**n, XATTR_SPILL_OUT_NAME, XATTR_NO_SPILL_OUT,
@@ -3752,6 +3765,7 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
     if (r < 0)
       goto out3;
 
+    //为n设置这些属性
     r = _fsetattrs(**n, aset);
     if (r < 0)
       goto out3;
@@ -4336,6 +4350,7 @@ int FileStore::snapshot(const string& name)
 // -------------------------------
 // attributes
 
+//取名称为name的属性值，并将属性存放在bp中
 int FileStore::_fgetattr(int fd, const char *name, bufferptr& bp)
 {
   char val[CHAIN_XATTR_MAX_BLOCK_LEN];
@@ -4344,6 +4359,7 @@ int FileStore::_fgetattr(int fd, const char *name, bufferptr& bp)
     bp = buffer::create(l);
     memcpy(bp.c_str(), val, l);
   } else if (l == -ERANGE) {
+	//长度过长，先不含buf请求一次，确认attr的长度，再申请空间，重新填充buf
     l = chain_fgetxattr(fd, name, 0, 0);
     if (l > 0) {
       bp = buffer::create(l);
@@ -4354,21 +4370,25 @@ int FileStore::_fgetattr(int fd, const char *name, bufferptr& bp)
   return l;
 }
 
+//给定fd,提取其所有的属性名称及对应的属性值，将其保存在aset映射表中，注属性名称将被移除前缀
+//只处理user.ceph前缀的属性
 int FileStore::_fgetattrs(int fd, map<string,bufferptr>& aset)
 {
   // get attr list
+  //取属性名称列表，如果给的缓冲不够，则自动扩展到合适长度，并提取相应的属性值
   char names1[100];
   int len = chain_flistxattr(fd, names1, sizeof(names1)-1);
   char *names2 = 0;
   char *name = 0;
   if (len == -ERANGE) {
+	//取长度
     len = chain_flistxattr(fd, 0, 0);
     if (len < 0) {
       assert(!m_filestore_fail_eio || len != -EIO);
       return len;
     }
     dout(10) << " -ERANGE, len is " << len << dendl;
-    names2 = new char[len+1];
+    names2 = new char[len+1];//申请足够的长度
     len = chain_flistxattr(fd, names2, len);
     dout(10) << " -ERANGE, got " << len << dendl;
     if (len < 0) {
@@ -4385,32 +4405,40 @@ int FileStore::_fgetattrs(int fd, map<string,bufferptr>& aset)
   }
   name[len] = 0;
 
+  //在name这种多个c string联合起来的内存中，检查是否有属性名，如果有
+  //取其对应的属性值并返回
   char *end = name + len;
   while (name < end) {
     char *attrname = name;
     if (parse_attrname(&name)) {
+    	  //如果进入此条件，在parse_attrname中，我们已更新name指针前移了10字节
       if (*name) {
         dout(20) << __FUNC__ << ": " << fd << " getting '" << name << "'" << dendl;
+        //将属性名称为attrname(含前缀）的属性值读取出来，存在aset的name属性下（name是不含前缀的attrname)
         int r = _fgetattr(fd, attrname, aset[name]);
         if (r < 0) {
-	  delete[] names2;
-	  return r;
+        		delete[] names2;
+        		return r;
         }
       }
     }
-    name += strlen(name) + 1;
+    //name是多个c string联合起来的一块内存
+    name += strlen(name) + 1;//跳过这个string
   }
 
   delete[] names2;
   return 0;
 }
 
+//设置fd的文件属性值
 int FileStore::_fsetattrs(int fd, map<string, bufferptr> &aset)
 {
+  //遍历待设置的所有属性
   for (map<string, bufferptr>::iterator p = aset.begin();
        p != aset.end();
        ++p) {
     char n[CHAIN_XATTR_MAX_NAME_LEN];
+    //生成存储用的属性名称（加user.ceph.前缀）
     get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
     const char *val;
     if (p->second.length())
@@ -4418,6 +4446,7 @@ int FileStore::_fsetattrs(int fd, map<string, bufferptr> &aset)
     else
       val = "";
     // ??? Why do we skip setting all the other attrs if one fails?
+    //保存文件属性前缀
     int r = chain_fsetxattr(fd, n, val, p->second.length());
     if (r < 0) {
       derr << __FUNC__ << ": chain_setxattr returned " << r << dendl;
@@ -4630,10 +4659,12 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
 	   << (incomplete_inline ? " (incomplete_inline, forcing omap)" : "")
 	   << dendl;
 
+  //遍历待设置的每个属性
   for (map<string,bufferptr>::iterator p = aset.begin();
        p != aset.end();
        ++p) {
     char n[CHAIN_XATTR_MAX_NAME_LEN];
+    //获得待设置的属性名称
     get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
 
     if (incomplete_inline) {
@@ -4644,6 +4675,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
 
     if (p->second.length() > m_filestore_max_inline_xattr_size) {
 	if (inline_set.count(p->first)) {
+	  //原有的属性里包含此属性，先将其自inline_set中移除
 	  inline_set.erase(p->first);
 	  r = chain_fremovexattr(**fd, n);
 	  if (r < 0)
@@ -4766,15 +4798,17 @@ int FileStore::_rmattrs(const coll_t& cid, const ghobject_t& oid,
     spill_out = false;
   }
 
+  //取fd对应的所有属性
   r = _fgetattrs(**fd, aset);
   if (r >= 0) {
+	//如果有属性，则移除所有获取到的属性
     for (map<string,bufferptr>::iterator p = aset.begin(); p != aset.end(); ++p) {
       char n[CHAIN_XATTR_MAX_NAME_LEN];
       get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
       r = chain_fremovexattr(**fd, n);
       if (r < 0) {
         dout(10) << __FUNC__ << ": could not remove xattr r = " << r << dendl;
-	goto out_close;
+        goto out_close;
       }
     }
   }
