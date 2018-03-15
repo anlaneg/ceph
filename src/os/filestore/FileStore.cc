@@ -203,11 +203,12 @@ int FileStore::lfn_find(const ghobject_t& oid, const Index& index, IndexedPath *
 
 int FileStore::lfn_truncate(const coll_t& cid, const ghobject_t& oid, off_t length)
 {
+  //打开oid对应的文件
   FDRef fd;
   int r = lfn_open(cid, oid, false, &fd);
   if (r < 0)
     return r;
-  r = ::ftruncate(**fd, length);
+  r = ::ftruncate(**fd, length);//将oid的大小截短为length
   if (r < 0)
     r = -errno;
   if (r >= 0 && m_filestore_sloppy_crc) {
@@ -265,7 +266,7 @@ int FileStore::lfn_open(const coll_t& cid,
     index = &index2;
   }
   if (!((*index).index)) {
-    r = get_index(cid, index);
+    r = get_index(cid, index);//取cid对应的index
     if (r < 0) {
       dout(10) << __FUNC__ << ": could not get index r = " << r << dendl;
       return r;
@@ -313,6 +314,7 @@ int FileStore::lfn_open(const coll_t& cid,
 
   //如果不存在，且容许创建，则进行创建
   if (create && (!exist)) {
+	//在cid中创建对象
     r = (*index)->created(oid, (*path)->path());
     if (r < 0) {
       VOID_TEMP_FAILURE_RETRY(::close(fd));
@@ -333,6 +335,7 @@ int FileStore::lfn_open(const coll_t& cid,
 
   if (!replaying) {
     bool existed;
+    //将fd加入缓存（考虑fd的淘汰）
     *outfd = fdcache.add(oid, fd, &existed);
     if (existed) {
       TEMP_FAILURE_RETRY(::close(fd));

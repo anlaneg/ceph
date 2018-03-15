@@ -501,7 +501,8 @@ int LFNIndex::remove_path(const vector<string> &to_remove)
     return 0;
 }
 
-int LFNIndex::path_exists(const vector<string> &to_check, int *exists)//检查to_check指定的路径是否存在
+//检查to_check指定的路径是否存在
+int LFNIndex::path_exists(const vector<string> &to_check, int *exists)
 {
   string full_path = get_full_path_subdir(to_check);
   struct stat buf;

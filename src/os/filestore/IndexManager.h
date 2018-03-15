@@ -84,7 +84,7 @@ public:
    * @param [out] index Index for c
    * @return error code
    */
-  int get_index(coll_t c, const string& baseDir, Index *index);
+  int get_index(coll_t c, const string& baseDir, Index *index);//查询c对应的index
 
   /**
    * Initialize index for collection c at path

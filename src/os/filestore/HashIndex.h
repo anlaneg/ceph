@@ -59,7 +59,7 @@ private:
   /// Size (bits) in object hash
   static const int PATH_HASH_LEN = 32;
   /// Max length of hashed path
-  static const int MAX_HASH_LEVEL = (PATH_HASH_LEN/4);
+  static const int MAX_HASH_LEVEL = (PATH_HASH_LEN/4);//常量8
 
   /**
    * Merges occur when the number of object drops below

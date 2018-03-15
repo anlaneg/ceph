@@ -63,23 +63,26 @@ static int get_version(const char *path, uint32_t *version) {
   return 0;
 }
 
+//释放col_indices及其引入的index
 IndexManager::~IndexManager() {
 
   for (ceph::unordered_map<coll_t, CollectionIndex* > ::iterator it = col_indices.begin();
        it != col_indices.end(); ++it) {
 
-    delete it->second;
+    delete it->second;//调用index的析构函数
     it->second = NULL;
   }
   col_indices.clear();
 }
 
 
+//初始化index
 int IndexManager::init_index(coll_t c, const char *path, uint32_t version) {
   RWLock::WLocker l(lock);
-  int r = set_version(path, version);
+  int r = set_version(path, version);//设置path对应的version
   if (r < 0)
     return r;
+  //构造coll_t对应的index
   HashIndex index(cct, c, path, cct->_conf->filestore_merge_threshold,
 		  cct->_conf->filestore_split_multiple,
 		  version,
@@ -137,13 +140,16 @@ bool IndexManager::get_index_optimistic(coll_t c, Index *index) {
   return true;
 }
 
-int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {//获取,如果不存在,则创建
+//获取,如果不存在,则创建
+int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {
+  //先在col_indices中查一遍，如果命中设置后直接返回
   if (get_index_optimistic(c, index))
     return 0;
+  //再检查一遍，此时肯定大概率情况下仍然不存在
   RWLock::WLocker l(lock);
   ceph::unordered_map<coll_t, CollectionIndex* > ::iterator it = col_indices.find(c);
   if (it == col_indices.end()) {
-	 //没有此目录的index结构，构造一个出来
+	//仍然查询不出来，需要构造一个index
 	//先构造出collection对应的目录名称（绝对路径）
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/current/%s", baseDir.c_str(), c.to_str().c_str());
@@ -152,7 +158,7 @@ int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {//�
     if (r < 0)
       return r;
     col_indices[c] = colIndex;//加入缓存
-    index->index = colIndex;//填充index的index数据结构
+    index->index = colIndex;//填充index的index数据结构,用于返回出参
   } else {
     index->index = it->second;
   }
