@@ -44,11 +44,11 @@ protected:
   class Path {
   public:
     /// Returned path
-    string full_path;
+    string full_path;//oid的全路径
     /// Ref to parent Index
-    CollectionIndex* parent_ref;
+    CollectionIndex* parent_ref;//oid对应的父目录的index
     /// coll_t for parent Index
-    coll_t parent_coll;
+    coll_t parent_coll;//oid的collection
 
     /// Normal Constructor
     Path(

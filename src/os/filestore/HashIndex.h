@@ -59,7 +59,7 @@ private:
   /// Size (bits) in object hash
   static const int PATH_HASH_LEN = 32;
   /// Max length of hashed path
-  static const int MAX_HASH_LEVEL = (PATH_HASH_LEN/4);
+  static const int MAX_HASH_LEVEL = (PATH_HASH_LEN/4);//常量8
 
   /**
    * Merges occur when the number of object drops below
@@ -76,9 +76,9 @@ private:
 
   /// Encodes current subdir state for determining when to split/merge.
   struct subdir_info_s {
-    uint64_t objs;       ///< Objects in subdir.
-    uint32_t subdirs;    ///< Subdirs in subdir.
-    uint32_t hash_level; ///< Hashlevel of subdir.
+    uint64_t objs;       ///< Objects in subdir. //此path下对象数目
+    uint32_t subdirs;    ///< Subdirs in subdir. //此path下子目录数目
+    uint32_t hash_level; ///< Hashlevel of subdir.//当前本目录有多少层的hash（分裂用）
 
     subdir_info_s() : objs(0), subdirs(0), hash_level(0) {}
 

@@ -485,6 +485,7 @@ private:
     ); ///< @return Generated object name.
 
   /// Generate object name
+  //将oid转换为字符串
   static string lfn_generate_object_name_current(
     const ghobject_t &oid ///< [in] Object for which to generate.
     ); ///< @return Generated object name.
@@ -493,11 +494,13 @@ private:
   string lfn_generate_object_name(//生成对象的名称
     const ghobject_t &oid ///< [in] Object for which to generate.
     ) {
+	//旧的版本
     if (index_version == HASH_INDEX_TAG)
       return lfn_generate_object_name_keyless(oid);
     if (index_version == HASH_INDEX_TAG_2)
       return lfn_generate_object_name_poolless(oid);
     else
+    	  //当前版本
       return lfn_generate_object_name_current(oid);
   } ///< @return Generated object name.
 

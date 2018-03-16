@@ -27,6 +27,7 @@
 
 const string HashIndex::SUBDIR_ATTR = "contents";
 const string HashIndex::SETTINGS_ATTR = "settings";
+//分裂时会被设置
 const string HashIndex::IN_PROGRESS_OP_TAG = "in_progress_op";
 
 /// hex digit to integer value
@@ -420,12 +421,14 @@ int HashIndex::_created(const vector<string> &path,
   r = get_info(path, &info);
   if (r < 0)
     return r;
-  info.objs++;
-  r = set_info(path, info);
+  info.objs++;//增加此目录下对象数
+  r = set_info(path, info);//将info存入到path的属性中
   if (r < 0)
     return r;
 
+  //检查此coll是否需要分裂
   if (must_split(info)) {
+	  //需要分裂，进行分裂
     dout(1) << __func__ << " " << path << " has " << info.objs
             << " objects, starting split." << dendl;
     int r = initiate_split(path, info);
@@ -465,6 +468,7 @@ int HashIndex::_remove(const vector<string> &path,
   }
 }
 
+//获取oid对应的名称，获取oid对应的硬链接数，返回oid在cid下的各层名称
 int HashIndex::_lookup(const ghobject_t &oid,
 		       vector<string> *path,
 		       string *mangled_name,
@@ -474,21 +478,22 @@ int HashIndex::_lookup(const ghobject_t &oid,
   vector<string>::iterator next = path_comp.begin();
   int exists;
   while (1) {
+	//检查*path是否存在
     int r = path_exists(*path, &exists);
     if (r < 0)
-      return r;
+      return r;//调用出错，返回错误号
     if (!exists) {
       if (path->empty())
-	return -ENOENT;
-      path->pop_back();
+	return -ENOENT;//path为空时返回不存在
+      path->pop_back();//弹出最后一个元素，上一次是存在的，故退出循环
       break;
     }
     if (next == path_comp.end())
       break;
     path->push_back(*(next++));//一层一层的向上加.
   }
-  //走到这一步,我们找到了path
-  return get_mangled_name(*path, oid, mangled_name, hardlink);//path是当前分裂情况下的path(如果path不存在,说明还没有分裂到那一层,在上层目录里找)
+  //走到这一步,我们找到了path，返回oid对应的对象名称，返回oid对应的硬链接数
+  return get_mangled_name(*path, oid, mangled_name, hardlink);
 }
 //同下层函数一个功能,不过加入对next不为空的支持.列出当前coll的所有对象.
 int HashIndex::_collection_list_partial(const ghobject_t &start,
@@ -722,17 +727,21 @@ int HashIndex::end_split_or_merge(const vector<string> &path) {
   return remove_attr_path(vector<string>(), IN_PROGRESS_OP_TAG);
 }
 
+//读取path对应的subdir_info_s
 int HashIndex::get_info(const vector<string> &path, subdir_info_s *info) {
   bufferlist buf;
+  //取path的content属性
   int r = get_attr_path(path, SUBDIR_ATTR, buf);
   if (r < 0)
     return r;
+  //将属性值解码为subdir_info_s
   bufferlist::iterator bufiter = buf.begin();
   info->decode(bufiter);
   assert(path.size() == (unsigned)info->hash_level);
   return 0;
 }
 
+//写path对应的subdir_info_s
 int HashIndex::set_info(const vector<string> &path, const subdir_info_s &info) {
   bufferlist buf;
   assert(path.size() == (unsigned)info.hash_level);
@@ -751,6 +760,7 @@ bool HashIndex::must_split(const subdir_info_s &info, int target_level) {
   // target_level is used for ceph-objectstore-tool to split dirs offline.
   // if it is set (defalult is 0) and current hash level < target_level, 
   // this dir would be split no matters how many objects it has.
+  //对象数过多时将产生pg目录分裂
   return (info.hash_level < (unsigned)MAX_HASH_LEVEL &&
          ((target_level > 0 && info.hash_level < (unsigned)target_level) ||
          (info.objs > ((unsigned)(abs(merge_threshold) * split_multiplier + settings.split_rand_factor) * 16))));
@@ -797,44 +807,51 @@ int HashIndex::complete_merge(const vector<string> &path, subdir_info_s info) {
   return end_split_or_merge(path);
 }
 
+//设置开始分裂标记
 int HashIndex::initiate_split(const vector<string> &path, subdir_info_s info) {
   return start_split(path);
 }
 
+//具体完成path分裂
 int HashIndex::complete_split(const vector<string> &path, subdir_info_s info) {
   int level = info.hash_level;
   map<string, ghobject_t> objects;
   vector<string> dst = path;
   int r;
   dst.push_back("");
-  r = list_objects(path, 0, 0, &objects);
+  r = list_objects(path, 0, 0, &objects);//不设上限的列出此path下所有对象
   if (r < 0)
     return r;
   vector<string> subdirs_vec;
-  r = list_subdirs(path, &subdirs_vec);
+  r = list_subdirs(path, &subdirs_vec);//列出所有子目录
   if (r < 0)
     return r;
   set<string> subdirs;
-  subdirs.insert(subdirs_vec.begin(), subdirs_vec.end());
+  subdirs.insert(subdirs_vec.begin(), subdirs_vec.end());//防子目录重复，更换数据结构方便处理
   map<string, map<string, ghobject_t> > mapped;
   map<string, ghobject_t> moved;
   int num_moved = 0;
+  //遍历当前目录下所有对象，按level级别完成分类
   for (map<string, ghobject_t>::iterator i = objects.begin();
        i != objects.end();
        ++i) {
     vector<string> new_path;
     get_path_components(i->second, &new_path);
+    //取对应层次的数字，同一level的同一数字的所有object应存放在mapped[new_path[level]]对应的map中
     mapped[new_path[level]][i->first] = i->second;
   }
+
+  //分类已完成，开始遍历每个集合
   for (map<string, map<string, ghobject_t> >::iterator i = mapped.begin();
        i != mapped.end();
        ) {
-    dst[level] = i->first;
+    dst[level] = i->first;//设置i集合对应的目录名称
     /* If the info already exists, it must be correct,
      * we may be picking up a partially finished split */
     subdir_info_s temp;
     // subdir has already been fully copied
     if (subdirs.count(i->first) && !get_info(dst, &temp)) {
+    	  //遍历i集合
       for (map<string, ghobject_t>::iterator j = i->second.begin();
 	   j != i->second.end();
 	   ++j) {
@@ -904,13 +921,16 @@ int HashIndex::complete_split(const vector<string> &path, subdir_info_s info) {
   return end_split_or_merge(path);
 }
 
-void HashIndex::get_path_components(const ghobject_t &oid,//将对象的hash按4位方式返回
+//返回对象oid存放的最终path
+void HashIndex::get_path_components(const ghobject_t &oid,
 				    vector<string> *path) {
+  //返回hash值，生成一个最多MAX_HASH_LEVEL字节的数字串
   char buf[MAX_HASH_LEVEL + 1];
   snprintf(buf, sizeof(buf), "%.*X", MAX_HASH_LEVEL, (uint32_t)oid.hobj.get_nibblewise_key());
 
   // Path components are the hex characters of oid.hobj.hash, least
   // significant first
+  //假如hash为23456789,则这个对象最终应存放的path必然为$base_path/DIR_2/DIR_3/DIR_4/DIR_5/DIR_6/DIR_7/DIR_8/DIR_9/
   for (int i = 0; i < MAX_HASH_LEVEL; ++i) {
     path->push_back(string(&buf[i], 1));
   }

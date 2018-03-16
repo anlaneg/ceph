@@ -92,6 +92,7 @@ int LFNIndex::init()
   return _init();
 }
 
+//在path中创建oid
 int LFNIndex::created(const ghobject_t &oid, const char *path)
 {
   WRAP_RETRY(
@@ -136,16 +137,19 @@ int LFNIndex::unlink(const ghobject_t &oid)
   );
 }
 
-int LFNIndex::lookup(const ghobject_t &oid,//获取全路径及硬链接数目
-		     IndexedPath *out_path,
+//获取全路径及硬链接数目
+int LFNIndex::lookup(const ghobject_t &oid,
+		     IndexedPath *out_path,//将全路径封装在IndexedPath中
 		     int *hardlink)
 {
   WRAP_RETRY(
   vector<string> path;
   string short_name;
+  //path为空，取oid对应的名称，取oid对应的硬链接数目
   r = _lookup(oid, &path, &short_name, hardlink);
   if (r < 0)
     goto out;
+  //取oid的全路径
   string full_path = get_full_path(path, short_name);
   *out_path = std::make_shared<Path>(full_path, this);
   r = 0;
@@ -169,6 +173,7 @@ int LFNIndex::collection_list_partial(const ghobject_t &start,
 
 /* Derived class utility methods */
 
+//进行目录强制落盘
 int LFNIndex::fsync_dir(const vector<string> &path)
 {
   maybe_inject_failure();
@@ -326,6 +331,7 @@ int LFNIndex::remove_object(const vector<string> &from,
   return lfn_unlink(from, oid, short_name);
 }
 
+//返回oid对应的名称，返回oid对应的硬链接数
 int LFNIndex::get_mangled_name(const vector<string> &from,
 			       const ghobject_t &oid,
 			       string *mangled_name, int *hardlink)
@@ -403,7 +409,7 @@ static int get_hobject_from_oinfo(const char *dir, const char *file,
   return 0;
 }
 
-
+//列出to_list目录下（to_list可以为空）所有objects
 int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
 			   long *handle, map<string, ghobject_t> *out)
 {
@@ -421,21 +427,24 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
   int r = 0;
   int listed = 0;
   bool end = true;
+  //读当前目录
   while ((de = ::readdir(dir))) {
     end = false;
-    if (max_objs > 0 && listed >= max_objs) {//如果max_objs<=0,则不对最大对象数进行限制
+    if (max_objs > 0 && listed >= max_objs) {
+    	  //如果max_objs<=0,则不对最大对象数进行限制
       break;
     }
     if (de->d_name[0] == '.')
-      continue;
-    string short_name(de->d_name);
+      continue;//跳过'.','..'两个目录
+    string short_name(de->d_name);//对象的名称
     ghobject_t obj;
     if (lfn_is_object(short_name)) {
+    	  //这个名称是对象的名称，则由对象名称，生成obj结构体
       r = lfn_translate(to_list, short_name, &obj);
       if (r == -EINVAL) {
-	continue;
+    	  	  continue;
       } else if (r < 0) {
-	goto cleanup;
+    	  	  goto cleanup;
       } else {
 	string long_name = lfn_generate_object_name(obj);
 	if (!lfn_must_hash(long_name)) {//如果不是hash的,则要求short_name与long_name相同
@@ -444,7 +453,8 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
 	if (index_version == HASH_INDEX_TAG)
 	  get_hobject_from_oinfo(to_list_path.c_str(), short_name.c_str(), &obj);
 
-	out->insert(pair<string, ghobject_t>(short_name, obj));//将名称及对象放入out
+	//将名称及对象放入out
+	out->insert(pair<string, ghobject_t>(short_name, obj));
 	++listed;//增加计数
       }
     }
@@ -460,7 +470,7 @@ int LFNIndex::list_objects(const vector<string> &to_list, int max_objs,
   return r;
 }
 
-//列出所有子目录
+//列出to_list(可以为空）下所有子目录，这些子目录是coll下的分裂目录，故其均为DIR_X
 int LFNIndex::list_subdirs(const vector<string> &to_list,
 			   vector<string> *out)
 {
@@ -473,6 +483,7 @@ int LFNIndex::list_subdirs(const vector<string> &to_list,
   while ((de = ::readdir(dir))) {
     string short_name(de->d_name);
     string demangled_name;
+    //取子目录下的DIR_X中的X,并加入到out中
     if (lfn_is_subdir(short_name, &demangled_name)) {
       out->push_back(demangled_name);
     }
@@ -504,7 +515,8 @@ int LFNIndex::remove_path(const vector<string> &to_remove)
     return 0;
 }
 
-int LFNIndex::path_exists(const vector<string> &to_check, int *exists)//检查to_check指定的路径是否存在
+//检查to_check指定的路径是否存在
+int LFNIndex::path_exists(const vector<string> &to_check, int *exists)
 {
   string full_path = get_full_path_subdir(to_check);
   struct stat buf;
@@ -512,7 +524,7 @@ int LFNIndex::path_exists(const vector<string> &to_check, int *exists)//检查to
     int r = -errno;
     if (r == -ENOENT) {
       *exists = 0;
-      return 0;
+      return 0;//文件或目录不存在
     } else {
       return r;
     }
@@ -534,7 +546,7 @@ int LFNIndex::add_attr_path(const vector<string> &path,
     attr_value.length());
 }
 
-//取path的属性值
+//取path对应的属性值
 int LFNIndex::get_attr_path(const vector<string> &path,
 			    const string &attr_name,
 			    bufferlist &attr_value)
@@ -601,13 +613,14 @@ string LFNIndex::lfn_generate_object_name_keyless(const ghobject_t &oid)
   return string(s);
 }
 
+//处理begin中的字符转议问题，将转换后的存放到out中
 static void append_escaped(string::const_iterator begin,
 			   string::const_iterator end,
 			   string *out)
 {
   for (string::const_iterator i = begin; i != end; ++i) {
     if (*i == '\\') {
-      out->append("\\\\");
+      out->append("\\\\");//遇到转义符，更新为'\\\\'
     } else if (*i == '/') {
       out->append("\\s");
     } else if (*i == '_') {
@@ -620,16 +633,16 @@ static void append_escaped(string::const_iterator begin,
   }
 }
 
-//重新将oid转换为字符串
+//将oid转换为字符串
 string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
 {
   string full_name;
   string::const_iterator i = oid.hobj.oid.name.begin();
   if (oid.hobj.oid.name.substr(0, 4) == "DIR_") {
     full_name.append("\\d");
-    i += 4;
+    i += 4;//解析了4个字节
   } else if (oid.hobj.oid.name[0] == '.') {
-    full_name.append("\\.");
+    full_name.append("\\.");//对.需要转义
     ++i;
   }
   append_escaped(i, oid.hobj.oid.name.end(), &full_name);//放入对象名
@@ -641,7 +654,7 @@ string LFNIndex::lfn_generate_object_name_current(const ghobject_t &oid)
   char *t = buf;
   const char *end = t + sizeof(buf);
   if (oid.hobj.snap == CEPH_NOSNAP)
-    t += snprintf(t, end - t, "head");
+    t += snprintf(t, end - t, "head");//无快照，存入head
   else if (oid.hobj.snap == CEPH_SNAPDIR)
     t += snprintf(t, end - t, "snapdir");
   else
@@ -712,6 +725,7 @@ string LFNIndex::lfn_generate_object_name_poolless(const ghobject_t &oid)
   return full_name;
 }
 
+//返回oid的名称，返回oid对应的绝对路径，返回oid对应的硬链接数
 int LFNIndex::lfn_get_name(const vector<string> &path,
 			   const ghobject_t &oid,
 			   string *mangled_name, string *out_path,
@@ -724,12 +738,13 @@ int LFNIndex::lfn_get_name(const vector<string> &path,
     if (mangled_name)
       *mangled_name = full_name;//对象全名
     if (out_path)
-      *out_path = get_full_path(path, full_name);//路径名
+    	  //为对象全名加上其绝对路径
+      *out_path = get_full_path(path, full_name);
     if (hardlink) {
       struct stat buf;
       string full_path = get_full_path(path, full_name);
       maybe_inject_failure();
-      r = ::stat(full_path.c_str(), &buf);
+      r = ::stat(full_path.c_str(), &buf);//取此对象文件状态
       if (r < 0) {
 	if (errno == ENOENT)
 	  *hardlink = 0;
@@ -837,8 +852,9 @@ int LFNIndex::lfn_created(const vector<string> &path,
 			  const ghobject_t &oid,
 			  const string &mangled_name)
 {
+
   if (!lfn_is_hashed_filename(mangled_name))
-    return 0;
+    return 0;//非hashed的文件名直接返回（一般走此路径）
   string full_path = get_full_path(path, mangled_name);
   string full_name = lfn_generate_object_name(oid);
   maybe_inject_failure();
@@ -1263,7 +1279,7 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
   return 0;
 }
 
-//哈希过的文件名至少255字节,且以"long"字符串做后缀.
+//哈希过的文件名超过255字节,且以"long"字符串做后缀.
 bool LFNIndex::lfn_is_hashed_filename(const string &name)
 {
   if (name.size() < (unsigned)FILENAME_SHORT_LEN) {
@@ -1278,6 +1294,7 @@ bool LFNIndex::lfn_is_hashed_filename(const string &name)
   }
 }
 
+//检查是否为hash后的名称（返回true为非hash后名称）
 bool LFNIndex::lfn_must_hash(const string &long_name)
 {
   return (int)long_name.size() >= FILENAME_SHORT_LEN;
@@ -1370,7 +1387,7 @@ const string &LFNIndex::get_base_path()
   return base_path;
 }
 
-//生成$(base_path)/DIR_XX/...
+//生成$(base_path)/DIR_XX/... 注：当rel为空时不存在可能为$(base_path)
 string LFNIndex::get_full_path_subdir(const vector<string> &rel)
 {
   string retval = get_base_path();

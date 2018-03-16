@@ -64,3 +64,4 @@ GTAGS
 .cproject
 .project
 .settings/
+.pydevproject
