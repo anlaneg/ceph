@@ -471,7 +471,7 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
 			  bool force_clear_omap)
 {
   Index index;
-  int r = get_index(cid, &index);
+  int r = get_index(cid, &index);//取cid对应的index
   if (r < 0) {
     dout(25) << __FUNC__ << ": get_index failed " << cpp_strerror(r) << dendl;
     return r;
@@ -483,7 +483,7 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
   {
     IndexedPath path;
     int hardlink;
-    r = index->lookup(o, &path, &hardlink);
+    r = index->lookup(o, &path, &hardlink);//在index中查询o是否存在
     if (r < 0) {
       assert(!m_filestore_fail_eio || r != -EIO);
       return r;
@@ -504,11 +504,13 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
 	return r;
       }
       if (cct->_conf->filestore_debug_inject_read_err) {
-	debug_obj_on_delete(o);
+    	  //故障注入
+    	  debug_obj_on_delete(o);
       }
       if (!m_disable_wbthrottle) {
         wbthrottle.clear_object(o); // should be only non-cache ref
       }
+      //注掉o对应的fd cache
       fdcache.clear(o);
     } else {
       /* Ensure that replay of this op doesn't result in the object_map
@@ -524,6 +526,7 @@ int FileStore::lfn_unlink(const coll_t& cid, const ghobject_t& o,
       return 0;
     }
   }
+  //将o移除，检查是否需要合并
   r = index->unlink(o);
   if (r < 0) {
     dout(25) << __FUNC__ << ": index unlink failed " << cpp_strerror(r) << dendl;
@@ -2775,8 +2778,10 @@ void FileStore::_do_transaction(
 
     case Transaction::OP_REMOVE:
       {
+    	  //处理对象移除
         const coll_t &_cid = i.get_cid(op->cid);
         const ghobject_t &oid = i.get_oid(op->oid);
+        //检查是否需pg_tmp类型的collection,如果需要则直接返回temp类型的coll_t
         const coll_t &cid = !_need_temp_object_collection(_cid, oid) ?
           _cid : _cid.get_temp();
         tracepoint(objectstore, remove_enter, osr_name);
@@ -3544,6 +3549,7 @@ done:
   return r;
 }
 
+//filestore实现oid删除
 int FileStore::_remove(const coll_t& cid, const ghobject_t& oid,
 		       const SequencerPosition &spos)
 {
@@ -3553,6 +3559,7 @@ int FileStore::_remove(const coll_t& cid, const ghobject_t& oid,
   return r;
 }
 
+//filestore实现对象截短
 int FileStore::_truncate(const coll_t& cid, const ghobject_t& oid, uint64_t size)
 {
   dout(15) << __FUNC__ << ": " << cid << "/" << oid << " size " << size << dendl;

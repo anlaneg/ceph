@@ -105,6 +105,7 @@ private:
   };
 
   struct settings_s {
+	//随机生成的因子，用于控制目录split的检查条件（这种设置是不是过于灵活了，应删除掉？）
     uint32_t split_rand_factor; ///< random factor added to split threshold (only on root of collection)
     settings_s() : split_rand_factor(0) {}
     void encode(bufferlist &bl) const

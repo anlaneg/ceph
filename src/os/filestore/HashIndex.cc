@@ -166,10 +166,13 @@ int HashIndex::col_split_level(
    * bits of the hash represented by the subdir path with inbits, match passed
    * in.
    */
+  //列出from下所有subdir
   vector<string> subdirs;
   int r = from.list_subdirs(path, &subdirs);
   if (r < 0)
     return r;
+
+  //列出path下所有object
   map<string, ghobject_t> objects;
   r = from.list_objects(path, 0, 0, &objects);
   if (r < 0)
@@ -250,7 +253,7 @@ int HashIndex::col_split_level(
 
   subdir_info_s from_info;
   subdir_info_s to_info;
-  r = from.get_info(path, &from_info);
+  r = from.get_info(path, &from_info);//取from的info信息
   if (r < 0)
     return r;
   r = to.get_info(path, &to_info);
@@ -434,6 +437,7 @@ int HashIndex::_created(const vector<string> &path,
     int r = initiate_split(path, info);
     if (r < 0)
       return r;
+    //执行目录分裂
     r = complete_split(path, info);
     dout(1) << __func__ << " " << path << " split completed."
             << dendl;
@@ -443,6 +447,7 @@ int HashIndex::_created(const vector<string> &path,
   }
 }
 
+//对象移除
 int HashIndex::_remove(const vector<string> &path,
 		       const ghobject_t &oid,
 		       const string &mangled_name) {
@@ -451,13 +456,14 @@ int HashIndex::_remove(const vector<string> &path,
   if (r < 0)
     return r;
   subdir_info_s info;
-  r = get_info(path, &info);
+  r = get_info(path, &info);//加载路径info
   if (r < 0)
     return r;
-  info.objs--;
-  r = set_info(path, info);
+  info.objs--;//对象数减少
+  r = set_info(path, info);//设置路径info
   if (r < 0)
     return r;
+  //如果目录需要合并，执行合并
   if (must_merge(info)) {
     r = initiate_merge(path, info);
     if (r < 0)

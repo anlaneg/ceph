@@ -168,6 +168,7 @@ private:
   int get_index(const coll_t& c, Index *index);
   int init_index(const coll_t& c);
 
+  //如果pool是一个<=-1的符，且当前cid是pg，则需要temp pg
   bool _need_temp_object_collection(const coll_t& cid, const ghobject_t& oid) {
     // - normal temp case: cid is pg, object is temp (pool < -1)
     // - hammer temp case: cid is pg (or already temp), object pool is -1
