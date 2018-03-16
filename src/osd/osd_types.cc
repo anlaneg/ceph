@@ -622,6 +622,7 @@ ostream& operator<<(ostream& out, const pg_t &pg)
 
 // -- coll_t --
 
+//生成数据目录名称
 void coll_t::calc_str()
 {
   switch (type) {
@@ -629,11 +630,14 @@ void coll_t::calc_str()
     strcpy(_str_buff, "meta");
     _str = _str_buff;
     break;
-  case TYPE_PG:
+  case TYPE_PG://对于pg类型的数据目录，生成格式：
+	//<pool_id:10进制>.<m_seed:16进制>{P<shard_id:10进制>s}_head
     _str_buff[spg_t::calc_name_buf_size - 1] = '\0';
     _str = pgid.calc_name(_str_buff + spg_t::calc_name_buf_size - 1, "daeh_");
     break;
   case TYPE_PG_TEMP:
+	//对于pg类型的数据目录，生成格式：
+	//<pool_id:10进制>.<m_seed:16进制>{P<shard_id:10进制>s}_temp
     _str_buff[spg_t::calc_name_buf_size - 1] = '\0';
     _str = pgid.calc_name(_str_buff + spg_t::calc_name_buf_size - 1, "PMET_");
     break;

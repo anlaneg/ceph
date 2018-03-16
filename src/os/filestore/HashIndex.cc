@@ -381,6 +381,7 @@ int HashIndex::_init() {
   return write_settings();
 }
 
+//写当前coll_t保存settings
 int HashIndex::write_settings() {
   if (cct->_conf->filestore_split_rand_factor > 0) {
     settings.split_rand_factor = rand() % cct->_conf->filestore_split_rand_factor;
@@ -393,6 +394,7 @@ int HashIndex::write_settings() {
   return add_attr_path(path, SETTINGS_ATTR, bl);
 }
 
+//自此路径中读取path的属性值，并将其解码为 struct settings_s类型
 int HashIndex::read_settings() {
   vector<string> path;
   bufferlist bl;

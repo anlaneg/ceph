@@ -48,6 +48,7 @@ const string LFNIndex::FILENAME_COOKIE = "long";
 const int LFNIndex::FILENAME_PREFIX_LEN =  FILENAME_SHORT_LEN - FILENAME_HASH_LEN -
 								FILENAME_COOKIE.size() -
 								FILENAME_EXTRA;
+//通过扔出异常实现故障注入
 void LFNIndex::maybe_inject_failure()
 {
   if (error_injection_enabled) {
@@ -64,10 +65,12 @@ void LFNIndex::maybe_inject_failure()
 
 // Helper to close fd's when we leave scope.  This is useful when used
 // in combination with RetryException, thrown by the above.
+//实现fd自动关闭功能（在离开其对应的作用域时主动关闭fd)
 struct FDCloser {
   int fd;
   explicit FDCloser(int f) : fd(f) {}
   ~FDCloser() {
+	//对象消毁时，将此fd关闭
     VOID_TEMP_FAILURE_RETRY(::close(fd));
   }
 };
@@ -531,12 +534,15 @@ int LFNIndex::add_attr_path(const vector<string> &path,
     attr_value.length());
 }
 
+//取path的属性值
 int LFNIndex::get_attr_path(const vector<string> &path,
 			    const string &attr_name,
 			    bufferlist &attr_value)
 {
+  //如果path有值，则将path与base_path连接起来
   string full_path = get_full_path_subdir(path);
   bufferptr bp;
+  //取full_path指定的属性值
   int r = chain_getxattr_buf(
     full_path.c_str(),
     mangle_attr_name(attr_name).c_str(),
@@ -934,7 +940,8 @@ int LFNIndex::lfn_translate(const vector<string> &path,
 			    const string &short_name,
 			    ghobject_t *out)
 {
-  if (!lfn_is_hashed_filename(short_name)) {//如果非hashed文件名,则以此种方式解析
+  if (!lfn_is_hashed_filename(short_name)) {
+	  //如果非hashed文件名,则以此种方式解析，例如short_name为 3.3_head
     return lfn_parse_object_name(short_name, out);
   }
   string full_path = get_full_path(path, short_name);
@@ -1156,6 +1163,7 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
   gen_t generation = ghobject_t::NO_GEN;
   shard_id_t shard_id = shard_id_t::NO_SHARD;
 
+  //下面这两种格式均属于早期的tag,直接忽略
   if (index_version == HASH_INDEX_TAG)
     return lfn_parse_object_name_keyless(long_name, out);
   if (index_version == HASH_INDEX_TAG_2)
@@ -1163,6 +1171,7 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
 
   string::const_iterator current = long_name.begin();
   if (*current == '\\') {
+	  //首个字符为转义字符，则name要展开转义
     ++current;
     if (current == long_name.end()) {
       return -EINVAL;
@@ -1173,7 +1182,7 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
       name.append(".");
       ++current;
     } else {
-      --current;
+      --current;//非转义字符，回退
     }
   }
 
@@ -1257,7 +1266,8 @@ int LFNIndex::lfn_parse_object_name(const string &long_name, ghobject_t *out)
 //哈希过的文件名至少255字节,且以"long"字符串做后缀.
 bool LFNIndex::lfn_is_hashed_filename(const string &name)
 {
-  if (name.size() < (unsigned)FILENAME_SHORT_LEN) {//文件名至少255
+  if (name.size() < (unsigned)FILENAME_SHORT_LEN) {
+	  //文件名小于255的不能long结尾
     return 0;
   }
   if (name.substr(name.size() - FILENAME_COOKIE.size(), FILENAME_COOKIE.size())
@@ -1354,6 +1364,7 @@ string LFNIndex::lfn_get_short_name(const ghobject_t &oid, int i)
   return string(buf);
 }
 
+//取当前pg或meta,pg_temp的基准路径
 const string &LFNIndex::get_base_path()
 {
   return base_path;
@@ -1383,8 +1394,10 @@ string LFNIndex::mangle_path_component(const string &component)
   return SUBDIR_PREFIX + component;
 }
 
+//移除掉component前的"DIR_"前缀
 string LFNIndex::demangle_path_component(const string &component)
 {
+  //取子串，将串前的"DIR_"移除掉
   return component.substr(SUBDIR_PREFIX.size(), component.size() - SUBDIR_PREFIX.size());
 }
 
@@ -1396,14 +1409,17 @@ int LFNIndex::decompose_full_path(const char *in, vector<string> *out,
   while (1) {
     end++;
     beginning = end++;
+    //使end移动到base后的'/'符前
     for ( ; *end != '\0' && *end != '/'; ++end) ;
     if (*end != '\0') {
+      //如果end不为'\0',则说明在数据目录层面还有一层以"DIR_"开头的目录，我们将其记录在out中
       out->push_back(demangle_path_component(string(beginning, end - beginning)));
       continue;
     } else {
       break;
     }
   }
+  //指出in相对于base path其相对路径是什么，采用shortname返回
   *shortname = string(beginning, end - beginning);
   if (oid) {
     int r = lfn_translate(*out, *shortname, oid);

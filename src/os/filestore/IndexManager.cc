@@ -111,6 +111,7 @@ int IndexManager::build_index(coll_t c, const char *path, CollectionIndex **inde
 			     cct->_conf->filestore_merge_threshold,
 			     cct->_conf->filestore_split_multiple,
 			     version);
+      //自index中读取setting的配置
       return (*index)->read_settings();
     }
     default: ceph_abort();
@@ -143,8 +144,8 @@ int IndexManager::get_index(coll_t c, const string& baseDir, Index *index) {//�
   RWLock::WLocker l(lock);
   ceph::unordered_map<coll_t, CollectionIndex* > ::iterator it = col_indices.find(c);
   if (it == col_indices.end()) {
-	 //没有此目录的index结构，构造一个出来
-	//先构造出collection对应的目录名称（绝对路径）
+	//先在col_indices中查询c,如果没有此目录对应的index结构，构造一个出来
+	//构造出collection对应的目录名称（绝对路径）
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/current/%s", baseDir.c_str(), c.to_str().c_str());
     CollectionIndex* colIndex = NULL;

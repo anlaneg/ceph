@@ -121,7 +121,7 @@ private:
       decode(v, bl);
       decode(split_rand_factor, bl);
     }
-  } settings;
+  } settings;//此数据项来源于数据文件目录的setting属性值
 
   /// Encodes in progress split or merge
   struct InProgressOp {
@@ -169,7 +169,7 @@ public:
     const char *base_path, ///< [in] Path to the index root.
     int merge_at,          ///< [in] Merge threshhold.
     int split_multiple,	   ///< [in] Split threshhold.
-    uint32_t index_version,///< [in] Index version
+    uint32_t index_version,///< [in] Index version //索引版本号
     double retry_probability=0) ///< [in] retry probability
     : LFNIndex(cct, collection, base_path, index_version, retry_probability),
       merge_threshold(merge_at),

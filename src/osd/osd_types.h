@@ -598,7 +598,7 @@ class coll_t {
     TYPE_PG = 2,//pg
     TYPE_PG_TEMP = 3,//pg_temp
   };
-  type_t type;
+  type_t type;//数据目录属于那种类型，当前类型有meta,pg,pg_temp
   spg_t pgid;
   uint64_t removal_seq;  // note: deprecated, not encoded
 

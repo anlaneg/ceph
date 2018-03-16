@@ -97,10 +97,10 @@ class LFNIndex : public CollectionIndex {
   static const string SUBDIR_PREFIX;
 
   /// Path to Index base.
-  const string base_path;
+  const string base_path;//数据目录的绝对路径
 
 protected:
-  const uint32_t index_version;
+  const uint32_t index_version;//数据目录的版本号（用于升级用）
 
   /// true if retry injection is enabled
   struct RetryException : public exception {};
@@ -150,6 +150,7 @@ public:
    }
   }
 
+  //返回对应的数据目录id
   coll_t coll() const override { return collection; }
 
   /// Virtual destructor
