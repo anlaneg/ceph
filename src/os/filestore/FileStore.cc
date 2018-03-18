@@ -105,12 +105,14 @@ using ceph::crypto::SHA1;
 // XATTR_SPILL_OUT_NAME as a xattr is used to maintain that indicates whether
 // xattrs spill over into DBObjectMap, if XATTR_SPILL_OUT_NAME exists in file
 // xattrs and the value is "no", it indicates no xattrs in DBObjectMap
+//用于指出xattrs是否填充到DBObjectMap,如果为‘no',则表示未填充到DBOjbectMap,而是填充到file xattrs中
 #define XATTR_SPILL_OUT_NAME "user.cephos.spill_out"
 #define XATTR_NO_SPILL_OUT "0"
 #define XATTR_SPILL_OUT "1"
 #define __FUNC__ __func__ << "(" << __LINE__ << ")"
 
 //Initial features in new superblock.
+//创建一个空的兼容集合
 static CompatSet get_fs_initial_compat_set() {
   CompatSet::FeatureSet ceph_osd_feature_compat;
   CompatSet::FeatureSet ceph_osd_feature_ro_compat;
@@ -925,6 +927,7 @@ int FileStore::mkfs()
   }
 
   // superblock
+  //设置omap对应的backend,用于指出打开哪种keyvaluedb,filestore的默认配置为leveldb
   superblock.omap_backend = cct->_conf->filestore_omap_backend;
   ret = write_superblock();
   if (ret < 0) {
@@ -1136,6 +1139,7 @@ int FileStore::read_fsid(int fd, uuid_d *uuid)
   return 0;
 }
 
+//实现fsid文件加锁（防止多进程）
 int FileStore::lock_fsid()
 {
   struct flock l;
@@ -1226,6 +1230,7 @@ int FileStore::_detect_fs()
   if (r < 0)
     return -errno;
 
+  //设置块大小
   blk_size = st.f_bsize;
 
 #if defined(__linux__)
@@ -1335,6 +1340,7 @@ int FileStore::_sanity_check_fs()
   return 0;
 }
 
+//写superblock
 int FileStore::write_superblock()
 {
   bufferlist bl;
@@ -1346,11 +1352,13 @@ int FileStore::write_superblock()
 int FileStore::read_superblock()
 {
   bufferptr bp(PATH_MAX);
+  //读取文件$basedir/superblock
   int ret = safe_read_file(basedir.c_str(), "superblock",
       bp.c_str(), bp.length());
   if (ret < 0) {
     if (ret == -ENOENT) {
       // If the file doesn't exist write initial CompatSet
+    	  //超级块文件不存在，尝试写入
       return write_superblock();
     }
     return ret;
@@ -1371,17 +1379,20 @@ int FileStore::update_version_stamp()
 int FileStore::version_stamp_is_valid(uint32_t *version)
 {
   bufferptr bp(PATH_MAX);
+  //读取$basedir/store_version文件
   int ret = safe_read_file(basedir.c_str(), "store_version",
       bp.c_str(), bp.length());
   if (ret < 0) {
     return ret;
   }
+  //读取文件系统版本号
   bufferlist bl;
   bl.push_back(std::move(bp));
   bufferlist::iterator i = bl.begin();
   decode(*version, i);
   dout(10) << __FUNC__ << ": was " << *version << " vs target "
 	   << target_version << dendl;
+  //检查版本是否为当前最新版本
   if (*version == target_version)
     return 1;
   else
@@ -1459,6 +1470,7 @@ int FileStore::write_op_seq(int fd, uint64_t seq)
   return ret;
 }
 
+//实现filestore文件系统挂载
 int FileStore::mount()
 {
   int ret;
@@ -1475,6 +1487,7 @@ int FileStore::mount()
     goto done;
 
   // make sure global base dir exists
+  //确认basedir是存在的
   if (::access(basedir.c_str(), R_OK | W_OK)) {
     ret = -errno;
     derr << __FUNC__ << ": unable to access basedir '" << basedir << "': "
@@ -1483,6 +1496,7 @@ int FileStore::mount()
   }
 
   // get fsid
+  //读取$basedir/fsid文件，获取fsid
   snprintf(buf, sizeof(buf), "%s/fsid", basedir.c_str());
   fsid_fd = ::open(buf, O_RDWR, 0644);
   if (fsid_fd < 0) {
@@ -1499,6 +1513,7 @@ int FileStore::mount()
     goto close_fsid_fd;
   }
 
+  //对fsid加文件锁
   if (lock_fsid() < 0) {
     derr << __FUNC__ << ": lock_fsid failed" << dendl;
     ret = -EBUSY;
@@ -1508,21 +1523,25 @@ int FileStore::mount()
   dout(10) << "mount fsid is " << fsid << dendl;
 
 
+  //取当前文件系统版本号
   uint32_t version_stamp;
   ret = version_stamp_is_valid(&version_stamp);
   if (ret < 0) {
+	//文件读取失败
     derr << __FUNC__ << ": error in version_stamp_is_valid: "
 	 << cpp_strerror(ret) << dendl;
     goto close_fsid_fd;
   } else if (ret == 0) {
+	//文件系统版本非当前最新版本
     if (do_update || (int)version_stamp < cct->_conf->filestore_update_to) {
       derr << __FUNC__ << ": stale version stamp detected: "
 	   << version_stamp
 	   << ". Proceeding, do_update "
 	   << "is set, performing disk format upgrade."
 	   << dendl;
-      do_update = true;
+      do_update = true;//可以升级，进行升级
     } else {
+    	  //不能升级
       ret = -EINVAL;
       derr << __FUNC__ << ": stale version stamp " << version_stamp
 	   << ". Please run the FileStore update script before starting the "
@@ -1533,6 +1552,7 @@ int FileStore::mount()
     }
   }
 
+  //读取文件系统超级块
   ret = read_superblock();
   if (ret < 0) {
     goto close_fsid_fd;
@@ -1547,6 +1567,7 @@ int FileStore::mount()
   }
 
   // open some dir handles
+  //打开$basedir
   basedir_fd = ::open(basedir.c_str(), O_RDONLY);
   if (basedir_fd < 0) {
     ret = -errno;
@@ -1736,17 +1757,20 @@ int FileStore::mount()
   }
 
   dout(0) << "start omap initiation" << dendl;
-  if (!(generic_flags & SKIP_MOUNT_OMAP)) {//默认情况下generic_flags来自于配置文件,默认为0
+  if (!(generic_flags & SKIP_MOUNT_OMAP)) {
+	//创建keyvaluedb(filestore默认现在是leveldb)
     KeyValueDB * omap_store = KeyValueDB::create(cct,
 						 superblock.omap_backend,
 						 omap_dir);
     if (!omap_store)
     {
+    	  //创建omap失败
       derr << __FUNC__ << ": Error creating " << superblock.omap_backend << dendl;
       ret = -1;
       goto close_current_fd;
     }
 
+    //omap的存储做初始化
     if (superblock.omap_backend == "rocksdb")
       ret = omap_store->init(cct->_conf->filestore_rocksdb_options);
     else
@@ -1757,6 +1781,7 @@ int FileStore::mount()
       goto close_current_fd;
     }
 
+    //实现omap的打开
     stringstream err;
     if (omap_store->create_and_open(err)) {
       delete omap_store;
@@ -1767,6 +1792,7 @@ int FileStore::mount()
       goto close_current_fd;
     }
 
+    //实现dbomap初始化
     DBObjectMap *dbomap = new DBObjectMap(cct, omap_store);
     ret = dbomap->init(do_update);
     if (ret < 0) {
@@ -1777,6 +1803,7 @@ int FileStore::mount()
     }
     stringstream err2;
 
+    //如果需要执行dbomap的check
     if (cct->_conf->filestore_debug_omap_check && !dbomap->check(err2)) {
       derr << err2.str() << dendl;
       delete dbomap;
@@ -1784,6 +1811,7 @@ int FileStore::mount()
       ret = -EINVAL;
       goto close_current_fd;
     }
+    //将object_map设置为dbomap
     object_map.reset(dbomap);
   }
 
@@ -3763,7 +3791,7 @@ int FileStore::_clone(const coll_t& cid, const ghobject_t& oldoid, const ghobjec
     if (r < 0)
       goto out3;
 
-    //设置xattr_split_out_name
+    //依据o,设置n的xattr_split_out_name
     r = chain_fgetxattr(**o, XATTR_SPILL_OUT_NAME, buf, sizeof(buf));
     if (r >= 0 && !strncmp(buf, XATTR_NO_SPILL_OUT, sizeof(XATTR_NO_SPILL_OUT))) {
       r = chain_fsetxattr<true, true>(**n, XATTR_SPILL_OUT_NAME, XATTR_NO_SPILL_OUT,
@@ -4593,6 +4621,7 @@ int FileStore::getattrs(CollectionHandle& ch, const ghobject_t& oid, map<string,
   }
 
   if (!spill_out) {
+	//object_map中没有属性，直接退出，使用aset中的结果
     dout(10) << __FUNC__ << ": no xattr exists in object_map r = " << r << dendl;
     goto out;
   }
@@ -4639,6 +4668,8 @@ int FileStore::getattrs(CollectionHandle& ch, const ghobject_t& oid, map<string,
   }
 }
 
+//设置attr,下层有两种实现，1种写入到文件系统对应的xattr中
+//（这种也需要考虑是否需要分折成多个xattr)，2种写入到keyvaluemap中
 int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bufferptr>& aset,
 			 const SequencerPosition &spos)
 {
@@ -4655,6 +4686,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
     goto out;
   }
 
+  //标记是否将属性填充到omap中了
   char buf[2];
   r = chain_fgetxattr(**fd, XATTR_SPILL_OUT_NAME, buf, sizeof(buf));
   if (r >= 0 && !strncmp(buf, XATTR_NO_SPILL_OUT, sizeof(XATTR_NO_SPILL_OUT)))
@@ -4662,6 +4694,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
   else
     spill_out = 1;
 
+  //取已存在的属性所有属性
   r = _fgetattrs(**fd, inline_set);
   incomplete_inline = (r == -E2BIG);
   assert(!m_filestore_fail_eio || r != -EIO);
@@ -4669,7 +4702,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
 	   << (incomplete_inline ? " (incomplete_inline, forcing omap)" : "")
 	   << dendl;
 
-  //遍历待设置的每个属性
+  //遍历待设置的每个属性，将其加入到omap_set集合中
   for (map<string,bufferptr>::iterator p = aset.begin();
        p != aset.end();
        ++p) {
@@ -4678,12 +4711,14 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
     get_attrname(p->first.c_str(), n, CHAIN_XATTR_MAX_NAME_LEN);
 
     if (incomplete_inline) {
+    	  //移除掉
       chain_fremovexattr(**fd, n); // ignore any error
       omap_set[p->first].push_back(p->second);
       continue;
     }
 
     if (p->second.length() > m_filestore_max_inline_xattr_size) {
+    	//要写入的已超出最大的xattr,自xattr中移除
 	if (inline_set.count(p->first)) {
 	  //原有的属性里包含此属性，先将其自inline_set中移除
 	  inline_set.erase(p->first);
@@ -4706,6 +4741,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
     inline_to_set.insert(*p);
   }
 
+  //指定输出到keyvaluedb中了
   if (spill_out != 1 && !omap_set.empty()) {
     chain_fsetxattr(**fd, XATTR_SPILL_OUT_NAME, XATTR_SPILL_OUT,
 		    sizeof(XATTR_SPILL_OUT));
@@ -4716,6 +4752,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
     goto out_close;
 
   if (spill_out && !omap_remove.empty()) {
+	//移除掉要移除的attr
     r = object_map->remove_xattrs(oid, omap_remove, &spos);
     if (r < 0 && r != -ENOENT) {
       dout(10) << __FUNC__ << ": could not remove_xattrs r = " << r << dendl;
@@ -4726,6 +4763,7 @@ int FileStore::_setattrs(const coll_t& cid, const ghobject_t& oid, map<string,bu
     }
   }
 
+  //处理要保存在object_map中（通过keyvaluedb存储）属性
   if (!omap_set.empty()) {
     r = object_map->set_xattrs(oid, omap_set, &spos);
     if (r < 0) {

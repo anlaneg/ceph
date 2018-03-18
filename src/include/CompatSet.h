@@ -26,6 +26,7 @@
 
 struct CompatSet {
 
+  //功能id，功能名称
   struct Feature {
     uint64_t id;
     std::string name;
@@ -33,9 +34,10 @@ struct CompatSet {
     Feature(uint64_t _id, const std::string& _name) : id(_id), name(_name) {}
   };
 
+  //功能点
   class FeatureSet {
-    uint64_t mask;
-    std::map<uint64_t, std::string> names;
+    uint64_t mask;//标记存在哪些id(每一位表示一个功能id)
+    std::map<uint64_t, std::string> names;//功能点id与名称映射
 
   public:
     friend struct CompatSet;
@@ -48,35 +50,42 @@ struct CompatSet {
     void insert(const Feature& f) {
       assert(f.id > 0);
       assert(f.id < 64);
-      mask |= ((uint64_t)1<<f.id);
+      mask |= ((uint64_t)1<<f.id);//为mask与上其对应的id位
       names[f.id] = f.name;
     }
 
+    //检查功能是否存在
     bool contains(const Feature& f) const {
       return names.count(f.id);
     }
+    //检查功能是否存在
     bool contains(uint64_t f) const {
       return names.count(f);
     }
     /**
      * Getter instead of using name[] to be const safe
      */
+    //获取功能id f对应的功能名称
     std::string get_name(uint64_t const f) const {
       std::map<uint64_t, std::string>::const_iterator i = names.find(f);
       assert(i != names.end());
       return i->second;
     }
 
+    //移除功能点
     void remove(uint64_t f) {
       if (names.count(f)) {
 	names.erase(f);
 	mask &= ~((uint64_t)1<<f);
       }
     }
+
+    //移除功能点
     void remove(const Feature& f) {
       remove(f.id);
     }
 
+    //将对象打成字节流
     void encode(bufferlist& bl) const {
       using ceph::encode;
       /* See below, mask always has the lowest bit set in memory, but
@@ -85,6 +94,7 @@ struct CompatSet {
       encode(names, bl);
     }
 
+    //字节流转换为对象
     void decode(bufferlist::iterator& bl) {
       using ceph::decode;
       decode(mask, bl);
@@ -121,13 +131,14 @@ struct CompatSet {
   };
 
   // These features have no impact on the read / write status
-  FeatureSet compat;
+  FeatureSet compat;//兼容集合
   // If any of these features are missing, read is possible ( as long
   // as no incompat feature is missing ) but it is not possible to write
-  FeatureSet ro_compat;
+  FeatureSet ro_compat;//只读功能兼容集合
   // If any of these features are missing, read or write is not possible
-  FeatureSet incompat;
+  FeatureSet incompat;//不兼容集合
 
+  //兼容集合
   CompatSet(FeatureSet& _compat, FeatureSet& _ro_compat, FeatureSet& _incompat) :
     compat(_compat), ro_compat(_ro_compat), incompat(_incompat) {}
 

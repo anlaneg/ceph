@@ -13,6 +13,7 @@
 #include "KineticStore.h"
 #endif
 
+//按type约定，创建指定类型的keyvaluedb
 KeyValueDB *KeyValueDB::create(CephContext *cct, const string& type,
 			       const string& dir,
 			       map<string,string> options,

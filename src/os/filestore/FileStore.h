@@ -93,7 +93,7 @@ enum {
 
 class FSSuperblock {
 public:
-  CompatSet compat_features;
+  CompatSet compat_features;//功能兼容表
   string omap_backend;
 
   FSSuperblock() { }
@@ -151,11 +151,15 @@ private:
   std::string current_fn;      //current目录位置(由 $basedir +"/current"获得)
   std::string current_op_seq_fn;// $basedir + "/current/commit_op_seq" 获得
   std::string omap_dir;// $basedir + "/current/omap" 获得
-  uuid_d fsid;
+  uuid_d fsid;//来源于$basedir/fsid文件中的内容
 
+  //$basedir所在目录的文件系统块大小
   size_t blk_size;            ///< fs block size
 
-  int fsid_fd, op_fd, basedir_fd, current_fd;
+  int fsid_fd,//$basedir/fsid文件的fd
+  op_fd,
+  basedir_fd,//$basdir目录的fd
+  current_fd;
 
   FileStoreBackend *backend;
 
@@ -177,7 +181,7 @@ private:
   void init_temp_collections();
 
   // ObjectMap
-  boost::scoped_ptr<ObjectMap> object_map;
+  boost::scoped_ptr<ObjectMap> object_map;//用来保存attr
 
   // helper fns
   int get_cdir(const coll_t& cid, char *s, int len);
@@ -837,7 +841,7 @@ private:
   uint32_t m_filestore_max_inline_xattrs;
   uint32_t m_filestore_max_xattr_value_size;
 
-  FSSuperblock superblock;
+  FSSuperblock superblock;//文件系统超级块
 
   /**
    * write_superblock()
