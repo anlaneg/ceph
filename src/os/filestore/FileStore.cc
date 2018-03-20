@@ -800,22 +800,23 @@ int FileStore::dump_journal(ostream& out)
   return r;
 }
 
+//按照不同的底层文件系统，创建对应的FileStoreBackend
 FileStoreBackend *FileStoreBackend::create(long f_type, FileStore *fs)
 {
   switch (f_type) {
 #if defined(__linux__)
-  case BTRFS_SUPER_MAGIC:
+  case BTRFS_SUPER_MAGIC://btrfs时创建
     return new BtrfsFileStoreBackend(fs);
 # ifdef HAVE_LIBXFS
-  case XFS_SUPER_MAGIC:
+  case XFS_SUPER_MAGIC://xfs
     return new XfsFileStoreBackend(fs);
 # endif
 #endif
 #ifdef HAVE_LIBZFS
-  case ZFS_SUPER_MAGIC:
+  case ZFS_SUPER_MAGIC://zfs
     return new ZFSFileStoreBackend(fs);
 #endif
-  default:
+  default://其它类型的backend创建
     return new GenericFileStoreBackend(fs);
   }
 }
@@ -1241,6 +1242,7 @@ int FileStore::_detect_fs()
   }
 #endif
 
+  //创建底层文件系统对应的backend
   create_backend(st.f_type);
 
   r = backend->detect_features();
@@ -1249,10 +1251,12 @@ int FileStore::_detect_fs()
     return r;
   }
 
+  //执行xattrs的读写测试
   // test xattrs
   char fn[PATH_MAX];
   int x = rand();
   int y = x+1;
+  //打开属性测试文件
   snprintf(fn, sizeof(fn), "%s/xattr_test", basedir.c_str());
   int tmpfd = ::open(fn, O_CREAT|O_WRONLY|O_TRUNC, 0700);
   if (tmpfd < 0) {
@@ -1261,6 +1265,7 @@ int FileStore::_detect_fs()
     return ret;
   }
 
+  //写入测试用attr,检查读写一致是否可通过
   int ret = chain_fsetxattr(tmpfd, "user.test", &x, sizeof(x));
   if (ret >= 0)
     ret = chain_fgetxattr(tmpfd, "user.test", &y, sizeof(y));
@@ -1275,6 +1280,7 @@ int FileStore::_detect_fs()
     return -ENOTSUP;
   }
 
+  //测试chain分开写split后的user.test
   char buf[1000];
   memset(buf, 0, sizeof(buf)); // shut up valgrind
   chain_fsetxattr(tmpfd, "user.test", &buf, sizeof(buf));
@@ -1578,6 +1584,7 @@ int FileStore::mount()
   }
 
   // test for btrfs, xattrs, etc.
+  //检测底层文件系统，创建fs backend
   ret = _detect_fs();
   if (ret < 0) {
     derr << __FUNC__ << ": error in _detect_fs: "

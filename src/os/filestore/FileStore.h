@@ -833,7 +833,7 @@ private:
   bool m_filestore_sloppy_crc;
   int m_filestore_sloppy_crc_block_size;
   uint64_t m_filestore_max_alloc_hint_size;
-  long m_fs_type;
+  long m_fs_type;//底层文件系统类型（例如xfs)
 
   //Determined xattr handling based on fs type
   void set_xattr_limits_via_conf();

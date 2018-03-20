@@ -19,6 +19,7 @@
 
 #include "include/int_types.h"
 
+//底层是xfs文件系统时，创建xfs backend
 class XfsFileStoreBackend : public GenericFileStoreBackend {
 private:
   bool m_has_extsize;
