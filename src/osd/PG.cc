@@ -599,6 +599,9 @@ bool PG::search_for_missing(
   return found_missing;
 }
 
+
+// MissingLoc
+
 //true表示此对象可以读,false表示此对象可写
 bool PG::MissingLoc::readable_with_acting(
   const hobject_t &hoid,
@@ -639,7 +642,16 @@ void PG::MissingLoc::add_batch_sources_info(
     }
     if (i->second.is_delete())
       continue;
+
+    auto p = missing_loc.find(i->first);
+    if (p == missing_loc.end()) {
+      p = missing_loc.emplace(i->first, set<pg_shard_t>()).first;
+    } else {
+      _dec_count(p->second);
+    }
     missing_loc[i->first].insert(sources.begin(), sources.end());
+    _inc_count(p->second);
+
     if (!sources_updated) {
       missing_loc_sources.insert(sources.begin(), sources.end());
       sources_updated = true;
@@ -708,7 +720,17 @@ bool PG::MissingLoc::add_source_info(
     ldout(pg->cct, 10) << "search_for_missing " << soid << " " << need
 		       << " is on osd." << fromosd << dendl;
 
-    missing_loc[soid].insert(fromosd);
+    {
+      auto p = missing_loc.find(soid);
+      if (p == missing_loc.end()) {
+	p = missing_loc.emplace(soid, set<pg_shard_t>()).first;
+      } else {
+	_dec_count(p->second);
+      }
+      p->second.insert(fromosd);
+      _inc_count(p->second);
+    }
+
     if (!sources_updated) {
       missing_loc_sources.insert(fromosd);
       sources_updated = true;
@@ -721,12 +743,60 @@ bool PG::MissingLoc::add_source_info(
   return found_missing;
 }
 
+void PG::MissingLoc::check_recovery_sources(const OSDMapRef& osdmap)
+{
+  set<pg_shard_t> now_down;
+  for (set<pg_shard_t>::iterator p = missing_loc_sources.begin();
+       p != missing_loc_sources.end();
+       ) {
+    if (osdmap->is_up(p->osd)) {
+      ++p;
+      continue;
+    }
+    ldout(pg->cct, 10) << __func__ << " source osd." << *p << " now down" << dendl;
+    now_down.insert(*p);
+    missing_loc_sources.erase(p++);
+  }
+
+  if (now_down.empty()) {
+    ldout(pg->cct, 10) << __func__ << " no source osds (" << missing_loc_sources << ") went down" << dendl;
+  } else {
+    ldout(pg->cct, 10) << __func__ << " sources osds " << now_down << " now down, remaining sources are "
+		       << missing_loc_sources << dendl;
+    
+    // filter missing_loc
+    map<hobject_t, set<pg_shard_t>>::iterator p = missing_loc.begin();
+    while (p != missing_loc.end()) {
+      set<pg_shard_t>::iterator q = p->second.begin();
+      bool changed = false;
+      while (q != p->second.end()) {
+	if (now_down.count(*q)) {
+	  if (!changed) {
+	    changed = true;
+	    _dec_count(p->second);
+	  }
+	  p->second.erase(q++);
+	} else {
+	  ++q;
+	}
+      }
+      if (p->second.empty()) {
+	missing_loc.erase(p++);
+      } else {
+	if (changed) {
+	  _inc_count(p->second);
+	}
+	++p;
+      }
+    }
+  }
+}
+  
 //向已知的邻居要求全日志
 void PG::discover_all_missing(map<int, map<spg_t,pg_query_t> > &query_map)
 {
   auto &missing = pg_log.get_missing();
   uint64_t unfound = get_num_unfound();
-  assert(unfound > 0);
 
   dout(10) << __func__ << " "
 	   << missing.num_missing() << " missing, "
@@ -795,9 +865,9 @@ bool PG::needs_recovery() const
     return true;
   }
 
-  assert(!actingbackfill.empty());
-  set<pg_shard_t>::const_iterator end = actingbackfill.end();
-  set<pg_shard_t>::const_iterator a = actingbackfill.begin();
+  assert(!acting_recovery_backfill.empty());
+  set<pg_shard_t>::const_iterator end = acting_recovery_backfill.end();
+  set<pg_shard_t>::const_iterator a = acting_recovery_backfill.begin();
   for (; a != end; ++a) {
     if (*a == get_primary()) continue;
     pg_shard_t peer = *a;
@@ -1431,6 +1501,130 @@ void PG::calc_replicated_acting(
   }
 }
 
+bool PG::recoverable_and_ge_min_size(const vector<int> &want) const
+{
+  unsigned num_want_acting = 0;
+  set<pg_shard_t> have;
+  for (int i = 0; i < (int)want.size(); ++i) {
+    if (want[i] != CRUSH_ITEM_NONE) {
+      ++num_want_acting;
+      have.insert(
+        pg_shard_t(
+          want[i],
+          pool.info.is_erasure() ? shard_id_t(i) : shard_id_t::NO_SHARD));
+    }
+  }
+  // We go incomplete if below min_size for ec_pools since backfill
+  // does not currently maintain rollbackability
+  // Otherwise, we will go "peered", but not "active"
+  if (num_want_acting < pool.info.min_size &&
+      (pool.info.is_erasure() ||
+       !cct->_conf->osd_allow_recovery_below_min_size)) {
+    dout(10) << __func__ << " failed, below min size" << dendl;
+    return false;
+  }
+
+  /* Check whether we have enough acting shards to later perform recovery */
+  boost::scoped_ptr<IsPGRecoverablePredicate> recoverable_predicate(
+      get_pgbackend()->get_is_recoverable_predicate());
+  if (!(*recoverable_predicate)(have)) {
+    dout(10) << __func__ << "failed, not recoverable" << dendl;
+    return false;
+  }
+
+  return true;
+}
+
+void PG::choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
+                                  const pg_info_t &auth_info,
+                                  vector<int> *want,
+                                  set<pg_shard_t> *async_recovery) const
+{
+  set<pair<int, pg_shard_t> > candidates_by_cost;
+  for (uint8_t i = 0; i < want->size(); ++i) {
+    if ((*want)[i] == CRUSH_ITEM_NONE)
+      continue;
+
+    // Considering log entries to recover is accurate enough for
+    // now. We could use minimum_to_decode_with_cost() later if
+    // necessary.
+    pg_shard_t shard_i((*want)[i], shard_id_t(i));
+    auto shard_info = all_info.find(shard_i)->second;
+    // for ec pools we rollback all entries past the authoritative
+    // last_update *before* activation. This is relatively inexpensive
+    // compared to recovery, since it is purely local, so treat shards
+    // past the authoritative last_update the same as those equal to it.
+    version_t auth_version = auth_info.last_update.version;
+    version_t candidate_version = shard_info.last_update.version;
+    if (auth_version > candidate_version &&
+        (auth_version - candidate_version) > cct->_conf->get_val<uint64_t>("osd_async_recovery_min_pg_log_entries")) {
+      candidates_by_cost.insert(make_pair(auth_version - candidate_version, shard_i));
+    }
+  }
+
+  dout(20) << __func__ << " candidates by cost are: " << candidates_by_cost
+           << dendl;
+
+  // take out as many osds as we can for async recovery, in order of cost
+  for (auto weighted_shard : candidates_by_cost) {
+    pg_shard_t cur_shard = weighted_shard.second;
+    vector<int> candidate_want(*want);
+    candidate_want[cur_shard.shard.id] = CRUSH_ITEM_NONE;
+    if (recoverable_and_ge_min_size(candidate_want)) {
+      want->swap(candidate_want);
+      async_recovery->insert(cur_shard);
+    }
+  }
+  dout(20) << __func__ << " result want=" << *want
+           << " async_recovery=" << *async_recovery << dendl;
+}
+
+void PG::choose_async_recovery_replicated(const map<pg_shard_t, pg_info_t> &all_info,
+                                          const pg_info_t &auth_info,
+                                          vector<int> *want,
+                                          set<pg_shard_t> *async_recovery) const
+{
+  set<pair<int, pg_shard_t> > candidates_by_cost;
+  for (auto osd_num : *want) {
+    pg_shard_t shard_i(osd_num, shard_id_t::NO_SHARD);
+    auto shard_info = all_info.find(shard_i)->second;
+    // use the approximate magnitude of the difference in length of
+    // logs as the cost of recovery
+    version_t auth_version = auth_info.last_update.version;
+    version_t candidate_version = shard_info.last_update.version;
+    size_t approx_entries;
+    if (auth_version > candidate_version) {
+      approx_entries = auth_version - candidate_version;
+    } else {
+      approx_entries = candidate_version - auth_version;
+    }
+    if (approx_entries > cct->_conf->get_val<uint64_t>("osd_async_recovery_min_pg_log_entries")) {
+      candidates_by_cost.insert(make_pair(approx_entries, shard_i));
+    }
+  }
+
+  dout(20) << __func__ << " candidates by cost are: " << candidates_by_cost
+           << dendl;
+  // take out as many osds as we can for async recovery, in order of cost
+  for (auto weighted_shard : candidates_by_cost) {
+    if (want->size() <= pool.info.min_size) {
+      break;
+    }
+    pg_shard_t cur_shard = weighted_shard.second;
+    vector<int> candidate_want(*want);
+    for (auto it = candidate_want.begin(); it != candidate_want.end(); ++it) {
+      if (*it == cur_shard.osd) {
+        candidate_want.erase(it);
+	want->swap(candidate_want);
+	async_recovery->insert(cur_shard);
+        break;
+      }
+    }
+  }
+  dout(20) << __func__ << " result want=" << *want
+           << " async_recovery=" << *async_recovery << dendl;
+}
+
 /**
  * choose acting
  *
@@ -1459,7 +1653,7 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
     for (map<pg_shard_t, pg_info_t>::iterator p = all_info.begin();
          p != all_info.end();
          ++p) {
-      dout(10) << __func__ << "all_info osd." << p->first << " " << p->second << dendl;
+      dout(10) << __func__ << " all_info osd." << p->first << " " << p->second << dendl;
     }
   }
 
@@ -1520,42 +1714,19 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       ss);
   dout(10) << ss.str() << dendl;
 
-  unsigned num_want_acting = 0;
-  set<pg_shard_t> have;
-  for (int i = 0; i < (int)want.size(); ++i) {
-    if (want[i] != CRUSH_ITEM_NONE) {
-      ++num_want_acting;
-      have.insert(
-        pg_shard_t(
-          want[i],
-          pool.info.is_erasure() ? shard_id_t(i) : shard_id_t::NO_SHARD));
+  if (!recoverable_and_ge_min_size(want)) {
+    want_acting.clear();
+    return false;
+  }
+
+  set<pg_shard_t> want_async_recovery;
+  if (HAVE_FEATURE(get_osdmap()->get_up_osd_features(), SERVER_MIMIC)) {
+    if (pool.info.is_erasure()) {
+      choose_async_recovery_ec(all_info, auth_log_shard->second, &want, &want_async_recovery);
+    } else {
+      choose_async_recovery_replicated(all_info, auth_log_shard->second, &want, &want_async_recovery);
     }
   }
-
-  // We go incomplete if below min_size for ec_pools since backfill
-  // does not currently maintain rollbackability
-  // Otherwise, we will go "peered", but not "active"
-  //如果可参与的osd太少就没办法执行恢复
-  //如果我们期待的want集数量不足以负担pg,则停止
-  if (num_want_acting < pool.info.min_size &&
-      (pool.info.is_erasure() ||
-       !cct->_conf->osd_allow_recovery_below_min_size)) {
-    want_acting.clear();
-    dout(10) << __func__ << " failed, below min size" << dendl;
-    return false;
-  }
-
-  /* Check whether we have enough acting shards to later perform recovery */
-  boost::scoped_ptr<IsPGRecoverablePredicate> recoverable_predicate(
-    get_pgbackend()->get_is_recoverable_predicate());
-  if (!(*recoverable_predicate)(have)) {
-    want_acting.clear();
-    dout(10) << __func__ << " failed, not recoverable" << dendl;
-    return false;
-  }
-
-  //计划的之后的up与当前的acting不一致,则赋为一样
-  //此时需要等待pg_tmep
   if (want != acting) {
     dout(10) << __func__ << " want " << want << " != acting " << acting
 	     << ", requesting pg_temp change" << dendl;
@@ -1571,17 +1742,19 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       osd->queue_want_pg_temp(info.pgid.pgid, want);
     return false;
   }
-
-  //这段主要是设置want_acting,actingbackfill,backfill_targets
-  //want集都完全,故want_acting就为空
-  want_acting.clear();//旧的want_acting不要了
-  actingbackfill = want_acting_backfill;//完成的,不完整的,需要backfill的都在这里面
-  dout(10) << "actingbackfill is " << actingbackfill << dendl;
+  want_acting.clear();
+  acting_recovery_backfill = want_acting_backfill;
+  dout(10) << "acting_recovery_backfill is " << acting_recovery_backfill << dendl;
   assert(backfill_targets.empty() || backfill_targets == want_backfill);
   //设置backfill_targets
   if (backfill_targets.empty()) {
     // Caller is GetInfo
     backfill_targets = want_backfill;
+  }
+  // Adding !needs_recovery() to let the async_recovery_targets reset after recovery is complete
+  assert(async_recovery_targets.empty() || async_recovery_targets == want_async_recovery || !needs_recovery());
+  if (async_recovery_targets.empty() || !needs_recovery()) {
+    async_recovery_targets = want_async_recovery;
   }
   // Will not change if already set because up would have had to change
   // Verify that nothing in backfill is in stray_set
@@ -1590,8 +1763,9 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
       ++i) {
     assert(stray_set.find(*i) == stray_set.end());
   }
-  dout(10) << __func__ << " want " << want << " (== acting) backfill_targets "
-	   << want_backfill << dendl;
+  dout(10) << "choose_acting want=" << want << " backfill_targets="
+           << want_backfill << " async_recovery_targets="
+           << async_recovery_targets << dendl;
   return true;
 }
 
@@ -1669,6 +1843,7 @@ void PG::activate(ObjectStore::Transaction& t,
     last_update_ondisk = info.last_update;
     min_last_complete_ondisk = eversion_t(0,0);  // we don't know (yet)!
   }
+  last_update_applied = info.last_update;
   last_rollback_info_trimmed_to_applied = pg_log.get_can_rollback_to();
 
   need_up_thru = false;
@@ -1735,10 +1910,9 @@ void PG::activate(ObjectStore::Transaction& t,
     assert(ctx);
     // start up replicas
 
-    assert(!actingbackfill.empty());
-    //遍历actingbackfill,把最终的日志及missing情况通知给各actingbackfill
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
+    assert(!acting_recovery_backfill.empty());
+    for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	 i != acting_recovery_backfill.end();
 	 ++i) {
       if (*i == pg_whoami) continue;//跳过我自已
       pg_shard_t peer = *i;
@@ -1883,8 +2057,8 @@ void PG::activate(ObjectStore::Transaction& t,
     // Set up missing_loc
     //计算missing的位置.
     set<pg_shard_t> complete_shards;
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
+    for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	 i != acting_recovery_backfill.end();
 	 ++i) {
       dout(20) << __func__ << " setting up missing_loc from shard " << *i << " " << dendl;
       if (*i == get_primary()) {
@@ -1900,6 +2074,7 @@ void PG::activate(ObjectStore::Transaction& t,
 	  complete_shards.insert(*i);
       }
     }
+
     // If necessary, create might_have_unfound to help us find our unfound objects.
     // NOTE: It's important that we build might_have_unfound before trimming the
     // past intervals.
@@ -1909,13 +2084,13 @@ void PG::activate(ObjectStore::Transaction& t,
       // source, this is considered safe since the PGLogs have been merged locally,
       // and covers vast majority of the use cases, like one OSD/host is down for
       // a while for hardware repairing
-      if (complete_shards.size() + 1 == actingbackfill.size()) {//仅一个人有missing
+      if (complete_shards.size() + 1 == acting_recovery_backfill.size()) {
         missing_loc.add_batch_sources_info(complete_shards, ctx->handle);
       } else {//有多个有missing
         missing_loc.add_source_info(pg_whoami, info, pg_log.get_missing(),
 				    ctx->handle);
-        for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	     i != actingbackfill.end();
+        for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	     i != acting_recovery_backfill.end();
 	     ++i) {
 	  if (*i == pg_whoami) continue;
 	  dout(10) << __func__ << ": adding " << *i << " as a source" << dendl;
@@ -1931,7 +2106,7 @@ void PG::activate(ObjectStore::Transaction& t,
       for (map<pg_shard_t, pg_missing_t>::iterator i = peer_missing.begin();
 	   i != peer_missing.end();
 	   ++i) {
-	if (is_actingbackfill(i->first))
+	if (is_acting_recovery_backfill(i->first))
 	  continue;
 	assert(peer_info.count(i->first));
 	search_for_missing(
@@ -1943,8 +2118,8 @@ void PG::activate(ObjectStore::Transaction& t,
 
       build_might_have_unfound();
 
-      if (have_unfound())//如果有未发现的对象,尝试更大范围
-	discover_all_missing(query_map);
+      // Always call now so _update_calc_stats() will be accurate
+      discover_all_missing(query_map);
     }
 
     // num_objects_degraded if calculated should reflect this too, unless no
@@ -2022,9 +2197,9 @@ void PG::_activate_committed(epoch_t epoch, epoch_t activation_epoch)
 	     << " last_interval_started " << info.history.last_interval_started
 	     << " last_epoch_started " << info.history.last_epoch_started
 	     << " same_interval_since " << info.history.same_interval_since << dendl;
-    assert(!actingbackfill.empty());
-    if (peer_activated.size() == actingbackfill.size())
-      all_activated_and_committed();//如果所有副本均已进入active,则执行此函数
+    assert(!acting_recovery_backfill.empty());
+    if (peer_activated.size() == acting_recovery_backfill.size())
+      all_activated_and_committed();
   } else {
 	//如果不是主,则发送MOSDPGInfo给主
     dout(10) << "_activate_committed " << epoch << " telling primary" << dendl;
@@ -2072,8 +2247,8 @@ void PG::all_activated_and_committed()
 {
   dout(10) << "all_activated_and_committed" << dendl;
   assert(is_primary());
-  assert(peer_activated.size() == actingbackfill.size());
-  assert(!actingbackfill.empty());
+  assert(peer_activated.size() == acting_recovery_backfill.size());
+  assert(!acting_recovery_backfill.empty());
   assert(blocked_by.empty());
 
   // Degraded?
@@ -2621,6 +2796,7 @@ void PG::clear_recovery_state()
     finish_recovery_op(soid, true);
   }
 
+  async_recovery_targets.clear();
   backfill_targets.clear();
   backfill_info.clear();
   peer_backfill_info.clear();
@@ -2643,7 +2819,7 @@ void PG::purge_strays()
   for (set<pg_shard_t>::iterator p = stray_set.begin();
        p != stray_set.end();
        ++p) {
-    assert(!is_actingbackfill(*p));
+    assert(!is_acting_recovery_backfill(*p));
     if (get_osdmap()->is_up(p->osd)) {
       dout(10) << "sending PGRemove to osd." << *p << dendl;
       vector<spg_t> to_remove;
@@ -2738,6 +2914,25 @@ bool PG::check_in_progress_op(
     pg_log.get_log().get_request(r, version, user_version, return_code));
 }
 
+static bool find_shard(const set<pg_shard_t> & pgs, shard_id_t shard)
+{
+    for (auto&p : pgs)
+      if (p.shard == shard)
+        return true;
+    return false;
+}
+
+static pg_shard_t get_another_shard(const set<pg_shard_t> & pgs, pg_shard_t skip, shard_id_t shard)
+{
+    for (auto&p : pgs) {
+      if (p == skip)
+        continue;
+      if (p.shard == shard)
+        return p;
+    }
+    return pg_shard_t();
+}
+
 void PG::_update_calc_stats()
 {
   info.stats.version = info.last_update;
@@ -2760,20 +2955,22 @@ void PG::_update_calc_stats()
   // In rare case that upset is too large (usually transient), use as target
   // for calculations below.
   unsigned target = std::max(num_shards, (unsigned)upset.size());
-  // Not sure this could ever happen, that actingset > upset
-  // which only matters if actingset > num_shards.
+  // For undersized actingset may be larger with OSDs out
   unsigned nrep = std::max(actingset.size(), upset.size());
   // calc num_object_copies
   info.stats.stats.calc_copies(std::max(target, nrep));
   info.stats.stats.sum.num_objects_degraded = 0;
   info.stats.stats.sum.num_objects_unfound = 0;
   info.stats.stats.sum.num_objects_misplaced = 0;
+
   if ((is_remapped() || is_undersized() || !is_clean()) && (is_peered() || is_activating())) {
     dout(20) << __func__ << " actingset " << actingset << " upset "
-             << upset << " actingbackfill " << actingbackfill << dendl;
+             << upset << " acting_recovery_backfill " << acting_recovery_backfill << dendl;
     dout(20) << __func__ << " acting " << acting << " up " << up << dendl;
 
-    assert(!actingbackfill.empty());
+    assert(!acting_recovery_backfill.empty());
+
+    bool estimate = false;
 
     // NOTE: we only generate degraded, misplaced and unfound
     // values for the summation, not individual stat categories.
@@ -2784,53 +2981,133 @@ void PG::_update_calc_stats()
     // Objects missing from nodes not in up, sort by # objects
     boost::container::flat_set<pair<int64_t,pg_shard_t>> acting_source_objects;
 
-    int64_t missing;
+    // Fill missing_target_objects/acting_source_objects
 
-    // Primary first
-    missing = pg_log.get_missing().num_missing();
-    assert(actingbackfill.count(pg_whoami));
-    if (upset.count(pg_whoami)) {
-      missing_target_objects.insert(make_pair(missing, pg_whoami));
-    } else {
-      acting_source_objects.insert(make_pair(missing, pg_whoami));
+    {
+      int64_t missing;
+
+      // Primary first
+      missing = pg_log.get_missing().num_missing();
+      assert(acting_recovery_backfill.count(pg_whoami));
+      if (upset.count(pg_whoami)) {
+        missing_target_objects.insert(make_pair(missing, pg_whoami));
+      } else {
+        acting_source_objects.insert(make_pair(missing, pg_whoami));
+      }
+      info.stats.stats.sum.num_objects_missing_on_primary = missing;
+      dout(20) << __func__ << " shard " << pg_whoami
+               << " primary objects " << num_objects
+               << " missing " << missing
+               << dendl;
     }
-    info.stats.stats.sum.num_objects_missing_on_primary = missing;
 
     // All other peers
     for (auto& peer : peer_info) {
-      // Ignore other peers until we add code to look at detailed missing
-      // information. (recovery)
-      if (!actingbackfill.count(peer.first)) {
-	continue;
-      }
       // Primary should not be in the peer_info, skip if it is.
       if (peer.first == pg_whoami) continue;
-      missing = 0;
+      int64_t missing = 0;
+      int64_t peer_num_objects = peer.second.stats.stats.sum.num_objects;
       // Backfill targets always track num_objects accurately
       // all other peers track missing accurately.
       if (is_backfill_targets(peer.first)) {
-	missing = std::max((int64_t)0, num_objects - peer.second.stats.stats.sum.num_objects);
+        missing = std::max((int64_t)0, num_objects - peer_num_objects);
       } else {
-	if (peer_missing.count(peer.first)) {
-	  missing = peer_missing[peer.first].num_missing();
-	} else {
-	  dout(20) << __func__ << " no peer_missing found for " << peer.first << dendl;
+        if (peer_missing.count(peer.first)) {
+          missing = peer_missing[peer.first].num_missing();
+        } else {
+          dout(20) << __func__ << " no peer_missing found for " << peer.first << dendl;
+          if (is_recovering()) {
+            estimate = true;
+          }
+          missing = std::max((int64_t)0, num_objects - peer_num_objects);
         }
       }
       if (upset.count(peer.first)) {
 	missing_target_objects.insert(make_pair(missing, peer.first));
-      } else {
+      } else if (actingset.count(peer.first)) {
 	acting_source_objects.insert(make_pair(missing, peer.first));
       }
       peer.second.stats.stats.sum.num_objects_missing = missing;
+      dout(20) << __func__ << " shard " << peer.first
+               << " objects " << peer_num_objects
+               << " missing " << missing
+               << dendl;
     }
 
+    // A misplaced object is not stored on the correct OSD
+    int64_t misplaced = 0;
+    // a degraded objects has fewer replicas or EC shards than the pool specifies.
+    int64_t degraded = 0;
+
+    if (is_recovering()) {
+      for (auto& sml: missing_loc.get_missing_by_count()) {
+        for (auto& ml: sml.second) {
+          int missing_shards;
+          if (sml.first == shard_id_t::NO_SHARD) {
+            dout(0) << __func__ << " ml " << ml.second << " upset size " << upset.size() << " up " << ml.first.up << dendl;
+            missing_shards = (int)upset.size() - ml.first.up;
+          } else {
+	    // Handle shards not even in upset below
+            if (!find_shard(upset, sml.first))
+	      continue;
+	    missing_shards = std::max(0, 1 - ml.first.up);
+            dout(0) << __func__ << " shard " << sml.first << " ml " << ml.second << " missing shards " << missing_shards << dendl;
+          }
+          int odegraded = ml.second * missing_shards;
+          // Copies on other osds but limited to the possible degraded
+          int more_osds = std::min(missing_shards, ml.first.other);
+          int omisplaced = ml.second * more_osds;
+          assert(omisplaced <= odegraded);
+          odegraded -= omisplaced;
+
+          misplaced += omisplaced;
+          degraded += odegraded;
+        }
+      }
+
+      dout(20) << __func__ << " missing based degraded " << degraded << dendl;
+      dout(20) << __func__ << " missing based misplaced " << misplaced << dendl;
+
+      // Handle undersized case
+      if (pool.info.is_replicated()) {
+        // Add degraded for missing targets (num_objects missing)
+        assert(target >= upset.size());
+        unsigned needed = target - upset.size();
+        degraded += num_objects * needed;
+      } else {
+        for (unsigned i = 0 ; i < num_shards; ++i) {
+          shard_id_t shard(i);
+
+          if (!find_shard(upset, shard)) {
+            pg_shard_t pgs = get_another_shard(actingset, pg_shard_t(), shard);
+
+            if (pgs != pg_shard_t()) {
+              int64_t missing;
+
+              if (pgs == pg_whoami)
+                missing = info.stats.stats.sum.num_objects_missing_on_primary;
+              else
+                missing = peer_info[pgs].stats.stats.sum.num_objects_missing;
+
+              degraded += missing;
+              misplaced += std::max((int64_t)0, num_objects - missing);
+            } else {
+              // No shard anywhere
+              degraded += num_objects;
+            }
+          }
+        }
+      }
+      goto out;
+    }
+
+    // Handle undersized case
     if (pool.info.is_replicated()) {
-      // Add to missing_target_objects up to target elements (num_objects missing)
+      // Add to missing_target_objects
       assert(target >= missing_target_objects.size());
       unsigned needed = target - missing_target_objects.size();
-      for (; needed; --needed)
-	missing_target_objects.insert(make_pair(num_objects, pg_shard_t(pg_shard_t::NO_OSD)));
+      if (needed)
+        missing_target_objects.insert(make_pair(num_objects * needed, pg_shard_t(pg_shard_t::NO_OSD)));
     } else {
       for (unsigned i = 0 ; i < num_shards; ++i) {
         shard_id_t shard(i);
@@ -2851,11 +3128,8 @@ void PG::_update_calc_stats()
     for (const auto& item : acting_source_objects)
       dout(20) << __func__ << " acting shard " << std::get<1>(item) << " missing= " << std::get<0>(item) << dendl;
 
-    // A misplaced object is not stored on the correct OSD
-    int64_t misplaced = 0;
-    // a degraded objects has fewer replicas or EC shards than the pool specifies.
-    int64_t degraded = 0;
-
+    // Handle all objects not in missing for remapped
+    // or backfill
     for (auto m = missing_target_objects.rbegin();
         m != missing_target_objects.rend(); ++m) {
 
@@ -2897,8 +3171,10 @@ void PG::_update_calc_stats()
       dout(20) << __func__ << " extra acting misplaced " << extra_misplaced << dendl;
       misplaced += extra_misplaced;
     }
-    dout(20) << __func__ << " degraded " << degraded << dendl;
-    dout(20) << __func__ << " misplaced " << misplaced << dendl;
+out:
+    // NOTE: Tests use these messages to verify this code
+    dout(20) << __func__ << " degraded " << degraded << (estimate ? " (est)": "") << dendl;
+    dout(20) << __func__ << " misplaced " << misplaced << (estimate ? " (est)": "")<< dendl;
 
     info.stats.stats.sum.num_objects_degraded = degraded;
     info.stats.stats.sum.num_objects_unfound = get_num_unfound();
@@ -3336,9 +3612,9 @@ void PG::trim_log()
   dout(10) << __func__ << " to " << pg_trim_to << dendl;
   if (pg_trim_to != eversion_t()) {
     // inform peers to trim log
-    assert(!actingbackfill.empty());
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
+    assert(!acting_recovery_backfill.empty());
+    for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	 i != acting_recovery_backfill.end();
 	 ++i) {
       if (*i == pg_whoami) continue;
       osd->send_message_osd_cluster(
@@ -4120,9 +4396,9 @@ void PG::clear_scrub_reserved()
 void PG::scrub_reserve_replicas()//要求副本预留
 {
   assert(backfill_targets.empty());
-  for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-       i != actingbackfill.end();
-       ++i) {//向所有副本发送
+  for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+       i != acting_recovery_backfill.end();
+       ++i) {
     if (*i == pg_whoami) continue;
     dout(10) << "scrub requesting reserve from osd." << *i << dendl;
     osd->send_message_osd_cluster(
@@ -4137,8 +4413,8 @@ void PG::scrub_reserve_replicas()//要求副本预留
 void PG::scrub_unreserve_replicas()//取消预订
 {
   assert(backfill_targets.empty());
-  for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-       i != actingbackfill.end();
+  for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+       i != acting_recovery_backfill.end();
        ++i) {
     if (*i == pg_whoami) continue;
     dout(10) << "scrub requesting unreserve from osd." << *i << dendl;
@@ -4427,7 +4703,8 @@ void PG::repair_object(
 
 /* replica_scrub
  *
- * Wait for pushes to complete in case of recent recovery. Build a single
+ * Wait for last_update_applied to match msg->scrub_to as above. Wait
+ * for pushes to complete in case of recent recovery. Build a single
  * scrubmap of objects that are in the range [msg->start, msg->end).
  */
 void PG::replica_scrub(
@@ -4584,6 +4861,11 @@ void PG::scrub(epoch_t queued, ThreadPool::TPHandle &handle)
  *  _________v__________    |   |
  * |                    |   |   |
  * |     WAIT_PUSHES    |   |   |
+ * |____________________|   |   |
+ *           |              |   |
+ *  _________v__________    |   |
+ * |                    |   |   |
+ * |  WAIT_LAST_UPDATE  |   |   |
  * |____________________|   |   |
  *           |              |   |
  *  _________v__________    |   |
@@ -4787,12 +5069,32 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被�
 	  }
 	}
 
+        scrubber.state = PG::Scrubber::WAIT_PUSHES;
+        break;
+
+      case PG::Scrubber::WAIT_PUSHES:
+        if (active_pushes == 0) {
+          scrubber.state = PG::Scrubber::WAIT_LAST_UPDATE;
+        } else {
+          dout(15) << "wait for pushes to apply" << dendl;
+          done = true;
+        }
+        break;
+
+      case PG::Scrubber::WAIT_LAST_UPDATE:
+        if (last_update_applied < scrubber.subset_last_update) {
+          // will be requeued by op_applied
+          dout(15) << "wait for EC read/modify/writes to queue" << dendl;
+          done = true;
+	  break;
+	}
+
         // ask replicas to scan
         scrubber.waiting_on_whom.insert(pg_whoami);
 
         // request maps from replicas
-	for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	     i != actingbackfill.end();
+	for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	     i != acting_recovery_backfill.end();
 	     ++i) {
 	  if (*i == pg_whoami) continue;
           _request_scrub_map(*i, scrubber.subset_last_update,
@@ -4803,20 +5105,13 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被�
 	dout(10) << __func__ << " waiting_on_whom " << scrubber.waiting_on_whom
 		 << dendl;
 
-        scrubber.state = PG::Scrubber::WAIT_PUSHES;
-        break;
-
-      case PG::Scrubber::WAIT_PUSHES:
-        if (active_pushes > 0) {
-          dout(15) << "wait for pushes to apply" << dendl;
-          done = true;
-	  break;
-	}
-	scrubber.primary_scrubmap_pos.reset();
 	scrubber.state = PG::Scrubber::BUILD_MAP;
+	scrubber.primary_scrubmap_pos.reset();
         break;
 
       case PG::Scrubber::BUILD_MAP:
+        assert(last_update_applied >= scrubber.subset_last_update);
+
         // build my own scrub map
 	if (scrub_preempted) {
 	  dout(10) << __func__ << " preempted" << dendl;
@@ -4871,6 +5166,7 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)//一个pg的清洗一旦被�
         break;
 
       case PG::Scrubber::COMPARE_MAPS:
+        assert(last_update_applied >= scrubber.subset_last_update);
         assert(scrubber.waiting_on_whom.empty());
 
         scrub_compare_maps();//scrub中最重要的一个函数,进行比对.
@@ -5017,7 +5313,7 @@ void PG::scrub_compare_maps() //清洗的第二重要函数(2/2)比对各家发�
   map<pg_shard_t, ScrubMap *> maps;
   maps[pg_whoami] = &scrubber.primary_scrubmap;
 
-  for (const auto& i : actingbackfill) {
+  for (const auto& i : acting_recovery_backfill) {
     if (i == pg_whoami) continue;
     dout(2) << __func__ << " replica " << i << " has "
             << scrubber.received_maps[i].objects.size()
@@ -5296,9 +5592,9 @@ void PG::share_pg_info()
   dout(10) << "share_pg_info" << dendl;
 
   // share new pg_info_t with replicas
-  assert(!actingbackfill.empty());
-  for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-       i != actingbackfill.end();
+  assert(!acting_recovery_backfill.empty());
+  for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+       i != acting_recovery_backfill.end();
        ++i) {
     if (*i == pg_whoami) continue;
     auto pg_shard = *i;
@@ -5374,8 +5670,8 @@ void PG::merge_new_log_entries(
   assert(is_primary());
 
   bool rebuild_missing = append_log_entries_update_missing(entries, t, trim_to, roll_forward_to);
-  for (set<pg_shard_t>::const_iterator i = actingbackfill.begin();
-       i != actingbackfill.end();
+  for (set<pg_shard_t>::const_iterator i = acting_recovery_backfill.begin();
+       i != acting_recovery_backfill.end();
        ++i) {
     pg_shard_t peer(*i);
     if (peer == pg_whoami) continue;
@@ -5406,7 +5702,7 @@ void PG::merge_new_log_entries(
     missing_loc.rebuild(
       i.soid,
       pg_whoami,
-      actingbackfill,
+      acting_recovery_backfill,
       info,
       pg_log.get_missing(),
       peer_missing,
@@ -5737,7 +6033,7 @@ void PG::start_peering_interval(
   state_clear(PG_STATE_RECOVERING);
 
   peer_purged.clear();
-  actingbackfill.clear();
+  acting_recovery_backfill.clear();
   scrub_queued = false;
 
   // reset primary state?
@@ -5845,6 +6141,10 @@ ostream& operator<<(ostream& out, const PG& pg)
     out << "/" << pg.acting;
   if (pg.is_ec_pg())
     out << "p" << pg.get_primary();
+  if (!pg.async_recovery_targets.empty())
+    out << " async=[" << pg.async_recovery_targets << "]";
+  if (!pg.backfill_targets.empty())
+    out << " backfill=[" << pg.backfill_targets << "]";
   out << " r=" << pg.get_role();
   out << " lpr=" << pg.get_last_peering_reset();
 
@@ -5859,6 +6159,8 @@ ostream& operator<<(ostream& out, const PG& pg)
   if (pg.is_peered()) {
     if (pg.last_update_ondisk != pg.info.last_update)
       out << " luod=" << pg.last_update_ondisk;
+    if (pg.last_update_applied != pg.info.last_update)
+      out << " lua=" << pg.last_update_applied;
   }
 
   if (pg.recovery_ops_active)
@@ -5909,6 +6211,9 @@ ostream& operator<<(ostream& out, const PG& pg)
       if (unfound)
 	out << " u=" << unfound;
     }
+  }
+  if (!pg.is_clean()) {
+    out << " mbc=" << pg.missing_loc.get_missing_by_count();
   }
   if (!pg.snap_trimq.empty()) {
     out << " trimq=";
@@ -7321,7 +7626,7 @@ PG::RecoveryState::WaitLocalRecoveryReserved::WaitLocalRecoveryReserved(my_conte
 
   // Make sure all nodes that part of the recovery aren't full
   if (!pg->cct->_conf->osd_debug_skip_full_check_in_recovery &&
-      pg->osd->check_osdmap_full(pg->actingbackfill)) {
+      pg->osd->check_osdmap_full(pg->acting_recovery_backfill)) {
     post_event(RecoveryTooFull());
     return;
   }
@@ -7506,9 +7811,9 @@ PG::RecoveryState::Recovered::Recovered(my_context ctx)
 
   // if we finished backfill, all acting are active; recheck if
   // DEGRADED | UNDERSIZED is appropriate.
-  assert(!pg->actingbackfill.empty());
+  assert(!pg->acting_recovery_backfill.empty());
   if (pg->get_osdmap()->get_pg_size(pg->info.pgid.pgid) <=
-      pg->actingbackfill.size()) {
+      pg->acting_recovery_backfill.size()) {
     pg->state_clear(PG_STATE_FORCED_BACKFILL | PG_STATE_FORCED_RECOVERY);
     pg->publish_stats_to_osd();
   }
@@ -7519,11 +7824,15 @@ PG::RecoveryState::Recovered::Recovered(my_context ctx)
   // adjust acting set?  (e.g. because backfill completed...)
   bool history_les_bound = false;
   if (pg->acting != pg->up && !pg->choose_acting(auth_log_shard,
-						 true, &history_les_bound))
+						 true, &history_les_bound)) {
     assert(pg->want_acting.size());
+  } else if (!pg->async_recovery_targets.empty()) {
+    pg->choose_acting(auth_log_shard, true, &history_les_bound);
+  }
 
-  if (context< Active >().all_replicas_activated)
-    post_event(GoClean());//发送GoClean事件
+  if (context< Active >().all_replicas_activated  &&
+      pg->async_recovery_targets.empty())
+    post_event(GoClean());
 }
 
 void PG::RecoveryState::Recovered::exit()
@@ -7588,7 +7897,7 @@ PG::RecoveryState::Active::Active(my_context ctx)
     remote_shards_to_reserve_recovery(
       unique_osd_shard_set(
 	context< RecoveryMachine >().pg->pg_whoami,
-	context< RecoveryMachine >().pg->actingbackfill)),//设置执行actingbackfill的osd(防重复)
+	context< RecoveryMachine >().pg->acting_recovery_backfill)),
     remote_shards_to_reserve_backfill(
       unique_osd_shard_set(
 	context< RecoveryMachine >().pg->pg_whoami,
@@ -7616,8 +7925,8 @@ PG::RecoveryState::Active::Active(my_context ctx)
 
   // everyone has to commit/ack before we are truly active
   pg->blocked_by.clear();
-  for (set<pg_shard_t>::iterator p = pg->actingbackfill.begin();
-       p != pg->actingbackfill.end();
+  for (set<pg_shard_t>::iterator p = pg->acting_recovery_backfill.begin();
+       p != pg->acting_recovery_backfill.end();
        ++p) {
     if (p->shard != pg->pg_whoami.shard) {
       pg->blocked_by.insert(p->shard);
@@ -7835,18 +8144,18 @@ boost::statechart::result PG::RecoveryState::Active::react(const MInfoRec& infoe
   PG *pg = context< RecoveryMachine >().pg;
   assert(pg->is_primary());
 
-  assert(!pg->actingbackfill.empty());
+  assert(!pg->acting_recovery_backfill.empty());
   // don't update history (yet) if we are active and primary; the replica
   // may be telling us they have activated (and committed) but we can't
   // share that until _everyone_ does the same.
-  if (pg->is_actingbackfill(infoevt.from) &&
+  if (pg->is_acting_recovery_backfill(infoevt.from) &&
       pg->peer_activated.count(infoevt.from) == 0) {
     ldout(pg->cct, 10) << " peer osd." << infoevt.from
 		       << " activated and committed" << dendl;
     pg->peer_activated.insert(infoevt.from);
     pg->blocked_by.erase(infoevt.from.shard);
     pg->publish_stats_to_osd();
-    if (pg->peer_activated.size() == pg->actingbackfill.size()) {
+    if (pg->peer_activated.size() == pg->acting_recovery_backfill.size()) {
       pg->all_activated_and_committed();
     }
   }
@@ -8482,9 +8791,9 @@ PG::RecoveryState::GetLog::GetLog(my_context ctx)
 
   //录找peer_info中最小的last_update,找到整体集群的最小下限,然后从这个位置开始恢复
   eversion_t request_log_from = pg->info.last_update;
-  assert(!pg->actingbackfill.empty());
-  for (set<pg_shard_t>::iterator p = pg->actingbackfill.begin();
-       p != pg->actingbackfill.end();
+  assert(!pg->acting_recovery_backfill.empty());
+  for (set<pg_shard_t>::iterator p = pg->acting_recovery_backfill.begin();
+       p != pg->acting_recovery_backfill.end();
        ++p) {
     if (*p == pg->pg_whoami) continue;
     pg_info_t& ri = pg->peer_info[*p];
@@ -8757,10 +9066,10 @@ PG::RecoveryState::GetMissing::GetMissing(my_context ctx)
   context< RecoveryMachine >().log_enter(state_name);
 
   PG *pg = context< RecoveryMachine >().pg;
-  assert(!pg->actingbackfill.empty());
+  assert(!pg->acting_recovery_backfill.empty());
   eversion_t since;
-  for (set<pg_shard_t>::iterator i = pg->actingbackfill.begin();
-       i != pg->actingbackfill.end();
+  for (set<pg_shard_t>::iterator i = pg->acting_recovery_backfill.begin();
+       i != pg->acting_recovery_backfill.end();
        ++i) {
     if (*i == pg->get_primary()) continue;
     const pg_info_t& pi = pg->peer_info[*i];

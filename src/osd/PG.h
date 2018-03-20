@@ -24,6 +24,7 @@
 #include <boost/statechart/event_base.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/circular_buffer.hpp>
+#include <boost/container/flat_set.hpp>
 #include "include/memory.h"
 #include "include/mempool.h"
 
@@ -602,18 +603,95 @@ protected:
   }
   ghobject_t    pgmeta_oid;
 
+  // ------------------
+  // MissingLoc
+  
   class MissingLoc {
+  public:
+    // a loc_count indicates how many locations we know in each of
+    // these distinct sets
+    struct loc_count_t {
+      int up = 0;        //< up
+      int other = 0;    //< other
+
+      friend bool operator<(const loc_count_t& l,
+			    const loc_count_t& r) {
+	return (l.up < r.up ||
+		(l.up == r.up &&
+		   (l.other < r.other)));
+      }
+      friend ostream& operator<<(ostream& out, const loc_count_t& l) {
+	assert(l.up >= 0);
+	assert(l.other >= 0);
+	return out << "(" << l.up << "+" << l.other << ")";
+      }
+    };
+
+
+  private:
+
+    loc_count_t _get_count(const set<pg_shard_t>& shards) {
+      loc_count_t r;
+      for (auto s : shards) {
+        if (pg->upset.count(s)) {
+	  r.up++;
+	} else {
+	  r.other++;
+	}
+      }
+      return r;
+    }
+
     map<hobject_t, pg_missing_item> needs_recovery_map;//指出哪些对象需要恢复(在active阶段我们会加入)
+
     map<hobject_t, set<pg_shard_t> > missing_loc;
     set<pg_shard_t> missing_loc_sources;
+
+    // for every entry in missing_loc, we count how many of each type of shard we have,
+    // and maintain totals here.  The sum of the values for this map will always equal
+    // missing_loc.size().
+    map < shard_id_t, map<loc_count_t,int> > missing_by_count;
+
+   void pgs_by_shard_id(const set<pg_shard_t>& s, map< shard_id_t, set<pg_shard_t> >& pgsbs) {
+      if (pg->get_osdmap()->pg_is_ec(pg->info.pgid.pgid)) {
+        int num_shards = pg->get_osdmap()->get_pg_size(pg->info.pgid.pgid);
+        // For completely missing shards initialize with empty set<pg_shard_t>
+	for (int i = 0 ; i < num_shards ; ++i) {
+	  shard_id_t shard(i);
+	  pgsbs[shard];
+	}
+	for (auto pgs: s)
+	  pgsbs[pgs.shard].insert(pgs);
+      } else {
+        pgsbs[shard_id_t::NO_SHARD] = s;
+      }
+    }
+
+    void _inc_count(const set<pg_shard_t>& s) {
+      map< shard_id_t, set<pg_shard_t> > pgsbs;
+      pgs_by_shard_id(s, pgsbs);
+      for (auto shard: pgsbs)
+        ++missing_by_count[shard.first][_get_count(shard.second)];
+    }
+    void _dec_count(const set<pg_shard_t>& s) {
+      map< shard_id_t, set<pg_shard_t> > pgsbs;
+      pgs_by_shard_id(s, pgsbs);
+      for (auto shard: pgsbs) {
+        auto p = missing_by_count[shard.first].find(_get_count(shard.second));
+        assert(p != missing_by_count[shard.first].end());
+        if (--p->second == 0) {
+	  missing_by_count[shard.first].erase(p);
+        }
+      }
+    }
+
     PG *pg;
     set<pg_shard_t> empty_set;
   public:
     boost::scoped_ptr<IsPGReadablePredicate> is_readable;//回调,检查对象是否可读取
     boost::scoped_ptr<IsPGRecoverablePredicate> is_recoverable;//回调,确定对象是否可恢复
     explicit MissingLoc(PG *pg)
-      : pg(pg) {}
-
+      : pg(pg) { }
     void set_backend_predicates(//设置可读,可恢复检查回调
       IsPGReadablePredicate *_is_readable,
       IsPGRecoverablePredicate *_is_recoverable) {
@@ -690,16 +768,38 @@ protected:
       needs_recovery_map.clear();
       missing_loc.clear();
       missing_loc_sources.clear();
+      missing_by_count.clear();
     }
 
     //为missing_loc添加项
     void add_location(const hobject_t &hoid, pg_shard_t location) {
-      missing_loc[hoid].insert(location);
+      auto p = missing_loc.find(hoid);
+      if (p == missing_loc.end()) {
+	p = missing_loc.emplace(hoid, set<pg_shard_t>()).first;
+      } else {
+	_dec_count(p->second);
+      }
+      p->second.insert(location);
+      _inc_count(p->second);
     }
     //移除missing_loc项
     void remove_location(const hobject_t &hoid, pg_shard_t location) {
-      missing_loc[hoid].erase(location);
+      auto p = missing_loc.find(hoid);
+      if (p != missing_loc.end()) {
+	_dec_count(p->second);
+	p->second.erase(location);
+	_inc_count(p->second);
+      }
     }
+
+    void clear_location(const hobject_t &hoid) {
+      auto p = missing_loc.find(hoid);
+      if (p != missing_loc.end()) {
+	_dec_count(p->second);
+        missing_loc.erase(p);
+      }
+    }
+
     //将missing中的数据添加至needs_recovery_map中
     void add_active_missing(const pg_missing_t &missing) {
       for (map<hobject_t, pg_missing_item>::const_iterator i =
@@ -720,8 +820,8 @@ protected:
     }
 
     //向needs_recovery_map中添加项
-    void add_missing(const hobject_t &hoid, eversion_t need, eversion_t have) {
-      needs_recovery_map[hoid] = pg_missing_item(need, have);
+    void add_missing(const hobject_t &hoid, eversion_t need, eversion_t have, bool is_delete=false) {
+      needs_recovery_map[hoid] = pg_missing_item(need, have, is_delete);
     }
     //修改hoid对应的需要版本
     void revise_need(const hobject_t &hoid, eversion_t need) {
@@ -751,7 +851,11 @@ protected:
     //移除某一个具体的对象
     void recovered(const hobject_t &hoid) {
       needs_recovery_map.erase(hoid);
-      missing_loc.erase(hoid);
+      auto p = missing_loc.find(hoid);
+      if (p != missing_loc.end()) {
+	_dec_count(p->second);
+	missing_loc.erase(p);
+      }
     }
 
     /// Call to update structures for hoid after a change
@@ -794,6 +898,8 @@ protected:
       if (!missing.is_missing(hoid))
 	mliter->second.insert(self);
       for (auto &&i: pmissing) {
+	if (i.first == self)
+	  continue;
 	auto pinfoiter = pinfo.find(i.first);
 	assert(pinfoiter != pinfo.end());
 	if (item->need <= pinfoiter->second.last_update &&
@@ -801,6 +907,7 @@ protected:
 	    !i.second.is_missing(hoid))
 	  mliter->second.insert(i.first);
       }
+      _inc_count(mliter->second);
     }
 
     //知missing_loc中查hoid
@@ -815,6 +922,9 @@ protected:
     //获取needs_recovery_map
     const map<hobject_t, pg_missing_item> &get_needs_recovery() const {
       return needs_recovery_map;
+    }
+    const map < shard_id_t, map<loc_count_t,int> > &get_missing_by_count() const {
+      return missing_by_count;
     }
   } missing_loc;
   
@@ -844,6 +954,7 @@ protected:
   eversion_t  last_update_ondisk;    // last_update that has committed; ONLY DEFINED WHEN is_active()
   //本地最后一次完成落盘
   eversion_t  last_complete_ondisk;  // last_complete that has committed.
+  eversion_t  last_update_applied;
 
   // entries <= last_rollback_info_trimmed_to_applied have been trimmed
   eversion_t  last_rollback_info_trimmed_to_applied;
@@ -853,11 +964,15 @@ protected:
   pg_shard_t primary;
   pg_shard_t pg_whoami;
   pg_shard_t up_primary;
-  vector<int> up, acting, want_acting;//up集合,acting集合,期望acting{恢复时用}
+  //up集合,acting集合,期望acting{恢复时用}
+  vector<int> up, acting, want_acting;
+  // acting_recovery_backfill contains shards that are acting,
+  // async recovery targets, or backfill targets.
   //哪些osd上有这个pg且可以用来恢复
   //actingbackfill是可以帮助恢复的osd集合,它一般会比up集还大.
   //哪些osd上有这个pg
-  set<pg_shard_t> actingbackfill, actingset, upset;//当前可以执行backfill的集合
+  //当前可以执行backfill的集合
+  set<pg_shard_t> acting_recovery_backfill, actingset, upset;
   map<pg_shard_t,eversion_t> peer_last_complete_ondisk;
   eversion_t  min_last_complete_ondisk;  // up: min over last_complete_ondisk, peer_last_complete_ondisk //ondisk完成的最小版本.
   eversion_t  pg_trim_to;//可以trim到的pglog version
@@ -1087,7 +1202,8 @@ protected:
   bool backfill_reserved;
   bool backfill_reserving;
 
-  set<pg_shard_t> backfill_targets;//需要执行backfill的
+  //需要执行backfill的
+  set<pg_shard_t> backfill_targets,  async_recovery_targets;
 
   bool is_backfill_targets(pg_shard_t osd) {
     return backfill_targets.count(osd);
@@ -1202,8 +1318,8 @@ protected:
 
   void clear_primary_state();
 
-  bool is_actingbackfill(pg_shard_t osd) const {
-    return actingbackfill.count(osd);
+  bool is_acting_recovery_backfill(pg_shard_t osd) const {
+    return acting_recovery_backfill.count(osd);
   }
   bool is_acting(pg_shard_t osd) const {
     return has_shard(pool.info.is_erasure(), acting, osd);
@@ -1259,9 +1375,9 @@ protected:
   //计算最小的已落盘(内存落盘)的最小complete
   bool calc_min_last_complete_ondisk() {
     eversion_t min = last_complete_ondisk;//我们最后一个完成的ondisk版本
-    assert(!actingbackfill.empty());
-    for (set<pg_shard_t>::iterator i = actingbackfill.begin();
-	 i != actingbackfill.end();
+    assert(!acting_recovery_backfill.empty());
+    for (set<pg_shard_t>::iterator i = acting_recovery_backfill.begin();
+	 i != acting_recovery_backfill.end();
 	 ++i) {
       if (*i == get_primary()) continue;
       if (peer_last_complete_ondisk.count(*i) == 0)//对方信息我们目前还不知道
@@ -1361,6 +1477,16 @@ protected:
     set<pg_shard_t> *backfill,
     set<pg_shard_t> *acting_backfill,
     ostream &ss);
+  void choose_async_recovery_ec(const map<pg_shard_t, pg_info_t> &all_info,
+                                const pg_info_t &auth_info,
+                                vector<int> *want,
+                                set<pg_shard_t> *async_recovery) const;
+  void choose_async_recovery_replicated(const map<pg_shard_t, pg_info_t> &all_info,
+                                        const pg_info_t &auth_info,
+                                        vector<int> *want,
+                                        set<pg_shard_t> *async_recovery) const;
+
+  bool recoverable_and_ge_min_size(const vector<int> &want) const;
   bool choose_acting(pg_shard_t &auth_log_shard,
 		     bool restrict_to_up_acting,
 		     bool *history_les_bound);
@@ -1510,6 +1636,7 @@ public:
       INACTIVE,
       NEW_CHUNK,
       WAIT_PUSHES,
+      WAIT_LAST_UPDATE,
       BUILD_MAP,
       BUILD_MAP_DONE,
       WAIT_REPLICAS,
@@ -1546,6 +1673,7 @@ public:
         case INACTIVE: ret = "INACTIVE"; break;
         case NEW_CHUNK: ret = "NEW_CHUNK"; break;
         case WAIT_PUSHES: ret = "WAIT_PUSHES"; break;
+        case WAIT_LAST_UPDATE: ret = "WAIT_LAST_UPDATE"; break;
         case BUILD_MAP: ret = "BUILD_MAP"; break;
         case BUILD_MAP_DONE: ret = "BUILD_MAP_DONE"; break;
         case WAIT_REPLICAS: ret = "WAIT_REPLICAS"; break;
@@ -2777,6 +2905,7 @@ protected:
   bool is_peered() const {
     return state_test(PG_STATE_ACTIVE) || state_test(PG_STATE_PEERED);
   }
+  bool is_recovering() const { return state_test(PG_STATE_RECOVERING); }
 
   bool is_empty() const { return info.last_update == eversion_t(0,0); }
 
@@ -2866,7 +2995,7 @@ protected:
 
   /**
    * Merge entries updating missing as necessary on all
-   * actingbackfill logs and missings (also missing_loc)
+   * acting_recovery_backfill logs and missings (also missing_loc)
    */
   void merge_new_log_entries(
     const mempool::osd_pglog::list<pg_log_entry_t> &entries,

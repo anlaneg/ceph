@@ -486,8 +486,7 @@ void OSDMap::Incremental::encode(bufferlist& bl, uint64_t features) const
     uint8_t v = 6;
     if (!HAVE_FEATURE(features, SERVER_LUMINOUS)) {
       v = 3;
-    }
-    if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
+    } else if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
       v = 5;
     }
     ENCODE_START(v, 1, bl); // client-usable data
@@ -2584,8 +2583,7 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
     uint8_t v = 7;
     if (!HAVE_FEATURE(features, SERVER_LUMINOUS)) {
       v = 3;
-    }
-    if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
+    } else if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
       v = 6;
     }
     ENCODE_START(v, 1, bl); // client-usable data
@@ -2661,8 +2659,7 @@ void OSDMap::encode(bufferlist& bl, uint64_t features) const
     uint8_t target_v = 6;
     if (!HAVE_FEATURE(features, SERVER_LUMINOUS)) {
       target_v = 1;
-    }
-    if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
+    } else if (!HAVE_FEATURE(features, SERVER_MIMIC)) {
       target_v = 5;
     }
     ENCODE_START(target_v, 1, bl); // extended, osd-only data

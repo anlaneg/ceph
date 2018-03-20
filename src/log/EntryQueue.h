@@ -70,7 +70,7 @@ struct EntryQueue {
     //组团销毁
     while (m_head) {
       t = m_head->m_next;
-      delete m_head;
+      m_head->destroy();
       m_head = t;
     }      
   }

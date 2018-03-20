@@ -296,7 +296,7 @@ void Log::flush()
 
   // trim（m_recent丢弃）
   while (m_recent.m_len > m_max_recent) {
-    delete m_recent.dequeue();//释放掉队头的元素
+    m_recent.dequeue()->destroy();//释放掉队头的元素
   }
 
   m_flush_mutex_holder = 0;

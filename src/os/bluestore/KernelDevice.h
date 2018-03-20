@@ -17,16 +17,17 @@
 
 #include <atomic>
 
-#include "os/fs/FS.h"
+#include "include/types.h"
 #include "include/interval_set.h"
+#include "common/Mutex.h"
+#include "common/Cond.h"
 
 #include "aio.h"
 #include "BlockDevice.h"
 
 class KernelDevice : public BlockDevice {
   int fd_direct, fd_buffered;
-  string path;//磁盘对应的路径
-  FS *fs;//依据不同的类型，例如xfs文件系统生成对应的XFS类
+  std::string path;//磁盘对应的路径
   bool aio, dio;//是否开启aio,dio
 
   std::string devname;  ///< kernel dev name (/sys/block/$devname), if any

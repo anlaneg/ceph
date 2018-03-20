@@ -776,26 +776,6 @@ std::vector<Option> get_global_options() {
     .set_default(5)
     .set_description(""),
 
-    Option("async_compressor_enabled", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(false)
-    .set_description(""),
-
-    Option("async_compressor_type", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("snappy")
-    .set_description(""),
-
-    Option("async_compressor_threads", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(2)
-    .set_description(""),
-
-    Option("async_compressor_thread_timeout", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(5)
-    .set_description(""),
-
-    Option("async_compressor_thread_suicide_timeout", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(30)
-    .set_description(""),
-
     Option("plugin_crypto_accelerator", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("crypto_isal")
     .set_description(""),
@@ -872,7 +852,7 @@ std::vector<Option> get_global_options() {
     .set_default(0)
     .set_description(""),
 
-    Option("ms_tcp_prefetch_max_size", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    Option("ms_tcp_prefetch_max_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(4_K)
     .set_description(""),
 
@@ -3125,6 +3105,10 @@ std::vector<Option> get_global_options() {
     Option("osd_pg_log_trim_min", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(100)
     .set_description(""),
+
+    Option("osd_async_recovery_min_pg_log_entries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(100)
+    .set_description("Number of entries difference above which to use asynchronous recovery when appropriate"),
 
     Option("osd_max_pg_per_osd_hard_ratio", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(2)

@@ -87,7 +87,6 @@
 #include "messages/MOSDPGCreate.h"
 #include "messages/MOSDPGTrim.h"
 #include "messages/MOSDPGScan.h"
-#include "messages/MOSDPGBackfill.h"
 #include "messages/MBackfillReserve.h"
 #include "messages/MRecoveryReserve.h"
 #include "messages/MOSDForceRecovery.h"
@@ -8390,9 +8389,13 @@ void OSD::dispatch_context_transaction(PG::RecoveryCtx &ctx, PG *pg,
 void OSD::dispatch_context(PG::RecoveryCtx &ctx, PG *pg, OSDMapRef curmap,
                            ThreadPool::TPHandle *handle)
 {
-  if (service.get_osdmap()->is_up(whoami) &&
-      is_active()) {
+  if (!service.get_osdmap()->is_up(whoami)) {
+    dout(20) << __func__ << " not up in osdmap" << dendl;
+  } else if (!is_active()) {
+    dout(20) << __func__ << " not active" << dendl;
+  } else {
     do_notifies(*ctx.notify_list, curmap);//处理上下文相关的事件
+
     do_queries(*ctx.query_map, curmap);
     do_infos(*ctx.info_map, curmap);
   }

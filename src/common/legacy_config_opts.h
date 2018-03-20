@@ -94,12 +94,6 @@ OPTION(xio_max_send_inline, OPT_INT) // xio maximum threshold to send inline
 OPTION(compressor_zlib_isal, OPT_BOOL)
 OPTION(compressor_zlib_level, OPT_INT) //regular zlib compression level, not applicable to isa-l optimized version
 
-OPTION(async_compressor_enabled, OPT_BOOL)
-OPTION(async_compressor_type, OPT_STR)
-OPTION(async_compressor_threads, OPT_INT)
-OPTION(async_compressor_thread_timeout, OPT_INT)
-OPTION(async_compressor_thread_suicide_timeout, OPT_INT)
-
 OPTION(plugin_crypto_accelerator, OPT_STR)
 
 OPTION(mempool_debug, OPT_BOOL)
@@ -119,7 +113,7 @@ OPTION(ms_public_type, OPT_STR)   // messenger backend
 OPTION(ms_cluster_type, OPT_STR)   // messenger backend
 OPTION(ms_tcp_nodelay, OPT_BOOL)
 OPTION(ms_tcp_rcvbuf, OPT_INT)
-OPTION(ms_tcp_prefetch_max_size, OPT_INT) // max prefetch size, we limit this to avoid extra memcpy
+OPTION(ms_tcp_prefetch_max_size, OPT_U32) // max prefetch size, we limit this to avoid extra memcpy
 OPTION(ms_initial_backoff, OPT_DOUBLE)
 OPTION(ms_max_backoff, OPT_DOUBLE)
 OPTION(ms_crc_data, OPT_BOOL)
