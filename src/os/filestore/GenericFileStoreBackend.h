@@ -46,6 +46,7 @@ public:
   bool is_journal_rotational() override {
     return m_journal_rotational;
   }
+  //默认不支持checkpoint
   int list_checkpoints(list<string>& ls) override { return 0; }
   int create_checkpoint(const string& name, uint64_t *cid) override { return -EOPNOTSUPP; }
   int sync_checkpoint(uint64_t id) override { return -EOPNOTSUPP; }

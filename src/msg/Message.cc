@@ -197,6 +197,7 @@
 
 #define dout_subsys ceph_subsys_ms
 
+//各消息自行编码
 void Message::encode(uint64_t features, int crcflags)
 {
   // encode and copy out of *m
@@ -277,6 +278,7 @@ void Message::dump(Formatter *f) const
   f->dump_string("summary", ss.str());
 }
 
+//对消息进行解码
 Message *decode_message(CephContext *cct, int crcflags,
 			ceph_msg_header& header,
 			ceph_msg_footer& footer,
@@ -285,9 +287,11 @@ Message *decode_message(CephContext *cct, int crcflags,
 {
   // verify crc
   if (crcflags & MSG_CRC_HEADER) {
+	  //如果需要对消息做crc校验
     __u32 front_crc = front.crc32c(0);
     __u32 middle_crc = middle.crc32c(0);
 
+    //对front_crc进行校验
     if (front_crc != footer.front_crc) {
       if (cct) {
 	ldout(cct, 0) << "bad crc in front " << front_crc << " != exp " << footer.front_crc << dendl;
@@ -297,6 +301,8 @@ Message *decode_message(CephContext *cct, int crcflags,
       }
       return 0;
     }
+
+    //对middle_crc进行校验
     if (middle_crc != footer.middle_crc) {
       if (cct) {
 	ldout(cct, 0) << "bad crc in middle " << middle_crc << " != exp " << footer.middle_crc << dendl;
@@ -307,6 +313,8 @@ Message *decode_message(CephContext *cct, int crcflags,
       return 0;
     }
   }
+
+  //消息数据的crc校验
   if (crcflags & MSG_CRC_DATA) {
     if ((footer.flags & CEPH_MSG_FOOTER_NOCRC) == 0) {
       __u32 data_crc = data.crc32c(0);
@@ -322,6 +330,8 @@ Message *decode_message(CephContext *cct, int crcflags,
     }
   }
 
+  //依据消息类型生成消息解码对象，这段代码可以抽成函数或者重构的更
+  //好一点
   // make message
   Message *m = 0;
   int type = header.type;
@@ -825,8 +835,12 @@ Message *decode_message(CephContext *cct, int crcflags,
   // m->header.version, if non-zero, should be populated with the
   // newest version of the encoding the code supports.  If set, check
   // it against compat_version.
+  //此时m做为消息对象刚刚建立，还没有进行解码，此时m->get_header().version返回的
+  //此当前进程中m消息的处理函数版本，如果其小于header.compat_version，则说明消息不兼容
+  //无法处理此消息
   if (m->get_header().version &&
       m->get_header().version < header.compat_version) {
+	  //消息不兼容
     if (cct) {
       ldout(cct, 0) << "will not decode message of type " << type
 		    << " version " << header.version
@@ -847,6 +861,7 @@ Message *decode_message(CephContext *cct, int crcflags,
   m->set_data(data);
 
   try {
+	//对消息进行解码
     m->decode_payload();
   }
   catch (const buffer::error &e) {

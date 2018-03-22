@@ -143,14 +143,23 @@ struct ceph_msg_header_old {
 	__le32 crc;       /* header crc32c */
 } __attribute__ ((packed));
 
+//ceph消息头（头部的crc计算时，不含crc成员）
 struct ceph_msg_header {
+	//消息序号
 	__le64 seq;       /* message seq# for this session */
+	//事务id
 	__le64 tid;       /* transaction id */
+	//消息类型（来源于ceph_fs.h文件，例如CEPH_MSG_OSD_MAP）
 	__le16 type;      /* message type */
+	//消息优先级
 	__le16 priority;  /* priority.  higher value == higher priority */
+	//消息版本号（发送方消息的版本号）
 	__le16 version;   /* version of message encoding */
 
+	//消息的总长度等于 front_len + middle_len + data_len (不含ceph_msg_header长度)
+	//消息中有个字段为payload,此指payload长度
 	__le32 front_len; /* bytes in main payload */
+	//指middle数据的长度
 	__le32 middle_len;/* bytes in middle payload */
 	__le32 data_len;  /* bytes of data payload */
 	__le16 data_off;  /* sender: include full offset;
@@ -159,6 +168,7 @@ struct ceph_msg_header {
 	struct ceph_entity_name src;
 
 	/* oldest code we think can decode this.  unknown if zero. */
+	//消息兼容版本号，例如MOSDMap规定此值为3，当前版本号为4表示3可以处理4的消息
 	__le16 compat_version;
 	__le16 reserved;
 	__le32 crc;       /* header crc32c */

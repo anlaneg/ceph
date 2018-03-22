@@ -113,7 +113,7 @@ static const int SM_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
     }
 
   private:
-    int sd;
+    int sd;//连接的fd
     struct iovec msgvec[SM_IOV_MAX];
 
   public:
@@ -271,6 +271,7 @@ static const int SM_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
     }
     ssize_t do_recv(char *buf, size_t len, int flags);
     ssize_t buffered_recv(char *buf, size_t len, int flags);
+    //检查缓冲中是否有未收取的数据
     bool has_pending_data() { return recv_len > recv_ofs; }
 
     /**

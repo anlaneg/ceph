@@ -252,6 +252,7 @@ public:
   };
   typedef ceph::shared_ptr<FlushOp> FlushOpRef;
 
+  //记录PG的后端，当前后端有ECBackend,ReplicatedBackend两种
   boost::scoped_ptr<PGBackend> pgbackend;
   PGBackend *get_pgbackend() override {
     return pgbackend.get();

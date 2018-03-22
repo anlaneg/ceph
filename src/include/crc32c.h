@@ -40,6 +40,7 @@ uint32_t ceph_crc32c_zeros(uint32_t crc, unsigned length);
  * @param data pointer to data buffer
  * @param length length of buffer
  */
+//实现crc计算
 static inline uint32_t ceph_crc32c(uint32_t crc, unsigned char const *data, unsigned length)
 {
 #ifndef HAVE_POWER8

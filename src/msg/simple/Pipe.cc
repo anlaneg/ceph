@@ -1643,6 +1643,7 @@ void Pipe::reader()
 
     char tag = -1;
     ldout(msgr->cct,20) << "reader reading tag..." << dendl;
+    //先读取一个字节，检查是哪种类型的消息
     if (tcp_read((char*)&tag, 1) < 0) {
       pipe_lock.Lock();
       ldout(msgr->cct,2) << "reader couldn't read tag, " << cpp_strerror(errno) << dendl;
@@ -1705,6 +1706,7 @@ void Pipe::reader()
     }
 
     else if (tag == CEPH_MSGR_TAG_MSG) {
+    	//收到了消息，处理消息
       ldout(msgr->cct,20) << "reader got MSG" << dendl;
       Message *m = 0;
       int r = read_message(&m, auth_handler.get());
@@ -1759,7 +1761,8 @@ void Pipe::reader()
       ldout(msgr->cct,10) << "reader got message "
 	       << m->get_seq() << " " << m << " " << *m
 	       << dendl;
-      //快速预处理
+
+      //将消息进行 快速预处理
       in_q->fast_preprocess(m);
 
       if (delay_thread) {
@@ -1907,6 +1910,7 @@ void Pipe::writer()
       // grab outgoing message
       Message *m = _get_next_outgoing();
       if (m) {
+    //设置消息的序列号
 	m->set_seq(++out_seq);
 	if (!policy.lossy) {
 	  // put on sent list
@@ -2020,6 +2024,7 @@ static void alloc_aligned_buffer(bufferlist& data, unsigned len, unsigned off)
   }
 }
 
+//读取消息并通过pm进行返回，auth_handler处理认证
 int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
 {
   int ret = -1;
@@ -2030,12 +2035,16 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   ceph_msg_footer footer;
   __u32 header_crc = 0;
 
+  //读消息头
   if (tcp_read((char*)&header, sizeof(header)) < 0)
     return -1;
+
+  //如果头部有crc,则计算头部crc
   if (msgr->crcflags & MSG_CRC_HEADER) {
     header_crc = ceph_crc32c(0, (unsigned char *)&header, sizeof(header) - sizeof(header.crc));
   }
 
+  //显示日志，表示收到报文
   ldout(msgr->cct,20) << "reader got envelope type=" << header.type
            << " src " << entity_name_t(header.src)
            << " front=" << header.front_len
@@ -2044,9 +2053,10 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
            << dendl;
 
   // verify header crc
+  //如果header crc失败，则直接丢弃
   if ((msgr->crcflags & MSG_CRC_HEADER) && header_crc != header.crc) {
     ldout(msgr->cct,0) << "reader got bad header crc " << header_crc << " != " << header.crc << dendl;
-    return -1;
+    return -1;//上层在遇到-1时会关闭socket
   }
 
   bufferlist front, middle, data;
@@ -2054,8 +2064,9 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   unsigned data_len, data_off;
   int aborted;
   Message *message;
-  utime_t recv_stamp = ceph_clock_now();
+  utime_t recv_stamp = ceph_clock_now();//记录消息收到的时间
 
+  //针对消息数进行控制
   if (policy.throttler_messages) {
     ldout(msgr->cct,10) << "reader wants " << 1 << " message from policy throttler "
 			<< policy.throttler_messages->get_current() << "/"
@@ -2065,6 +2076,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
 
   uint64_t message_size = header.front_len + header.middle_len + header.data_len;
   if (message_size) {
+	//针对消息字节数进行控制
     if (policy.throttler_bytes) {
       ldout(msgr->cct,10) << "reader wants " << message_size << " bytes from policy throttler "
 	       << policy.throttler_bytes->get_current() << "/"
@@ -2072,6 +2084,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
       policy.throttler_bytes->get(message_size);
     }
 
+    //从分发角度控制
     // throttle total bytes waiting for dispatch.  do this _after_ the
     // policy throttle, as this one does not deadlock (unless dispatch
     // blocks indefinitely, which it shouldn't).  in contrast, the
@@ -2088,7 +2101,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   front_len = header.front_len;
   if (front_len) {
     bufferptr bp = buffer::create(front_len);
-    if (tcp_read(bp.c_str(), front_len) < 0)
+    if (tcp_read(bp.c_str(), front_len) < 0)//读取front
       goto out_dethrottle;
     front.push_back(std::move(bp));
     ldout(msgr->cct,20) << "reader got front " << front.length() << dendl;
@@ -2098,7 +2111,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   middle_len = header.middle_len;
   if (middle_len) {
     bufferptr bp = buffer::create(middle_len);
-    if (tcp_read(bp.c_str(), middle_len) < 0)
+    if (tcp_read(bp.c_str(), middle_len) < 0)//读取middle
       goto out_dethrottle;
     middle.push_back(std::move(bp));
     ldout(msgr->cct,20) << "reader got middle " << middle.length() << dendl;
@@ -2148,7 +2161,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
       bufferptr bp = blp.get_current_ptr();
       int read = std::min(bp.length(), left);
       ldout(msgr->cct,20) << "reader reading nonblocking into " << (void*)bp.c_str() << " len " << bp.length() << dendl;
-      ssize_t got = tcp_read_nonblocking(bp.c_str(), read);
+      ssize_t got = tcp_read_nonblocking(bp.c_str(), read);//读取data
       ldout(msgr->cct,30) << "reader read " << got << " of " << read << dendl;
       connection_state->lock.Unlock();
       if (got < 0)
@@ -2163,6 +2176,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   }
 
   // footer
+  //认证信息处理
   if (connection_state->has_feature(CEPH_FEATURE_MSG_AUTH)) {
     if (tcp_read((char*)&footer, sizeof(footer)) < 0)
       goto out_dethrottle;
@@ -2188,8 +2202,10 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
 
   ldout(msgr->cct,20) << "reader got " << front.length() << " + " << middle.length() << " + " << data.length()
 	   << " byte message" << dendl;
+  //对消息进行解码，创建对应的消息对象
   message = decode_message(msgr->cct, msgr->crcflags, header, footer,
                            front, middle, data, connection_state.get());
+  //解码失败，报错
   if (!message) {
     ret = -EINVAL;
     goto out_dethrottle;
@@ -2199,6 +2215,7 @@ int Pipe::read_message(Message **pm, AuthSessionHandler* auth_handler)
   //  Check the signature if one should be present.  A zero return indicates success. PLR
   //
 
+  //认证处理
   if (auth_handler == NULL) {
     ldout(msgr->cct, 10) << "No session security set" << dendl;
   } else {
@@ -2459,7 +2476,7 @@ int Pipe::write_message(const ceph_msg_header& header, const ceph_msg_footer& fo
   goto out;
 }
 
-
+//阻塞读取len字节
 int Pipe::tcp_read(char *buf, unsigned len)
 {
   if (sd < 0)
@@ -2467,6 +2484,7 @@ int Pipe::tcp_read(char *buf, unsigned len)
 
   while (len > 0) {
 
+	//测试代码
     if (msgr->cct->_conf->ms_inject_socket_failures && sd >= 0) {
       if (rand() % msgr->cct->_conf->ms_inject_socket_failures == 0) {
 	ldout(msgr->cct, 0) << "injecting socket failure" << dendl;
@@ -2489,6 +2507,7 @@ int Pipe::tcp_read(char *buf, unsigned len)
   return 0;
 }
 
+//检测sd是否有数据
 int Pipe::tcp_read_wait()
 {
   if (sd < 0)
@@ -2498,9 +2517,14 @@ int Pipe::tcp_read_wait()
   pfd.fd = sd;
   pfd.events = POLLIN;
 #if defined(__linux__)
+  //POLLRDHUP (since Linux 2.6.17)
+  //Stream socket peer closed connection, or shut down writing half of connection.
+  //The _GNU_SOURCE feature test macro must be defined (before including any header files)
+  //in order to obtain this definition.
   pfd.events |= POLLRDHUP;
 #endif
 
+  //如果有未处理数据，则直接返回
   if (has_pending_data())
     return 0;
 
@@ -2541,10 +2565,12 @@ again:
   return got;
 }
 
+//自buf中读len长度
 ssize_t Pipe::buffered_recv(char *buf, size_t len, int flags)
 {
   size_t left = len;
   ssize_t total_recv = 0;
+  //先从recv的buffer中拿
   if (recv_len > recv_ofs) {
     int to_read = std::min(recv_len - recv_ofs, left);
     memcpy(buf, &recv_buf[recv_ofs], to_read);
@@ -2558,7 +2584,10 @@ ssize_t Pipe::buffered_recv(char *buf, size_t len, int flags)
   }
 
   /* nothing left in the prefetch buffer */
+  //recv的buffer中不够，需要自fd中再读些，读的长度为left
 
+  //为了优先，每次读recv_max_prefetch,故超过recv_max_prefetch直接
+  //读就行了
   if (left > recv_max_prefetch) {
     /* this was a large read, we don't prefetch for these */
     ssize_t ret = do_recv(buf, left, flags );
@@ -2588,6 +2617,7 @@ ssize_t Pipe::buffered_recv(char *buf, size_t len, int flags)
   return total_recv;
 }
 
+//采用非阻塞方式读len长度
 ssize_t Pipe::tcp_read_nonblocking(char *buf, unsigned len)
 {
   ssize_t got = buffered_recv(buf, len, MSG_DONTWAIT );

@@ -83,6 +83,7 @@ int XfsFileStoreBackend::set_extsize(int fd, unsigned int val)
   return 0;
 }
 
+//xfs文件检测
 int XfsFileStoreBackend::detect_features()
 {
   int ret;

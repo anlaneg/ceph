@@ -1245,6 +1245,7 @@ int FileStore::_detect_fs()
   //创建底层文件系统对应的backend
   create_backend(st.f_type);
 
+  //功能检测，检测失败的不能处理
   r = backend->detect_features();
   if (r < 0) {
     derr << __FUNC__ << ": detect_features error: " << cpp_strerror(r) << dendl;
@@ -1382,6 +1383,7 @@ int FileStore::update_version_stamp()
   return write_version_stamp();
 }
 
+//取当前filestore文件系统版本号
 int FileStore::version_stamp_is_valid(uint32_t *version)
 {
   bufferptr bp(PATH_MAX);
@@ -1405,6 +1407,7 @@ int FileStore::version_stamp_is_valid(uint32_t *version)
     return 0;
 }
 
+//写filestore的文件系统版本
 int FileStore::write_version_stamp()
 {
   dout(1) << __FUNC__ << ": " << target_version << dendl;
@@ -1415,6 +1418,7 @@ int FileStore::write_version_stamp()
       bl.c_str(), bl.length());
 }
 
+//filestore当前文件系统层面不需要做大的升级
 int FileStore::upgrade()
 {
   dout(1) << __FUNC__ << dendl;
@@ -1430,6 +1434,7 @@ int FileStore::upgrade()
   if (r == 1)
     return 0;
 
+  //3以下的不可以直接升级到4
   if (version < 3) {
     derr << "ObjectStore is old at version " << version << ".  Please upgrade to firefly v0.80.x, convert your store, and then upgrade."  << dendl;
     return -EINVAL;
@@ -1437,6 +1442,7 @@ int FileStore::upgrade()
 
   // nothing necessary in FileStore for v3 -> v4 upgrade; we just need to
   // open up DBObjectMap with the do_upgrade flag, which we already did.
+  //从3到4不处理，直接写version
   update_version_stamp();
   return 0;
 }
@@ -1592,6 +1598,7 @@ int FileStore::mount()
     goto close_basedir_fd;
   }
 
+  //显示checkpoints，处理checkpoints( xfs文件系统暂不支持checkpoints)
   {
     list<string> ls;
     ret = backend->list_checkpoints(ls);
@@ -1929,6 +1936,8 @@ int FileStore::mount()
   timer.init();
 
   // upgrade?
+  //此项的默认配置为1000,故系统运行到此行时，在没有配置的情况下，会恒进入、
+  //实现文件系统升级
   if (cct->_conf->filestore_update_to >= (int)get_target_version()) {
     int err = upgrade();
     if (err < 0) {

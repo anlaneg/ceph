@@ -545,7 +545,7 @@ PGBackend *PGBackend::build_pg_backend(
   case pg_pool_t::TYPE_REPLICATED: {//对于幅本创建，创建ReplicatedBackend
     return new ReplicatedBackend(l, coll, ch, store, cct);
   }
-  case pg_pool_t::TYPE_ERASURE: {
+  case pg_pool_t::TYPE_ERASURE: {//对于EC模式，创建ECBackend
     ErasureCodeInterfaceRef ec_impl;
     ErasureCodeProfile profile = curmap->get_erasure_code_profile(pool.erasure_code_profile);
     assert(profile.count("plugin"));

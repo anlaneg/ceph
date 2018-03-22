@@ -66,6 +66,7 @@ typedef uint32_t osflagbits_t;
 const int SKIP_JOURNAL_REPLAY = 1 << 0;
 const int SKIP_MOUNT_OMAP = 1 << 1;
 
+//向上抽象各store
 class ObjectStore {
 protected:
   string path;//指出数据存放的位置

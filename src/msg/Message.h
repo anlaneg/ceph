@@ -178,7 +178,9 @@
 #define MSG_MON_HEALTH            0x601
 
 // *** Message::encode() crcflags bits ***
+//标记消息数据需要进行CRC校验
 #define MSG_CRC_DATA           (1 << 0)
+//标记消息需要进行crc校验
 #define MSG_CRC_HEADER         (1 << 1)
 #define MSG_CRC_ALL            (MSG_CRC_DATA | MSG_CRC_HEADER)
 
@@ -243,6 +245,7 @@ protected:
    * its endpoints */
   utime_t dispatch_stamp;
   /* throttle_stamp is the point at which we got throttle */
+  //消息被管制的时间（有机制会卡住）
   utime_t throttle_stamp;
   /* time at which message was fully read */
   utime_t recv_complete_stamp;
@@ -444,7 +447,9 @@ public:
   uint64_t get_tid() const { return header.tid; }
   void set_tid(uint64_t t) { header.tid = t; }
 
+  //获取消息序号
   uint64_t get_seq() const { return header.seq; }
+  //设置消息序号
   void set_seq(uint64_t s) { header.seq = s; }
 
   unsigned get_priority() const { return header.priority; }

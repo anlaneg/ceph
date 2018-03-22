@@ -245,7 +245,6 @@ struct PGPool {
 /** PG - Replica Placement Group
  *
  */
-
 class PG : public DoutPrefixProvider {
 public:
   // -- members --
@@ -545,6 +544,7 @@ protected:
   SnapMapper snap_mapper;
   bool eio_errors_to_process = false;
 
+  //返回PG对应的后端（当前后端有ReplicatedBackend，ECBackend两种）
   virtual PGBackend *get_pgbackend() = 0;
   virtual const PGBackend* get_pgbackend() const = 0;
 
