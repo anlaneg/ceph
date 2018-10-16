@@ -4,7 +4,7 @@ Dashboard Developer Documentation
 Frontend Development
 --------------------
 
-Before you can start the dashboard from within a development environment,  you
+Before you can start the dashboard from within a development environment, you
 will need to generate the frontend code and either use a compiled and running
 Ceph cluster (e.g. started by ``vstart.sh``) or the standalone development web
 server.
@@ -15,8 +15,8 @@ The build process is based on `Node.js <https://nodejs.org/>`_ and requires the
 Prerequisites
 ~~~~~~~~~~~~~
 
- * Node 6.9.0 or higher
- * NPM 3 or higher
+ * Node 8.9.0 or higher
+ * NPM 5.7.0 or higher
 
 nodeenv:
   During Ceph's build we create a virtualenv with ``node`` and ``npm``
@@ -45,7 +45,7 @@ Setting up a Development Server
 
 Create the ``proxy.conf.json`` file based on ``proxy.conf.json.sample``.
 
-Run ``npm start -- --proxy-config proxy.conf.json`` for a dev server.
+Run ``npm start`` for a dev server.
 Navigate to ``http://localhost:4200/``. The app will automatically
 reload if you change any of the source files.
 
@@ -61,19 +61,69 @@ Build the Project
 
 Run ``npm run build`` to build the project. The build artifacts will be
 stored in the ``dist/`` directory. Use the ``-prod`` flag for a
-production build. Navigate to ``http://localhost:8080``.
+production build. Navigate to ``https://localhost:8443``.
+
+Code linting and formatting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We use the following tools to lint and format the code in all our TS, SCSS and
+HTML files:
+
+- `codelyzer <http://codelyzer.com/>`_
+- `html-linter <https://github.com/chinchiheather/html-linter>`_
+- `Prettier <https://prettier.io/>`_
+- `TSLint <https://palantir.github.io/tslint/>`_
+
+We added 2 npm scripts to help run these tools:
+
+- ``npm run lint``, will check frontend files against all linters
+- ``npm run fix``, will try to fix all the detected linting errors
 
 Running Unit Tests
 ~~~~~~~~~~~~~~~~~~
 
-Run ``npm run test`` to execute the unit tests via `Karma
-<https://karma-runner.github.io>`_.
+Create ``unit-test-configuration.ts`` file based on
+``unit-test-configuration.ts.sample`` in directory
+``src/pybind/mgr/dashboard/frontend/src``.
+
+Run ``npm run test`` to execute the unit tests via `Jest
+<https://facebook.github.io/jest/>`_.
+
+If you get errors on all tests, it could be because `Jest
+<https://facebook.github.io/jest/>`_ or something else was updated.
+There are a few ways how you can try to resolve this:
+
+- Remove all modules with ``rm -rf dist node_modules`` and run ``npm install``
+  again in order to reinstall them
+- Clear the cache of jest by running ``npx jest --clearCache``
 
 Running End-to-End Tests
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-Run ``npm run e2e`` to execute the end-to-end tests via
-`Protractor <http://www.protractortest.org/>`__.
+We use `Protractor <http://www.protractortest.org/>`__ to run our frontend e2e
+tests.
+
+Our ``run-frontend-e2e-tests.sh`` script will check if Chrome or Docker is
+installed and run the tests if either is found.
+
+Start all frontend e2e tests by running::
+
+  $ ./run-frontend-e2e-tests.sh
+
+Device:
+  You can force the script to use a specific device with the ``-d`` flag::
+
+    $ ./run-frontend-e2e-tests.sh -d <chrome|docker>
+
+Remote:
+  If you want to run the tests outside the ceph environment, you will need to
+  manually define the dashboard url using ``-r``::
+
+    $ ./run-frontend-e2e-tests.sh -r <DASHBOARD_URL>
+
+Note:
+  When using docker, as your device, you might need to run the script with sudo
+  permissions.
 
 Further Help
 ~~~~~~~~~~~~
@@ -120,6 +170,25 @@ Example:
     import { Credentials } from '../../../shared/models/credentials.model';
     import { HostService } from './services/host.service';
 
+Frontend components
+~~~~~~~~~~~~~~~~~~~
+
+There are several components that can be reused on different pages.
+This components are declared on the components module:
+`src/pybind/mgr/dashboard/frontend/src/app/shared/components`.
+
+Helper
+......
+
+This component should be used to provide additional information to the user.
+
+Example:
+
+.. code:: html
+
+    <cd-helper>
+      Some <strong>helper</strong> html text
+    </cd-helper>
 
 Backend Development
 -------------------
@@ -193,7 +262,7 @@ Start all dashboard tests by running::
 
 Or, start one or multiple specific tests by specifying the test name::
 
-  $ ./run-backend-api-tests.sh tasks.mgr.dashboard.test_pool.DashboardTest
+  $ ./run-backend-api-tests.sh tasks.mgr.dashboard.test_pool.PoolTest
 
 Or, ``source`` the script and run the tests manually::
 
@@ -204,48 +273,206 @@ Or, ``source`` the script and run the tests manually::
 How to add a new controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you want to add a new endpoint to the backend, you just need to add a
-class derived from ``BaseController`` decorated with ``ApiController`` in a
-Python file located under the ``controllers`` directory. The Dashboard module
-will automatically load your new controller upon start.
+A controller is a Python class that extends from the ``BaseController`` class
+and is decorated with either the ``@Controller``, ``@ApiController`` or
+``@UiApiController`` decorators. The Python class must be stored inside a Python
+file located under the ``controllers`` directory. The Dashboard module will
+automatically load your new controller upon start.
 
-For example create a file ``ping2.py`` under ``controllers`` directory with the
-following code::
+``@ApiController`` and ``@UiApiController`` are both specializations of the
+``@Controller`` decorator.
 
-  import cherrypy
-  from ..tools import ApiController, BaseController
+The ``@ApiController`` should be used for controllers that provide an API-like
+REST interface and the ``@UiApiController`` should be used for endpoints consumed
+by the UI but that are not part of the 'public' API. For any other kinds of
+controllers the ``@Controller`` decorator should be used.
 
-  @ApiController('ping2')
-  class Ping2(BaseController):
-    @cherrypy.expose
-    def default(self, *args):
-      return "Hello"
+A controller has a URL prefix path associated that is specified in the
+controller decorator, and all endpoints exposed by the controller will share
+the same URL prefix path.
 
-Every path given in the ``ApiController`` decorator will automatically be
-prefixed with ``api``. After reloading the Dashboard module you can access the
-above mentioned controller by pointing your browser to
-http://mgr_hostname:8080/api/ping2.
+A controller's endpoint is exposed by implementing a method on the controller
+class decorated with the ``@Endpoint`` decorator.
 
-It is also possible to have nested controllers. The ``RgwController`` uses
-this technique to make the daemons available through the URL
-http://mgr_hostname:8080/api/rgw/daemon::
+For example create a file ``ping.py`` under ``controllers`` directory with the
+following code:
 
-  @ApiController('rgw')
-  @AuthRequired()
-  class Rgw(RESTController):
-    pass
+.. code-block:: python
+
+  from ..tools import Controller, ApiController, UiApiController, BaseController, Endpoint
+
+  @Controller('/ping')
+  class Ping(BaseController):
+    @Endpoint()
+    def hello(self):
+      return {'msg': "Hello"}
+
+  @ApiController('/ping')
+  class ApiPing(BaseController):
+    @Endpoint()
+    def hello(self):
+      return {'msg': "Hello"}
+
+  @UiApiController('/ping')
+  class UiApiPing(BaseController):
+    @Endpoint()
+    def hello(self):
+      return {'msg': "Hello"}
+
+The ``hello`` endpoint of the ``Ping`` controller can be reached by the
+following URL: https://mgr_hostname:8443/ping/hello using HTTP GET requests.
+As you can see the controller URL path ``/ping`` is concatenated to the
+method name ``hello`` to generate the endpoint's URL.
+
+In the case of the ``ApiPing`` controller, the ``hello`` endpoint can be
+reached by the following URL: https://mgr_hostname:8443/api/ping/hello using a
+HTTP GET request.
+The API controller URL path ``/ping`` is prefixed by the ``/api`` path and then
+concatenated to the method name ``hello`` to generate the endpoint's URL.
+Internally, the ``@ApiController`` is actually calling the ``@Controller``
+decorator by passing an additional decorator parameter called ``base_url``::
+
+  @ApiController('/ping') <=> @Controller('/ping', base_url="/api")
+
+``UiApiPing`` works in a similar way than the ``ApiPing``, but the URL will be
+prefixed by ``/ui-api``: https://mgr_hostname:8443/ui-api/ping/hello. ``UiApiPing`` is
+also a ``@Controller`` extension::
+
+  @UiApiController('/ping') <=> @Controller('/ping', base_url="/ui-api")
+
+The ``@Endpoint`` decorator also supports many parameters to customize the
+endpoint:
+
+* ``method="GET"``: the HTTP method allowed to access this endpoint.
+* ``path="/<method_name>"``: the URL path of the endpoint, excluding the
+  controller URL path prefix.
+* ``path_params=[]``: list of method parameter names that correspond to URL
+  path parameters. Can only be used when ``method in ['POST', 'PUT']``.
+* ``query_params=[]``: list of method parameter names that correspond to URL
+  query parameters.
+* ``json_response=True``: indicates if the endpoint response should be
+  serialized in JSON format.
+* ``proxy=False``: indicates if the endpoint should be used as a proxy.
+
+An endpoint method may have parameters declared. Depending on the HTTP method
+defined for the endpoint the method parameters might be considered either
+path parameters, query parameters, or body parameters.
+
+For ``GET`` and ``DELETE`` methods, the method's non-optional parameters are
+considered path parameters by default. Optional parameters are considered
+query parameters. By specifying the ``query_parameters`` in the endpoint
+decorator it is possible to make a non-optional parameter to be a query
+parameter.
+
+For ``POST`` and ``PUT`` methods, all method parameters are considered
+body parameters by default. To override this default, one can use the
+``path_params`` and ``query_params`` to specify which method parameters are
+path and query parameters respectivelly.
+Body parameters are decoded from the request body, either from a form format, or
+from a dictionary in JSON format.
+
+Let's use an example to better understand the possible ways to customize an
+endpoint:
+
+.. code-block:: python
+
+  from ..tools import Controller, BaseController, Endpoint
+
+  @Controller('/ping')
+  class Ping(BaseController):
+
+    # URL: /ping/{key}?opt1=...&opt2=...
+    @Endpoint(path="/", query_params=['opt1'])
+    def index(self, key, opt1, opt2=None):
+      # ...
+
+    # URL: /ping/{key}?opt1=...&opt2=...
+    @Endpoint(query_params=['opt1'])
+    def __call__(self, key, opt1, opt2=None):
+      # ...
+
+    # URL: /ping/post/{key1}/{key2}
+    @Endpoint('POST', path_params=['key1', 'key2'])
+    def post(self, key1, key2, data1, data2=None):
+      # ...
 
 
-  @ApiController('rgw/daemon')
-  @AuthRequired()
-  class RgwDaemon(RESTController):
+In the above example we see how the ``path`` option can be used to override the
+generated endpoint URL in order to not use the method's name in the URL. In the
+``index`` method we set the ``path`` to ``"/"`` to generate an endpoint that is
+accessible by the root URL of the controller.
 
-    def list(self):
-      pass
+An alternative approach to generate an endpoint that is accessible through just
+the controller's path URL is by using the ``__call__`` method, as we show in
+the above example.
+
+From the third method you can see that the path parameters are collected from
+the URL by parsing the list of values separated by slashes ``/`` that come
+after the URL path ``/ping`` for ``index`` method case, and ``/ping/post`` for
+the ``post`` method case.
+
+Defining path parameters in endpoints's URLs using python methods's parameters
+is very easy but it is still a bit strict with respect to the position of these
+parameters in the URL structure.
+Sometimes we may want to explicitly define a URL scheme that
+contains path parameters mixed with static parts of the URL.
+Our controller infrastructure also supports the declaration of URL paths with
+explicit path parameters at both the controller level and method level.
+
+Consider the following example:
+
+.. code-block:: python
+
+  from ..tools import Controller, BaseController, Endpoint
+
+  @Controller('/ping/{node}/stats')
+  class Ping(BaseController):
+
+    # URL: /ping/{node}/stats/{date}/latency?unit=...
+    @Endpoint(path="/{date}/latency")
+    def latency(self, node, date, unit="ms"):
+      # ...
+
+In this example we explicitly declare a path parameter ``{node}`` in the
+controller URL path, and a path parameter ``{date}`` in the ``latency``
+method. The endpoint for the ``latency`` method is then accessible through
+the URL: https://mgr_hostname:8443/ping/{node}/stats/{date}/latency .
+
+For a full set of examples on how to use the ``@Endpoint``
+decorator please check the unit test file: ``tests/test_controllers.py``.
+There you will find many examples of how to customize endpoint methods.
 
 
-Note that paths must be unique and that a path like ``rgw/daemon`` has to have
-a parent ``rgw``. Otherwise it won't work.
+Implementing Proxy Controller
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes you might need to relay some requests from the Dashboard frontend
+directly to an external service.
+For that purpose we provide a decorator called ``@Proxy``.
+(As a concrete example, check the ``controllers/rgw.py`` file where we
+implemented an RGW Admin Ops proxy.)
+
+
+The ``@Proxy`` decorator is a wrapper of the ``@Endpoint`` decorator that
+already customizes the endpoint for working as a proxy.
+A proxy endpoint works by capturing the URL path that follows the controller
+URL prefix path, and does not do any decoding of the request body.
+
+Example:
+
+.. code-block:: python
+
+  from ..tools import Controller, BaseController, Proxy
+
+  @Controller('/foo/proxy')
+  class FooServiceProxy(BaseController):
+
+    @Proxy()
+    def proxy(self, path, **params):
+      # if requested URL is "/foo/proxy/access/service?opt=1"
+      # then path is "access/service" and params is {'opt': '1'}
+      # ...
+
 
 How does the RESTController work?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -259,13 +486,15 @@ and unifies the work with collections. A collection is just an array of objects
 with a specific type. ``RESTController`` enables some default mappings of
 request types and given parameters to specific method names. This may sound
 complicated at first, but it's fairly easy. Lets have look at the following
-example::
+example:
+
+.. code-block:: python
 
   import cherrypy
   from ..tools import ApiController, RESTController
 
-  @ApiController('ping2')
-  class Ping2(RESTController):
+  @ApiController('ping')
+  class Ping(RESTController):
     def list(self):
       return {"msg": "Hello"}
 
@@ -273,7 +502,7 @@ example::
       return self.objects[id]
 
 In this case, the ``list`` method is automatically used for all requests to
-``api/ping2`` where no additional argument is given and where the request type
+``api/ping`` where no additional argument is given and where the request type
 is ``GET``. If the request is given an additional argument, the ID in our
 case, it won't map to ``list`` anymore but to ``get`` and return the element
 with the given ID (assuming that ``self.objects`` has been filled before). The
@@ -286,8 +515,6 @@ same applies to other request types:
 +--------------+------------+----------------+-------------+
 | PUT          | No         | bulk_set       | 200         |
 +--------------+------------+----------------+-------------+
-| PATCH        | No         | bulk_set       | 200         |
-+--------------+------------+----------------+-------------+
 | POST         | No         | create         | 201         |
 +--------------+------------+----------------+-------------+
 | DELETE       | No         | bulk_delete    | 204         |
@@ -296,30 +523,28 @@ same applies to other request types:
 +--------------+------------+----------------+-------------+
 | PUT          | Yes        | set            | 200         |
 +--------------+------------+----------------+-------------+
-| PATCH        | Yes        | set            | 200         |
-+--------------+------------+----------------+-------------+
 | DELETE       | Yes        | delete         | 204         |
 +--------------+------------+----------------+-------------+
 
 How to restrict access to a controller?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you require that only authenticated users can access you controller, just
-add the ``AuthRequired`` decorator to your controller class.
+All controllers require authentication by default.
+If you require that the controller can be accessed without authentication,
+then you can add the parameter ``secure=False`` to the controller decorator.
 
-Example::
+Example:
+
+.. code-block:: python
 
   import cherrypy
-  from ..tools import ApiController, AuthRequired, RESTController
+  from . import ApiController, RESTController
 
 
-  @ApiController('ping2')
-  @AuthRequired()
-  class Ping2(RESTController):
+  @ApiController('ping', secure=False)
+  class Ping(RESTController):
     def list(self):
       return {"msg": "Hello"}
-
-Now only authenticated users will be able to "ping" your controller.
 
 
 How to access the manager module instance from a controller?
@@ -328,7 +553,9 @@ How to access the manager module instance from a controller?
 We provide the manager module instance as a global variable that can be
 imported in any module. We also provide a logger instance in the same way.
 
-Example::
+Example:
+
+.. code-block:: python
 
   import cherrypy
   from .. import logger, mgr
@@ -348,29 +575,31 @@ How to write a unit test for a controller?
 We provide a test helper class called ``ControllerTestCase`` to easily create
 unit tests for your controller.
 
-If we want to write a unit test for the above ``Ping2`` controller, create a
-``test_ping2.py`` file under the ``tests`` directory with the following code::
+If we want to write a unit test for the above ``Ping`` controller, create a
+``test_ping.py`` file under the ``tests`` directory with the following code:
+
+.. code-block:: python
 
   from .helper import ControllerTestCase
-  from .controllers.ping2 import Ping2
+  from .controllers.ping import Ping
 
 
-  class Ping2Test(ControllerTestCase):
+  class PingTest(ControllerTestCase):
       @classmethod
       def setup_test(cls):
-          Ping2._cp_config['tools.authentica.on'] = False
+          Ping._cp_config['tools.authentication.on'] = False
+          cls.setup_controllers([Ping])
 
-      def test_ping2(self):
-          self._get("/api/ping2")
+      def test_ping(self):
+          self._get("/api/ping")
           self.assertStatus(200)
           self.assertJsonBody({'msg': 'Hello'})
 
-The ``ControllerTestCase`` class will call the dashboard module code that loads
-the controllers and initializes the CherryPy webserver. Then it will call the
-``setup_test()`` class method to execute additional instructions that each test
-case needs to add to the test.
-In the example above we use the ``setup_test()`` method to disable the
-authentication handler for the ``Ping2`` controller.
+The ``ControllerTestCase`` class starts by initializing a CherryPy webserver.
+Then it will call the ``setup_test()`` class method where we can explicitly
+load the controllers that we want to test. In the above example we are only
+loading the ``Ping`` controller. We can also disable authentication of a
+controller at this stage, as depicted in the example.
 
 
 How to listen for manager notifications in a controller?
@@ -386,7 +615,9 @@ For this reason we provide a notification queue that controllers can register
 themselves with to receive cluster notifications.
 
 The example below represents a controller that implements a very simple live
-log viewer page::
+log viewer page:
+
+.. code-block:: python
 
   from __future__ import absolute_import
 
@@ -442,7 +673,9 @@ How to write a unit test when a controller accesses a Ceph module?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Consider the following example that implements a controller that retrieves the
-list of RBD images of the ``rbd`` pool::
+list of RBD images of the ``rbd`` pool:
+
+.. code-block:: python
 
   import rbd
   from .. import mgr
@@ -461,7 +694,9 @@ list of RBD images of the ``rbd`` pool::
 In the example above, we want to mock the return value of the ``rbd.list``
 function, so that we can test the JSON response of the controller.
 
-The unit test code will look like the following::
+The unit test code will look like the following:
+
+.. code-block:: python
 
   import mock
   from .helper import ControllerTestCase
@@ -496,7 +731,7 @@ The value of the class attribute is a pair composed by the default value for tha
 setting, and the python type of the value.
 
 By declaring the ``ADMIN_EMAIL_ADDRESS`` class attribute, when you restart the
-dashboard plugin, you will atomatically gain two additional CLI commands to
+dashboard plugin, you will automatically gain two additional CLI commands to
 get and set that setting::
 
   $ ceph dashboard get-admin-email-address
@@ -504,7 +739,9 @@ get and set that setting::
 
 To access, or modify the config setting value from your Python code, either
 inside a controller or anywhere else, you just need to import the ``Settings``
-class and access it like this::
+class and access it like this:
+
+.. code-block:: python
 
   from settings import Settings
 
@@ -517,4 +754,447 @@ class and access it like this::
 The settings management implementation will make sure that if you change a
 setting value from the Python code you will see that change when accessing
 that setting from the CLI and vice-versa.
+
+
+How to run a controller read-write operation asynchronously?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some controllers might need to execute operations that alter the state of the
+Ceph cluster. These operations might take some time to execute and to maintain
+a good user experience in the Web UI, we need to run those operations
+asynchronously and return immediately to frontend some information that the
+operations are running in the background.
+
+To help in the development of the above scenario we added the support for
+asynchronous tasks. To trigger the execution of an asynchronous task we must
+use the following class method of the ``TaskManager`` class::
+
+  from ..tools import TaskManager
+  # ...
+  TaskManager.run(name, metadata, func, args, kwargs)
+
+* ``name`` is a string that can be used to group tasks. For instance
+  for RBD image creation tasks we could specify ``"rbd/create"`` as the
+  name, or similarly ``"rbd/remove"`` for RBD image removal tasks.
+
+* ``metadata`` is a dictionary where we can store key-value pairs that
+  characterize the task. For instance, when creating a task for creating
+  RBD images we can specify the metadata argument as
+  ``{'pool_name': "rbd", image_name': "test-img"}``.
+
+* ``func`` is the python function that implements the operation code, which
+  will be executed asynchronously.
+
+* ``args`` and ``kwargs`` are the positional and named arguments that will be
+  passed to ``func`` when the task manager starts its execution.
+
+The ``TaskManager.run`` method triggers the asynchronous execution of function
+``func`` and returns a ``Task`` object.
+The ``Task`` provides the public method ``Task.wait(timeout)``, which can be
+used to wait for the task to complete up to a timeout defined in seconds and
+provided as an argument. If no argument is provided the ``wait`` method
+blocks until the task is finished.
+
+The ``Task.wait`` is very useful for tasks that usually are fast to execute but
+that sometimes may take a long time to run.
+The return value of the ``Task.wait`` method is a pair ``(state, value)``
+where ``state`` is a string with following possible values:
+
+* ``VALUE_DONE = "done"``
+* ``VALUE_EXECUTING = "executing"``
+
+The ``value`` will store the result of the execution of function ``func`` if
+``state == VALUE_DONE``. If ``state == VALUE_EXECUTING`` then
+``value == None``.
+
+The pair ``(name, metadata)`` should unequivocally identify the task being
+run, which means that if you try to trigger a new task that matches the same
+``(name, metadata)`` pair of the currently running task, then the new task
+is not created and you get the task object of the current running task.
+
+For instance, consider the following example:
+
+.. code-block:: python
+
+  task1 = TaskManager.run("dummy/task", {'attr': 2}, func)
+  task2 = TaskManager.run("dummy/task", {'attr': 2}, func)
+
+If the second call to ``TaskManager.run`` executes while the first task is
+still executing then it will return the same task object:
+``assert task1 == task2``.
+
+
+How to get the list of executing and finished asynchronous tasks?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The list of executing and finished tasks is included in the ``Summary``
+controller, which is already polled every 5 seconds by the dashboard frontend.
+But we also provide a dedicated controller to get the same list of executing
+and finished tasks.
+
+The ``Task`` controller exposes the ``/api/task`` endpoint that returns the
+list of executing and finished tasks. This endpoint accepts the ``name``
+parameter that accepts a glob expression as its value.
+For instance, an HTTP GET request of the URL ``/api/task?name=rbd/*``
+will return all executing and finished tasks which name starts with ``rbd/``.
+
+To prevent the finished tasks list from growing unbounded, we will always
+maintain the 10 most recent finished tasks, and the remaining older finished
+tasks will be removed when reaching a TTL of 1 minute. The TTL is calculated
+using the timestamp when the task finished its execution. After a minute, when
+the finished task information is retrieved, either by the summary controller or
+by the task controller, it is automatically deleted from the list and it will
+not be included in further task queries.
+
+Each executing task is represented by the following dictionary::
+
+  {
+    'name': "name",  # str
+    'metadata': { },  # dict
+    'begin_time': "2018-03-14T15:31:38.423605Z",  # str (ISO 8601 format)
+    'progress': 0  # int (percentage)
+  }
+
+Each finished task is represented by the following dictionary::
+
+  {
+    'name': "name",  # str
+    'metadata': { },  # dict
+    'begin_time': "2018-03-14T15:31:38.423605Z",  # str (ISO 8601 format)
+    'end_time': "2018-03-14T15:31:39.423605Z",  # str (ISO 8601 format)
+    'duration': 0.0,  # float
+    'progress': 0  # int (percentage)
+    'success': True,  # bool
+    'ret_value': None,  # object, populated only if 'success' == True
+    'exception': None,  # str, populated only if 'success' == False
+  }
+
+
+How to use asynchronous APIs with asynchronous tasks?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``TaskManager.run`` method as described in a previous section, is well
+suited for calling blocking functions, as it runs the function inside a newly
+created thread. But sometimes we want to call some function of an API that is
+already asynchronous by nature.
+
+For these cases we want to avoid creating a new thread for just running a
+non-blocking function, and want to leverage the asynchronous nature of the
+function. The ``TaskManager.run`` is already prepared to be used with
+non-blocking functions by passing an object of the type ``TaskExecutor`` as an
+additional parameter called ``executor``. The full method signature of
+``TaskManager.run``::
+
+  TaskManager.run(name, metadata, func, args=None, kwargs=None, executor=None)
+
+
+The ``TaskExecutor`` class is responsible for code that executes a given task
+function, and defines three methods that can be overridden by
+subclasses::
+
+  def init(self, task)
+  def start(self)
+  def finish(self, ret_value, exception)
+
+The ``init`` method is called before the running the task function, and
+receives the task object (of class ``Task``).
+
+The ``start`` method runs the task function. The default implementation is to
+run the task function in the current thread context.
+
+The ``finish`` method should be called when the task function finishes with
+either the ``ret_value`` populated with the result of the execution, or with
+an exception object in the case that execution raised an exception.
+
+To leverage the asynchronous nature of a non-blocking function, the developer
+should implement a custom executor by creating a subclass of the
+``TaskExecutor`` class, and provide an instance of the custom executor class
+as the ``executor`` parameter of the ``TaskManager.run``.
+
+To better understand the expressive power of executors, we write a full example
+of use a custom executor to execute the ``MgrModule.send_command`` asynchronous
+function:
+
+.. code-block:: python
+
+  import json
+  from mgr_module import CommandResult
+  from .. import mgr
+  from ..tools import ApiController, RESTController, NotificationQueue, \
+                      TaskManager, TaskExecutor
+
+
+  class SendCommandExecutor(TaskExecutor):
+      def __init__(self):
+          super(SendCommandExecutor, self).__init__()
+          self.tag = None
+          self.result = None
+
+      def init(self, task):
+          super(SendCommandExecutor, self).init(task)
+
+          # we need to listen for 'command' events to know when the command
+          # finishes
+          NotificationQueue.register(self._handler, 'command')
+
+          # store the CommandResult object to retrieve the results
+          self.result = self.task.fn_args[0]
+          if len(self.task.fn_args) > 4:
+              # the user specified a tag for the command, so let's use it
+              self.tag = self.task.fn_args[4]
+          else:
+              # let's generate a unique tag for the command
+              self.tag = 'send_command_{}'.format(id(self))
+              self.task.fn_args.append(self.tag)
+
+      def _handler(self, data):
+          if data == self.tag:
+              # the command has finished, notifying the task with the result
+              self.finish(self.result.wait(), None)
+              # deregister listener to avoid memory leaks
+              NotificationQueue.deregister(self._handler, 'command')
+
+
+  @ApiController('test')
+  class Test(RESTController):
+
+      def _run_task(self, osd_id):
+          task = TaskManager.run("test/task", {}, mgr.send_command,
+                                 [CommandResult(''), 'osd', osd_id,
+                                  json.dumps({'prefix': 'perf histogram dump'})],
+                                 executor=SendCommandExecutor())
+          return task.wait(1.0)
+
+      def get(self, osd_id):
+          status, value = self._run_task(osd_id)
+          return {'status': status, 'value': value}
+
+
+The above ``SendCommandExecutor`` executor class can be used for any call to
+``MgrModule.send_command``. This means that we should need just one custom
+executor class implementation for each non-blocking API that we use in our
+controllers.
+
+The default executor, used when no executor object is passed to
+``TaskManager.run``, is the ``ThreadedExecutor``. You can check its
+implementation in the ``tools.py`` file.
+
+
+How to update the execution progress of an asynchronous task?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The asynchronous tasks infrastructure provides support for updating the
+execution progress of an executing task.
+The progress can be updated from within the code the task is executing, which
+usually is the place where we have the progress information available.
+
+To update the progress from within the task code, the ``TaskManager`` class
+provides a method to retrieve the current task object::
+
+  TaskManager.current_task()
+
+The above method is only available when using the default executor
+``ThreadedExecutor`` for executing the task.
+The ``current_task()`` method returns the current ``Task`` object. The
+``Task`` object provides two public methods to update the execution progress
+value: the ``set_progress(percentage)``, and the ``inc_progress(delta)``
+methods.
+
+The ``set_progress`` method receives as argument an integer value representing
+the absolute percentage that we want to set to the task.
+
+The ``inc_progress`` method receives as argument an integer value representing
+the delta we want to increment to the current execution progress percentage.
+
+Take the following example of a controller that triggers a new task and
+updates its progress:
+
+.. code-block:: python
+
+  from __future__ import absolute_import
+  import random
+  import time
+  import cherrypy
+  from ..tools import TaskManager, ApiController, BaseController
+
+
+  @ApiController('dummy_task')
+  class DummyTask(BaseController):
+      def _dummy(self):
+          top = random.randrange(100)
+          for i in range(top):
+              TaskManager.current_task().set_progress(i*100/top)
+              # or TaskManager.current_task().inc_progress(100/top)
+              time.sleep(1)
+          return "finished"
+
+      @cherrypy.expose
+      @cherrypy.tools.json_out()
+      def default(self):
+          task = TaskManager.run("dummy/task", {}, self._dummy)
+          return task.wait(5)  # wait for five seconds
+
+
+How to deal with asynchronous tasks in the front-end?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All executing and most recently finished asynchronous tasks are displayed on
+"Background-Tasks" and if finished on "Recent-Notifications" in the menu bar.
+For each task a operation name for three states (running, success and failure),
+a function that tells who is involved and error descriptions, if any, have to
+be provided. This can be  achieved by appending
+``TaskManagerMessageService.messages``.  This has to be done to achieve
+consistency among all tasks and states.
+
+Operation Object
+  Ensures consistency among all tasks. It consists of three verbs for each
+  different state f.e.
+  ``{running: 'Creating', failure: 'create', success: 'Created'}``.
+
+#. Put running operations in present participle f.e. ``'Updating'``.
+#. Failed messages always start with ``'Failed to '`` and should be continued
+   with the operation in present tense f.e. ``'update'``.
+#. Put successful operations in past tense f.e. ``'Updated'``.
+
+Involves Function
+  Ensures consistency among all messages of a task, it resembles who's
+  involved by the operation. It's a function that returns a string which
+  takes the metadata from the task to return f.e.
+  ``"RBD 'somePool/someImage'"``.
+
+Both combined create the following messages:
+
+* Failure => ``"Failed to create RBD 'somePool/someImage'"``
+* Running => ``"Creating RBD 'somePool/someImage'"``
+* Success => ``"Created RBD 'somePool/someImage'"``
+
+For automatic task handling use ``TaskWrapperService.wrapTaskAroundCall``.
+
+If for some reason ``wrapTaskAroundCall`` is not working for you,
+you have to subscribe to your asynchronous task manually through
+``TaskManagerService.subscribe``, and provide it with a callback,
+in case of a success to notify the user. A notification can
+be triggered with ``NotificationService.notifyTask``. It will use
+``TaskManagerMessageService.messages`` to display a message based on the state
+of a task.
+
+Notifications of API errors are handled by ``ApiInterceptorService``.
+
+Usage example:
+
+.. code-block:: javascript
+
+  export class TaskManagerMessageService {
+    // ...
+    messages = {
+      // Messages for task 'rbd/create'
+      'rbd/create': new TaskManagerMessage(
+        // Message prefixes
+        ['create', 'Creating', 'Created'],
+        // Message suffix
+        (metadata) => `RBD '${metadata.pool_name}/${metadata.image_name}'`,
+        (metadata) => ({
+          // Error code and description
+          '17': `Name is already used by RBD '${metadata.pool_name}/${
+                 metadata.image_name}'.`
+        })
+      ),
+      // ...
+    };
+    // ...
+  }
+
+  export class RBDFormComponent {
+    // ...
+    createAction() {
+      const request = this.createRequest();
+      // Subscribes to 'call' with submitted 'task' and handles notifications
+      return this.taskWrapper.wrapTaskAroundCall({
+        task: new FinishedTask('rbd/create', {
+          pool_name: request.pool_name,
+          image_name: request.name
+        }),
+        call: this.rbdService.create(request)
+      });
+    }
+    // ...
+  }
+
+Error Handling in Python
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Good error handling is a key requirement in creating a good user experience
+and providing a good API.
+
+Dashboard code should not duplicate C++ code. Thus, if error handling in C++
+is sufficient to provide good feedback, a new wrapper to catch these errors
+is not necessary. On the other hand, input validation is the best place to
+catch errors and generate the best error messages. If required, generate
+errors as soon as possible.
+
+The backend provides few standard ways of returning errors.
+
+First, there is a generic Internal Server Error::
+
+    Status Code: 500
+    {
+        "version": <cherrypy version, e.g. 13.1.0>,
+        "detail": "The server encountered an unexpected condition which prevented it from fulfilling the request.",
+    }
+
+
+For errors generated by the backend, we provide a standard error
+format::
+
+    Status Code: 400
+    {
+        "detail": str(e),     # E.g. "[errno -42] <some error message>"
+        "component": "rbd",   # this can be null to represent a global error code
+        "code": "3",          # Or a error name, e.g. "code": "some_error_key"
+    }
+
+
+In case, the API Endpoints uses @ViewCache to temporarily cache results,
+the error looks like so::
+
+    Status Code 400
+    {
+        "detail": str(e),     # E.g. "[errno -42] <some error message>"
+        "component": "rbd",   # this can be null to represent a global error code
+        "code": "3",          # Or a error name, e.g. "code": "some_error_key"
+        'status': 3,          # Indicating the @ViewCache error status
+    }
+
+In case, the API Endpoints uses a task the error looks like so::
+
+    Status Code 400
+    {
+        "detail": str(e),     # E.g. "[errno -42] <some error message>"
+        "component": "rbd",   # this can be null to represent a global error code
+        "code": "3",          # Or a error name, e.g. "code": "some_error_key"
+        "task": {             # Information about the task itself
+            "name": "taskname",
+            "metadata": {...}
+        }
+    }
+
+
+Our WebUI should show errors generated by the API to the user. Especially
+field-related errors in wizards and dialogs or show non-intrusive notifications.
+
+Handling exceptions in Python should be an exception. In general, we
+should have few exception handlers in our project. Per default, propagate
+errors to the API, as it will take care of all exceptions anyway. In general,
+log the exception by adding ``logger.exception()`` with a description to the
+handler.
+
+We need to distinguish between user errors from internal errors and
+programming errors. Using different exception types will ease the
+task for the API layer and for the user interface:
+
+Standard Python errors, like ``SystemError``, ``ValueError`` or ``KeyError``
+will end up as internal server errors in the API.
+
+In general, do not ``return`` error responses in the REST API. They will be
+returned by the  error handler. Instead, raise the appropriate exception.
 

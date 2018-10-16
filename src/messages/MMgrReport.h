@@ -20,7 +20,7 @@
 #include "msg/Message.h"
 
 #include "common/perf_counters.h"
-#include "osd/OSDHealthMetric.h"
+#include "mgr/DaemonHealthMetric.h"
 
 class PerfCounterType
 {
@@ -52,7 +52,7 @@ public:
     ENCODE_FINISH(bl);
   }
   
-  void decode(bufferlist::iterator &p)
+  void decode(bufferlist::const_iterator &p)
   {
     DECODE_START(3, p);
     decode(path, p);
@@ -70,10 +70,13 @@ public:
 };
 WRITE_CLASS_ENCODER(PerfCounterType)
 
-class MMgrReport : public Message
-{
-  static const int HEAD_VERSION = 6;
-  static const int COMPAT_VERSION = 1;
+class MMgrReport : public MessageInstance<MMgrReport> {
+public:
+  friend factory;
+private:
+
+  static constexpr int HEAD_VERSION = 6;
+  static constexpr int COMPAT_VERSION = 1;
 
 public:
   /**
@@ -98,14 +101,14 @@ public:
   // for service registration
   boost::optional<std::map<std::string,std::string>> daemon_status;
 
-  std::vector<OSDHealthMetric> osd_health_metrics;
+  std::vector<DaemonHealthMetric> daemon_health_metrics;
 
   // encode map<string,map<int32_t,string>> of current config
   bufferlist config_bl;
 
   void decode_payload() override
   {
-    bufferlist::iterator p = payload.begin();
+    auto p = payload.cbegin();
     decode(daemon_name, p);
     decode(declare_types, p);
     decode(packed, p);
@@ -116,7 +119,7 @@ public:
       decode(daemon_status, p);
     }
     if (header.version >= 5) {
-      decode(osd_health_metrics, p);
+      decode(daemon_health_metrics, p);
     }
     if (header.version >= 6) {
       decode(config_bl, p);
@@ -131,7 +134,7 @@ public:
     encode(undeclare_types, payload);
     encode(service_name, payload);
     encode(daemon_status, payload);
-    encode(osd_health_metrics, payload);
+    encode(daemon_health_metrics, payload);
     encode(config_bl, payload);
   }
 
@@ -150,14 +153,14 @@ public:
     if (daemon_status) {
       out << " status=" << daemon_status->size();
     }
-    if (!osd_health_metrics.empty()) {
-      out << " osd_metrics=" << osd_health_metrics.size();
+    if (!daemon_health_metrics.empty()) {
+      out << " daemon_metrics=" << daemon_health_metrics.size();
     }
     out << ")";
   }
 
   MMgrReport()
-    : Message(MSG_MGR_REPORT, HEAD_VERSION, COMPAT_VERSION)
+    : MessageInstance(MSG_MGR_REPORT, HEAD_VERSION, COMPAT_VERSION)
   {}
 };
 

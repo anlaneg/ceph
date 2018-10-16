@@ -35,6 +35,7 @@ enum {
   l_bluefs_files_written_sst,
   l_bluefs_bytes_written_wal,
   l_bluefs_bytes_written_sst,
+  l_bluefs_bytes_written_slow,
   l_bluefs_last,
 };
 
@@ -76,10 +77,10 @@ public:
 	num_reading(0)
       {}
     ~File() override {
-      assert(num_readers.load() == 0);
-      assert(num_writers.load() == 0);
-      assert(num_reading.load() == 0);
-      assert(!locked);
+      ceph_assert(num_readers.load() == 0);
+      ceph_assert(num_writers.load() == 0);
+      ceph_assert(num_reading.load() == 0);
+      ceph_assert(!locked);
     }
 
     friend void intrusive_ptr_add_ref(File *f) {
@@ -127,14 +128,16 @@ public:
 
     std::mutex lock;
     std::array<IOContext*,MAX_BDEV> iocv; ///< for each bdev //为每种bdev创建IO上下文
+    std::array<bool, MAX_BDEV> dirty_devs;
 
     FileWriter(FileRef f)
       : file(f),
 	pos(0),
 	buffer_appender(buffer.get_page_aligned_appender(
-			  g_conf->bluefs_alloc_size / CEPH_PAGE_SIZE)) {
+			  g_conf()->bluefs_alloc_size / CEPH_PAGE_SIZE)) {
       ++file->num_writers;
       iocv.fill(nullptr);
+      dirty_devs.fill(false);
     }
     // NOTE: caller must call BlueFS::close_writer()
     ~FileWriter() {
@@ -294,6 +297,7 @@ private:
 
   void _flush_bdev_safely(FileWriter *h);
   void flush_bdev();  // this is safe to call without a lock
+  void flush_bdev(std::array<bool, MAX_BDEV>& dirty_bdevs);  // this is safe to call without a lock
 
   int _preallocate(FileRef f, uint64_t off, uint64_t len);
   int _truncate(FileWriter *h, uint64_t off);
@@ -338,16 +342,13 @@ public:
   int mount();
   void umount();
   
-  int log_dump(
-    CephContext *cct,
-    const string& path,
-    const vector<string>& devs);
+  int log_dump();
 
   void collect_metadata(map<string,string> *pm, unsigned skip_bdev_id);
   void get_devices(set<string> *ls);
   int fsck();
 
-  uint64_t get_fs_usage();
+  uint64_t get_used();
   uint64_t get_total(unsigned id);
   uint64_t get_free(unsigned id);
   void get_usage(vector<pair<uint64_t,uint64_t>> *usage); // [<free,total> ...]

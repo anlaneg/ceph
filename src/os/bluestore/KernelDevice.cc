@@ -69,13 +69,13 @@ int KernelDevice::open(const string& p)
   int r = 0;
   dout(1) << __func__ << " path " << path << dendl;
 
-  fd_direct = ::open(path.c_str(), O_RDWR | O_DIRECT);
+  fd_direct = ::open(path.c_str(), O_RDWR | O_DIRECT | O_CLOEXEC);
   if (fd_direct < 0) {
     r = -errno;
     derr << __func__ << " open got: " << cpp_strerror(r) << dendl;
     return r;
   }
-  fd_buffered = ::open(path.c_str(), O_RDWR);
+  fd_buffered = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
   if (fd_buffered < 0) {
     r = -errno;
     derr << __func__ << " open got: " << cpp_strerror(r) << dendl;
@@ -84,7 +84,7 @@ int KernelDevice::open(const string& p)
   dio = true;
   aio = cct->_conf->bdev_aio;
   if (!aio) {//当前不支持非aio情况
-    assert(0 == "non-aio not supported");
+    ceph_abort_msg("non-aio not supported");
   }
 
   // disable readahead as it will wreak havoc on our mix of
@@ -144,6 +144,8 @@ int KernelDevice::open(const string& p)
       dout(20) << __func__ << " devname " << devname << dendl;
       rotational = block_device_is_rotational(devname);
       this->devname = devname;
+
+      _detect_vdo();
     }
   }
 
@@ -159,9 +161,9 @@ int KernelDevice::open(const string& p)
   dout(1) << __func__
 	  << " size " << size
 	  << " (0x" << std::hex << size << std::dec << ", "
-	  << pretty_si_t(size) << "B)"
+	  << byte_u_t(size) << ")"
 	  << " block_size " << block_size
-	  << " (" << pretty_si_t(block_size) << "B)"
+	  << " (" << byte_u_t(block_size) << ")"
 	  << " " << (rotational ? "rotational" : "non-rotational")
 	  << dendl;
   return 0;
@@ -193,11 +195,16 @@ void KernelDevice::close()//关闭文件或者块设备
   _aio_stop();
   _discard_stop();
 
-  assert(fd_direct >= 0);
+  if (vdo_fd >= 0) {
+    VOID_TEMP_FAILURE_RETRY(::close(vdo_fd));
+    vdo_fd = -1;
+  }
+
+  ceph_assert(fd_direct >= 0);
   VOID_TEMP_FAILURE_RETRY(::close(fd_direct));
   fd_direct = -1;
 
-  assert(fd_buffered >= 0);
+  ceph_assert(fd_buffered >= 0);
   VOID_TEMP_FAILURE_RETRY(::close(fd_buffered));
   fd_buffered = -1;
 
@@ -221,6 +228,12 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
     (*pm)[prefix + "type"] = "hdd";
   } else {
     (*pm)[prefix + "type"] = "ssd";
+  }
+  if (vdo_fd >= 0) {
+    (*pm)[prefix + "vdo"] = "true";
+    uint64_t total, avail;
+    get_vdo_utilization(vdo_fd, &total, &avail);
+    (*pm)[prefix + "vdo_physical_size"] = stringify(total);
   }
 
   struct stat st;
@@ -268,6 +281,26 @@ int KernelDevice::collect_metadata(const string& prefix, map<string,string> *pm)
     (*pm)[prefix + "path"] = path;
   }
   return 0;
+}
+
+void KernelDevice::_detect_vdo()
+{
+  vdo_fd = get_vdo_stats_handle(devname.c_str(), &vdo_name);
+  if (vdo_fd >= 0) {
+    dout(1) << __func__ << " VDO volume " << vdo_name
+	    << " maps to " << devname << dendl;
+  } else {
+    dout(20) << __func__ << " no VDO volume maps to " << devname << dendl;
+  }
+  return;
+}
+
+bool KernelDevice::get_thin_utilization(uint64_t *total, uint64_t *avail) const
+{
+  if (vdo_fd < 0) {
+    return false;
+  }
+  return get_vdo_utilization(vdo_fd, total, avail);
 }
 
 int KernelDevice::flush()
@@ -378,7 +411,17 @@ void KernelDevice::discard_drain()
   }
 }
 
-void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的结果收集
+static bool is_expected_ioerr(const int r)
+{
+  // https://lxr.missinglinkelectronics.com/linux+v4.15/block/blk-core.c#L135
+  return (r == -EOPNOTSUPP || r == -ETIMEDOUT || r == -ENOSPC ||
+	  r == -ENOLINK || r == -EREMOTEIO || r == -EBADE ||
+	  r == -ENODATA || r == -EILSEQ || r == -ENOMEM ||
+	  r == -EAGAIN || r == -EREMCHG || r == -EIO);
+}
+
+//aio线程处理，负责处理aio完成后的结果收集
+void KernelDevice::_aio_thread()
 {
   dout(10) << __func__ << " start" << dendl;
   int inject_crash_count = 0;
@@ -391,7 +434,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 					 aio, max);
     if (r < 0) {
       derr << __func__ << " got " << cpp_strerror(r) << dendl;
-      assert(0 == "got unexpected error from io_getevents");
+      ceph_abort_msg("got unexpected error from io_getevents");
     }
     if (r > 0) {
       dout(30) << __func__ << " got " << r << " completed aios" << dendl;
@@ -411,18 +454,22 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 	// later flush() occurs.
 	io_since_flush.store(true);
 
-	int r = aio[i]->get_return_value();
+	long r = aio[i]->get_return_value();
         if (r < 0) {
-          derr << __func__ << " got " << cpp_strerror(r) << dendl;
-          if (ioc->allow_eio && r == -EIO) {
-            ioc->set_return_value(r);
+          derr << __func__ << " got r=" << r << " (" << cpp_strerror(r) << ")"
+	       << dendl;
+          if (ioc->allow_eio && is_expected_ioerr(r)) {
+            derr << __func__ << " translating the error to EIO for upper layer"
+		 << dendl;
+            ioc->set_return_value(-EIO);
           } else {
-            assert(0 == "got unexpected error from io_getevents");
+            ceph_assert(0 == "got unexpected error from aio_t::get_return_value. "
+			"This may suggest HW issue. Please check your dmesg!");
           }
         } else if (aio[i]->length != (uint64_t)r) {
           derr << "aio to " << aio[i]->offset << "~" << aio[i]->length
                << " but returned: " << r << dendl;
-          assert(0 == "unexpected aio error");
+          ceph_abort_msg("unexpected aio error");
         }
 
         dout(10) << __func__ << " finished aio " << aio[i] << " r " << r
@@ -457,7 +504,7 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 		 << " since " << debug_stall_since << ", timeout is "
 		 << cct->_conf->bdev_debug_aio_suicide_timeout
 		 << "s, suicide" << dendl;
-	    assert(0 == "stalled aio... buggy kernel or bad device?");
+	    ceph_abort_msg("stalled aio... buggy kernel or bad device?");
 	  }
 	}
       }
@@ -481,11 +528,11 @@ void KernelDevice::_aio_thread()//aio线程处理，负责处理aio完成后的�
 void KernelDevice::_discard_thread()
 {
   std::unique_lock<std::mutex> l(discard_lock);
-  assert(!discard_started);
+  ceph_assert(!discard_started);
   discard_started = true;
   discard_cond.notify_all();
   while (true) {
-    assert(discard_finishing.empty());
+    ceph_assert(discard_finishing.empty());
     if (discard_queued.empty()) {
       if (discard_stop)
 	break;
@@ -602,9 +649,9 @@ void KernelDevice::aio_submit(IOContext *ioc)
 
   int pending = ioc->num_pending.load();
   ioc->num_running += pending;
-  ioc->num_pending -= pending;//清０
-  assert(ioc->num_pending.load() == 0);  // we should be only thread doing this
-  assert(ioc->pending_aios.size() == 0);
+  ioc->num_pending -= pending;
+  ceph_assert(ioc->num_pending.load() == 0);  // we should be only thread doing this
+  ceph_assert(ioc->pending_aios.size() == 0);
   
   if (cct->_conf->bdev_debug_aio) {
     list<aio_t>::iterator p = ioc->running_aios.begin();
@@ -624,7 +671,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
     derr << __func__ << " retries " << retries << dendl;
   if (r < 0) {
     derr << " aio submit got " << cpp_strerror(r) << dendl;
-    assert(r == 0);
+    ceph_assert(r == 0);
   }
 }
 
@@ -632,7 +679,7 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered)
 {
   uint64_t len = bl.length();
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
-	  << std::dec << " buffered" << dendl;
+	  << std::dec << (buffered ? " (buffered)" : " (direct)") << dendl;
   if (cct->_conf->bdev_inject_crash &&
       rand() % cct->_conf->bdev_inject_crash == 0) {
     derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
@@ -674,7 +721,7 @@ int KernelDevice::write(
   dout(20) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	   << (buffered ? " (buffered)" : " (direct)")
 	   << dendl;
-  assert(is_valid_io(off, len));
+  ceph_assert(is_valid_io(off, len));
 
   if ((!buffered || bl.get_num_buffers() >= IOV_MAX) &&
       bl.rebuild_aligned_size_and_memory(block_size, block_size, IOV_MAX)) {
@@ -698,11 +745,7 @@ int KernelDevice::aio_write(//将bl写入到指定fd中，写的位置由offset�
   dout(20) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	   << (buffered ? " (buffered)" : " (direct)")
 	   << dendl;
-  assert(off % block_size == 0);
-  assert(len % block_size == 0);
-  assert(len > 0);
-  assert(off < size);
-  assert(off + len <= size);
+  ceph_assert(is_valid_io(off, len));
 
   if ((!buffered || bl.get_num_buffers() >= IOV_MAX) &&
       bl.rebuild_aligned_size_and_memory(block_size, block_size, IOV_MAX)) {
@@ -768,18 +811,18 @@ int KernelDevice::read(uint64_t off, uint64_t len, bufferlist *pbl,
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << (buffered ? " (buffered)" : " (direct)")
 	  << dendl;
-  assert(is_valid_io(off, len));
+  ceph_assert(is_valid_io(off, len));
 
   _aio_log_start(ioc, off, len);
 
-  bufferptr p = buffer::create_page_aligned(len);
+  bufferptr p = buffer::create_small_page_aligned(len);
   int r = ::pread(buffered ? fd_buffered : fd_direct,
 		  p.c_str(), len, off);//一次性返回
   if (r < 0) {
     r = -errno;
     goto out;
   }
-  assert((uint64_t)r == len);
+  ceph_assert((uint64_t)r == len);
   pbl->push_back(std::move(p));
 
   dout(40) << "data: ";
@@ -804,6 +847,7 @@ int KernelDevice::aio_read(
   int r = 0;
 #ifdef HAVE_LIBAIO
   if (aio && dio) {
+    ceph_assert(is_valid_io(off, len));
     _aio_log_start(ioc, off, len);
     ioc->pending_aios.push_back(aio_t(ioc, fd_direct));
     ++ioc->num_pending;
@@ -827,7 +871,7 @@ int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
   uint64_t aligned_off = align_down(off, block_size);//向下取整,读取时左侧放大
   //向上取整，读取时右侧放大（我们是加上off后计算的，减掉后一定是block_size的整数倍）
   uint64_t aligned_len = align_up(off+len, block_size) - aligned_off;
-  bufferptr p = buffer::create_page_aligned(aligned_len);
+  bufferptr p = buffer::create_small_page_aligned(aligned_len);
   int r = 0;
 
   r = ::pread(fd_direct, p.c_str(), aligned_len, aligned_off);
@@ -837,7 +881,7 @@ int KernelDevice::direct_read_unaligned(uint64_t off, uint64_t len, char *buf)
       << " error: " << cpp_strerror(r) << dendl;
     goto out;
   }
-  assert((uint64_t)r == aligned_len);
+  ceph_assert((uint64_t)r == aligned_len);
   memcpy(buf, p.c_str() + (off - aligned_off), len);//由于进行了多读，所以需要从多读里摘取出一部分返回
 
   dout(40) << __func__ << " data: ";
@@ -856,9 +900,9 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
 {
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << dendl;
-  assert(len > 0);
-  assert(off < size);
-  assert(off + len <= size);
+  ceph_assert(len > 0);
+  ceph_assert(off < size);
+  ceph_assert(off + len <= size);
   int r = 0;
 
   //if it's direct io and unaligned, we have to use a internal buffer
@@ -895,7 +939,7 @@ int KernelDevice::read_random(uint64_t off, uint64_t len, char *buf,
         << dendl;
       goto out;
     }
-    assert((uint64_t)r == len);
+    ceph_assert((uint64_t)r == len);
   }
 
   //用于显示，不理会
@@ -913,8 +957,8 @@ int KernelDevice::invalidate_cache(uint64_t off, uint64_t len)//清楚对应的�
 {
   dout(5) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	  << dendl;
-  assert(off % block_size == 0);
-  assert(len % block_size == 0);
+  ceph_assert(off % block_size == 0);
+  ceph_assert(len % block_size == 0);
   int r = posix_fadvise(fd_buffered, off, len, POSIX_FADV_DONTNEED);
   if (r) {
     r = -r;

@@ -26,7 +26,7 @@
  */
 
 #undef dout_prefix
-#define dout_prefix *_dout << "-- " << msgr->get_myaddr() << " "
+#define dout_prefix *_dout << "-- " << msgr->get_myaddrs() << " "
 
 double DispatchQueue::get_max_age(utime_t now) const {
   Mutex::Locker l(lock);
@@ -37,7 +37,7 @@ double DispatchQueue::get_max_age(utime_t now) const {
 }
 
 //返回此消息对应的dispatch_throttle_size
-uint64_t DispatchQueue::pre_dispatch(Message *m)
+uint64_t DispatchQueue::pre_dispatch(const Message::ref& m)
 {
   ldout(cct,1) << "<== " << m->get_source_inst()
 	       << " " << m->get_seq()
@@ -57,59 +57,53 @@ uint64_t DispatchQueue::pre_dispatch(Message *m)
 }
 
 //分发完成后处理（释放对分发资源的占用）
-void DispatchQueue::post_dispatch(Message *m, uint64_t msize)
+void DispatchQueue::post_dispatch(const Message::ref& m, uint64_t msize)
 {
   dispatch_throttle_release(msize);
   ldout(cct,20) << "done calling dispatch on " << m << dendl;
 }
 
-bool DispatchQueue::can_fast_dispatch(const Message *m) const
+bool DispatchQueue::can_fast_dispatch(const Message::const_ref &m) const
 {
   return msgr->ms_can_fast_dispatch(m);
 }
 
-void DispatchQueue::fast_dispatch(Message *m)
+void DispatchQueue::fast_dispatch(const Message::ref& m)
 {
   uint64_t msize = pre_dispatch(m);
   msgr->ms_fast_dispatch(m);
   post_dispatch(m, msize);
 }
 
-void DispatchQueue::fast_preprocess(Message *m)
+void DispatchQueue::fast_preprocess(const Message::ref& m)
 {
   msgr->ms_fast_preprocess(m);
 }
 
 //入队，消息，优先级，连接id(按连接分类，每个连接是一类）
-void DispatchQueue::enqueue(Message *m, int priority, uint64_t id)
+void DispatchQueue::enqueue(const Message::ref& m, int priority, uint64_t id)
 {
-
   Mutex::Locker l(lock);
   if (stop) {
-    m->put();
     return;
   }
   ldout(cct,20) << "queue " << m << " prio " << priority << dendl;
   add_arrival(m);
   if (priority >= CEPH_MSG_PRIO_LOW) {
-	//严格按优先级大小入队
-    mqueue.enqueue_strict(
-        id, priority, QueueItem(m));
+    mqueue.enqueue_strict(id, priority, QueueItem(m));
   } else {
-	//普通的考虑优先级及花费出入队
-    mqueue.enqueue(
-        id, priority, m->get_cost(), QueueItem(m));
+    mqueue.enqueue(id, priority, m->get_cost(), QueueItem(m));
   }
   cond.Signal();
 }
 
-void DispatchQueue::local_delivery(Message *m, int priority)
+void DispatchQueue::local_delivery(const Message::ref& m, int priority)
 {
   m->set_recv_stamp(ceph_clock_now());
   Mutex::Locker l(local_delivery_lock);
   if (local_messages.empty())
     local_delivery_cond.Signal();
-  local_messages.push_back(make_pair(m, priority));
+  local_messages.emplace(m, priority);
   return;
 }
 
@@ -123,11 +117,11 @@ void DispatchQueue::run_local_delivery()
       local_delivery_cond.Wait(local_delivery_lock);
       continue;
     }
-    pair<Message *, int> mp = local_messages.front();
-    local_messages.pop_front();
+    auto p = std::move(local_messages.front());
+    local_messages.pop();
     local_delivery_lock.Unlock();
-    Message *m = mp.first;
-    int priority = mp.second;
+    const Message::ref& m = p.first;
+    int priority = p.second;
     fast_preprocess(m);
     if (can_fast_dispatch(m)) {
       fast_dispatch(m);
@@ -199,10 +193,9 @@ void DispatchQueue::entry()
 	  ceph_abort();
 	}
       } else {
-	Message *m = qitem.get_message();
+	const Message::ref& m = qitem.get_message();
 	if (stop) {
 	  ldout(cct,10) << " stop flag set, discarding " << m << " " << *m << dendl;
-	  m->put();
 	} else {
 	  uint64_t msize = pre_dispatch(m);
 	  msgr->ms_deliver_dispatch(m);
@@ -228,18 +221,17 @@ void DispatchQueue::discard_queue(uint64_t id) {
   for (list<QueueItem>::iterator i = removed.begin();
        i != removed.end();
        ++i) {
-    assert(!(i->is_code())); // We don't discard id 0, ever!
-    Message *m = i->get_message();
+    ceph_assert(!(i->is_code())); // We don't discard id 0, ever!
+    const Message::ref& m = i->get_message();
     remove_arrival(m);
     dispatch_throttle_release(m->get_dispatch_throttle_size());
-    m->put();
   }
 }
 
 void DispatchQueue::start()
 {
-  assert(!stop);
-  assert(!dispatch_thread.is_started());
+  ceph_assert(!stop);
+  ceph_assert(!dispatch_thread.is_started());
   dispatch_thread.create("ms_dispatch");
   local_delivery_thread.create("ms_local");
 }
@@ -252,13 +244,7 @@ void DispatchQueue::wait()
 
 void DispatchQueue::discard_local()
 {
-  for (list<pair<Message *, int> >::iterator p = local_messages.begin();
-       p != local_messages.end();
-       ++p) {
-    ldout(cct,20) << __func__ << " " << p->first << dendl;
-    p->first->put();
-  }
-  local_messages.clear();
+  decltype(local_messages)().swap(local_messages);
 }
 
 void DispatchQueue::shutdown()

@@ -13,6 +13,7 @@
 #include <mutex>
 
 #include "include/Context.h"
+#include "common/ThrottleInterface.h"
 #include "common/Timer.h"
 #include "common/convenience.h"
 #include "common/perf_counters.h"
@@ -27,7 +28,7 @@
  */
 //Throttle用于管理资源，通过get检查是否可占用资源，get遇到不可占用资源时，会主动阻塞
 //并等待资源满足，通过take直接占用资源，通过put归还资源
-class Throttle {
+class Throttle final : public ThrottleInterface {
   CephContext *cct;
   const std::string name;
   PerfCountersRef logger;
@@ -38,7 +39,7 @@ class Throttle {
 
 public:
   Throttle(CephContext *cct, const std::string& n, int64_t m = 0, bool _use_perf = true);
-  ~Throttle();
+  ~Throttle() override;
 
 private:
   void _reset_max(int64_t m);
@@ -93,7 +94,7 @@ public:
    * @param c number of slots to take
    * @returns the total number of taken slots
    */
-  int64_t take(int64_t c = 1);
+  int64_t take(int64_t c = 1) override;
 
   /**
    * get the specified amount of slots from the stock, but will wait if the
@@ -117,7 +118,7 @@ public:
    * @param c number of slots to return
    * @returns number of requests being hold after this
    */
-  int64_t put(int64_t c = 1);
+  int64_t put(int64_t c = 1) override;
    /**
    * reset the zero to the stock
    */
@@ -290,7 +291,7 @@ private:
  * Throttles the maximum number of active requests and completes them in order
  *
  * Operations can complete out-of-order but their associated Context callback
- * will completed in-order during invokation of start_op() and wait_for_ret()
+ * will completed in-order during invocation of start_op() and wait_for_ret()
  */
 class OrderedThrottle {
 public:
@@ -378,27 +379,39 @@ public:
   		    SafeTimer *timer, Mutex *timer_lock);
   
   ~TokenBucketThrottle();
+
+  template <typename T, typename I, void(T::*MF)(int, I*, uint64_t)>
+  void add_blocker(uint64_t c, T *handler, I *item, uint64_t flag) {
+    Context *ctx = new FunctionContext([handler, item, flag](int r) {
+      (handler->*MF)(r, item, flag);
+      });
+    m_blockers.emplace_back(c, ctx);
+  }
   
-  template <typename T, typename I, void(T::*MF)(int, I*)>
-  bool get(uint64_t c, T *handler, I *item) {
+  template <typename T, typename I, void(T::*MF)(int, I*, uint64_t)>
+  bool get(uint64_t c, T *handler, I *item, uint64_t flag) {
     if (0 == m_throttle.max)
       return false;
   
-    bool waited = false;
-  
-    Mutex::Locker lock(m_lock);
-    uint64_t got = m_throttle.get(c);
-    if (got < c) {
-      // Not enough tokens, add a blocker for it.
-      Context *ctx = new FunctionContext([handler, item](int r) {
-  	(handler->*MF)(r, item);
-        });
-      m_blockers.emplace_back(c - got, ctx);
-      waited = true;
+    bool wait = false;
+    uint64_t got = 0;
+    std::lock_guard<Mutex> lock(m_lock);
+    if (!m_blockers.empty()) {
+      // Keep the order of requests, add item after previous blocked requests.
+      wait = true;
+    } else {
+      got = m_throttle.get(c);
+      if (got < c) {
+        // Not enough tokens, add a blocker for it.
+        wait = true;
+      }
     }
-    return waited;
+
+    if (wait)
+      add_blocker<T, I, MF>(c - got, handler, item, flag);
+
+    return wait;
   }
-  
   
   void set_max(uint64_t m);
   void set_average(uint64_t avg);

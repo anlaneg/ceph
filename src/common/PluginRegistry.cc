@@ -17,6 +17,7 @@
 
 #include "PluginRegistry.h"
 #include "ceph_ver.h"
+#include "common/ceph_context.h"
 #include "common/errno.h"
 #include "common/debug.h"
 
@@ -61,7 +62,7 @@ PluginRegistry::~PluginRegistry()
 
 int PluginRegistry::remove(const std::string& type, const std::string& name)
 {
-  assert(lock.is_locked());
+  ceph_assert(lock.is_locked());
 
   std::map<std::string,std::map<std::string,Plugin*> >::iterator i =
     plugins.find(type);
@@ -86,7 +87,7 @@ int PluginRegistry::add(const std::string& type,
 			const std::string& name,
 			Plugin* plugin)
 {
-  assert(lock.is_locked());
+  ceph_assert(lock.is_locked());
   if (plugins.count(type) &&
       plugins[type].count(name)) {
     return -EEXIST;
@@ -101,7 +102,7 @@ int PluginRegistry::add(const std::string& type,
 Plugin *PluginRegistry::get_with_load(const std::string& type,
           const std::string& name)
 {
-  Mutex::Locker l(lock);
+  std::lock_guard<Mutex> l(lock);
   Plugin* ret = get(type, name);//查找是否存在这个插件
   if (!ret) {
     int err = load(type, name);
@@ -115,7 +116,7 @@ Plugin *PluginRegistry::get_with_load(const std::string& type,
 Plugin *PluginRegistry::get(const std::string& type,
 			    const std::string& name)
 {
-  assert(lock.is_locked());
+  ceph_assert(lock.is_locked());
   Plugin *ret = 0;
 
   std::map<std::string,Plugin*>::iterator j;
@@ -138,19 +139,19 @@ Plugin *PluginRegistry::get(const std::string& type,
 int PluginRegistry::load(const std::string &type,
 			 const std::string &name)
 {
-  assert(lock.is_locked());
+  ceph_assert(lock.is_locked());
   ldout(cct, 1) << __func__ << " " << type << " " << name << dendl;
 
   // std::string fname = cct->_conf->plugin_dir + "/" + type + "/" PLUGIN_PREFIX
   //  + name + PLUGIN_SUFFIX;
   //插件目录及名称格式
-  std::string fname = cct->_conf->get_val<std::string>("plugin_dir") + "/" + type + "/" + PLUGIN_PREFIX
+  std::string fname = cct->_conf.get_val<std::string>("plugin_dir") + "/" + type + "/" + PLUGIN_PREFIX
       + name + PLUGIN_SUFFIX;
   void *library = dlopen(fname.c_str(), RTLD_NOW);
   if (!library) {
     string err1(dlerror());
     // fall back to plugin_dir
-    std::string fname2 = cct->_conf->get_val<std::string>("plugin_dir") + "/" + PLUGIN_PREFIX +
+    std::string fname2 = cct->_conf.get_val<std::string>("plugin_dir") + "/" + PLUGIN_PREFIX +
       name + PLUGIN_SUFFIX;
     library = dlopen(fname2.c_str(), RTLD_NOW);
     if (!library) {
@@ -221,7 +222,7 @@ int ErasureCodePluginRegistry::preload(const std::string &plugins,
 				       const std::string &directory,
 				       ostream &ss)
 {
-  Mutex::Locker l(lock);
+  std::lock_guard<Mutex> l(lock);
   list<string> plugins_list;
   get_str_list(plugins, plugins_list);
   for (list<string>::iterator i = plugins_list.begin();

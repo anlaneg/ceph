@@ -1,51 +1,51 @@
 import { Injectable } from '@angular/core';
 
-@Injectable()
+import * as _ from 'lodash';
+
+import { ServicesModule } from './services.module';
+
+@Injectable({
+  providedIn: ServicesModule
+})
 export class FormatterService {
   constructor() {}
 
-  truncate(n, maxWidth) {
-    const stringized = n.toString();
-    const parts = stringized.split('.');
-    if (parts.length === 1) {
-      // Just an int
-      return stringized;
-    } else {
-      const fractionalDigits = maxWidth - parts[0].length - 1;
-      if (fractionalDigits <= 0) {
-        // No width available for the fractional part, drop
-        // it and the decimal point
-        return parts[0];
-      } else {
-        return stringized.substring(0, maxWidth);
-      }
+  format_number(n: any, divisor: number, units: string[], decimals: number = 1): string {
+    if (_.isString(n)) {
+      n = Number(n);
     }
-  }
-
-  format_number(n, divisor, units) {
-    const width = 4;
-    let unit = 0;
-
-    if (n == null) {
-      // People shouldn't really be passing null, but let's
-      // do something sensible instead of barfing.
+    if (!_.isNumber(n)) {
       return '-';
     }
-
-    while (Math.floor(n / divisor ** unit).toString().length > width - 1) {
-      unit = unit + 1;
+    let unit = n < 1 ? 0 : Math.floor(Math.log(n) / Math.log(divisor));
+    unit = unit >= units.length ? units.length - 1 : unit;
+    let result = _.round(n / Math.pow(divisor, unit), decimals).toString();
+    if (result === '') {
+      return '-';
     }
-
-    let truncatedFloat;
-    if (unit > 0) {
-      truncatedFloat = this.truncate(
-        (n / Math.pow(divisor, unit)).toString(),
-        width
-      );
-    } else {
-      truncatedFloat = this.truncate(n, width);
+    if (units[unit] !== '') {
+      result = `${result} ${units[unit]}`;
     }
+    return result;
+  }
 
-    return truncatedFloat === '' ? '-' : (truncatedFloat + units[unit]);
+  /**
+   * Convert the given value into bytes.
+   * @param {string} value The value to be converted, e.g. 1024B, 10M, 300KiB or 1ZB.
+   * @returns Returns the given value in bytes without any appended unit or null in case
+   *   of an error.
+   */
+  toBytes(value: string): number | null {
+    const base = 1024;
+    const units = ['b', 'k', 'm', 'g', 't', 'p', 'e', 'z', 'y'];
+    const m = RegExp('^(\\d+(.\\d+)?) ?([' + units.join('') + '](b|ib)?)?$', 'i').exec(value);
+    if (m === null) {
+      return null;
+    }
+    let bytes = parseFloat(m[1]);
+    if (_.isString(m[3])) {
+      bytes = bytes * Math.pow(base, units.indexOf(m[3].toLowerCase()[0]));
+    }
+    return Math.round(bytes);
   }
 }

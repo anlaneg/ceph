@@ -4,84 +4,102 @@
 #ifndef __CEPH_LOG_LOG_H
 #define __CEPH_LOG_LOG_H
 
+#include <boost/circular_buffer.hpp>
+
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <string_view>
 
 #include "common/Thread.h"
+#include "common/likely.h"
 
-#include "EntryQueue.h"
+#include "log/Entry.h"
 
 namespace ceph {
 namespace logging {
 
 class Graylog;
 class SubsystemMap;
-class Entry;
 
 //没有看出这个log实现的有多好，感觉非常普通，且不高效
 class Log : private Thread
 {
+  using EntryRing = boost::circular_buffer<ConcreteEntry>;
+  using EntryVector = std::vector<ConcreteEntry>;
+
+  static const std::size_t DEFAULT_MAX_NEW = 100;
+  static const std::size_t DEFAULT_MAX_RECENT = 10000;
+
   Log **m_indirect_this;
   log_clock clock;
 
-  SubsystemMap *m_subs;
+  const SubsystemMap *m_subs;
 
-  pthread_mutex_t m_queue_mutex;
-  //flush mutex
-  pthread_mutex_t m_flush_mutex;
-  pthread_cond_t m_cond_loggers;
-  pthread_cond_t m_cond_flusher;//需要flush的信号量
+  std::mutex m_queue_mutex;
+  std::mutex m_flush_mutex;
+  std::condition_variable m_cond_loggers;
+  std::condition_variable m_cond_flusher;//需要flush的信号量
 
   //哪个线程拥有queue mutex
   pthread_t m_queue_mutex_holder;
   //哪个线程拥有flush mutex
   pthread_t m_flush_mutex_holder;
 
-  EntryQueue m_new;    ///< new entries
-  EntryQueue m_recent; ///< recent (less new) entries we've already written at low detail
+  EntryVector m_new;    ///< new entries
+  EntryRing m_recent; ///< recent (less new) entries we've already written at low detail
+  EntryVector m_flush; ///< entries to be flushed (here to optimize heap allocations)
 
   //日志文件名称
   std::string m_log_file;
   //日志文件fd（>=0时有效）
-  int m_fd;
+  int m_fd = -1;
   //日志文件的owner
-  uid_t m_uid;
-  gid_t m_gid;
+  uid_t m_uid = 0;
+  gid_t m_gid = 0;
 
-  int m_fd_last_error;  ///< last error we say writing to fd (if any)
+  int m_fd_last_error = 0;  ///< last error we say writing to fd (if any)
 
-  int m_syslog_log, m_syslog_crash;//写syslog时的级别
-  int m_stderr_log, m_stderr_crash;
-  int m_graylog_log, m_graylog_crash;
+  int m_syslog_log = -2, m_syslog_crash = -2;//写syslog时的级别
+  int m_stderr_log = -1, m_stderr_crash = -1;
+  int m_graylog_log = -3, m_graylog_crash = -3;
 
   std::string m_log_stderr_prefix;
 
   std::shared_ptr<Graylog> m_graylog;
 
-  bool m_stop;//标记线程是否需要停止
+  std::vector<char> m_log_buf;
 
-  int m_max_new, m_max_recent;
+  bool m_stop = false;//标记线程是否需要停止
 
-  bool m_inject_segv;//断错误注入用
+  std::size_t m_max_new = DEFAULT_MAX_NEW;
+  std::size_t m_max_recent = DEFAULT_MAX_RECENT;
+
+  bool m_inject_segv = false;//断错误注入用
 
   void *entry() override;
 
-  void _flush(EntryQueue *q, EntryQueue *requeue, bool crash);
+  void _log_safe_write(std::string_view sv);
+  void _flush_logbuf();
+  void _flush(EntryVector& q, bool requeue, bool crash);
 
   void _log_message(const char *s, bool crash);
 
 public:
-  Log(SubsystemMap *s);
+  Log(const SubsystemMap *s);
   ~Log() override;
 
   void set_flush_on_exit();
 
   void set_coarse_timestamps(bool coarse);
-  void set_max_new(int n);
-  void set_max_recent(int n);
-  void set_log_file(std::string fn);
+  void set_max_new(std::size_t n);
+  void set_max_recent(std::size_t n);
+  void set_log_file(std::string_view fn);
   void reopen_log_file();
   void chown_log_file(uid_t uid, gid_t gid);
-  void set_log_stderr_prefix(const std::string& p);
+  void set_log_stderr_prefix(std::string_view p);
 
   void flush();
 
@@ -96,9 +114,7 @@ public:
 
   std::shared_ptr<Graylog> graylog() { return m_graylog; }
 
-  Entry *create_entry(int level, int subsys, const char* msg = nullptr);
-  Entry *create_entry(int level, int subsys, size_t* expected_size);
-  void submit_entry(Entry *e);
+  void submit_entry(Entry&& e);
 
   void start();
   void stop();

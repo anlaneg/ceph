@@ -13,6 +13,7 @@
  */
 
 #include "Capability.h"
+#include "CInode.h"
 
 #include "common/Formatter.h"
 
@@ -35,7 +36,7 @@ void Capability::Export::encode(bufferlist &bl) const
   ENCODE_FINISH(bl);
 }
 
-void Capability::Export::decode(bufferlist::iterator &p)
+void Capability::Export::decode(bufferlist::const_iterator &p)
 {
   DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, p);
   decode(cap_id, p);
@@ -82,7 +83,7 @@ void Capability::Import::encode(bufferlist &bl) const
   ENCODE_FINISH(bl);
 }
 
-void Capability::Import::decode(bufferlist::iterator &bl)
+void Capability::Import::decode(bufferlist::const_iterator &bl)
 {
   DECODE_START(1, bl);
   decode(cap_id, bl);
@@ -111,7 +112,7 @@ void Capability::revoke_info::encode(bufferlist& bl) const
   ENCODE_FINISH(bl);
 }
 
-void Capability::revoke_info::decode(bufferlist::iterator& bl)
+void Capability::revoke_info::decode(bufferlist::const_iterator& bl)
 {
   DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl);
   decode(before, bl);
@@ -141,6 +142,17 @@ void Capability::revoke_info::generate_test_instances(list<Capability::revoke_in
  * Capability
  */
 
+void Capability::set_wanted(int w) {
+  CInode *in = get_inode();
+  if (in) {
+    if (!_wanted && w)
+      in->adjust_num_caps_wanted(1);
+    else if (_wanted && !w)
+      in->adjust_num_caps_wanted(-1);
+  }
+  _wanted = w;
+}
+
 void Capability::encode(bufferlist& bl) const
 {
   ENCODE_START(2, 2, bl)
@@ -153,13 +165,15 @@ void Capability::encode(bufferlist& bl) const
   ENCODE_FINISH(bl);
 }
 
-void Capability::decode(bufferlist::iterator &bl)
+void Capability::decode(bufferlist::const_iterator &bl)
 {
   DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl)
   decode(last_sent, bl);
   decode(last_issue_stamp, bl);
 
-  decode(_wanted, bl);
+  __u32 tmp_wanted;
+  decode(tmp_wanted, bl);
+  set_wanted(tmp_wanted);
   decode(_pending, bl);
   decode(_revokes, bl);
   DECODE_FINISH(bl);
@@ -189,7 +203,7 @@ void Capability::generate_test_instances(list<Capability*>& ls)
   ls.push_back(new Capability);
   ls.back()->last_sent = 11;
   ls.back()->last_issue_stamp = utime_t(12, 13);
-  ls.back()->_wanted = 14;
+  ls.back()->set_wanted(14);
   ls.back()->_pending = 15;
   {
     auto &r = ls.back()->_revokes.emplace_back();

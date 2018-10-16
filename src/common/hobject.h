@@ -19,7 +19,7 @@
 #include "include/cmp.h"
 
 #include "json_spirit/json_spirit_value.h"
-#include "include/assert.h"   // spirit clobbers it!
+#include "include/ceph_assert.h"   // spirit clobbers it!
 
 #include "reverse.h"
 
@@ -35,6 +35,21 @@ namespace ceph {
 #endif
 
 struct hobject_t {
+public:
+  static const int64_t POOL_META = -1;
+  static const int64_t POOL_TEMP_START = -2; // and then negative
+
+  static bool is_temp_pool(int64_t pool) {
+    return pool <= POOL_TEMP_START;
+  }
+  static int64_t get_temp_pool(int64_t pool) {
+    return POOL_TEMP_START - pool;
+  }
+  static bool is_meta_pool(int64_t pool) {
+    return pool == POOL_META;
+  }
+
+public:
   object_t oid;//对象
   snapid_t snap;
 private:
@@ -42,9 +57,6 @@ private:
   bool max;//默认为false,除非指向的是class hobject_t_max类型的对象
   uint32_t nibblewise_key_cache;//按4位互换hash值后,得到的值
   uint32_t hash_reverse_bits;//按位逆转hash值后,得到的值
-  static const int64_t POOL_META = -1;
-  static const int64_t POOL_TEMP_START = -2; // and then negative
-  friend class spg_t;  // for POOL_TEMP_START
 public:
   int64_t pool;//对象的pool
   string nspace;//对象的nanmespace
@@ -85,10 +97,16 @@ public:
   }
 
   bool is_temp() const {
-    return pool <= POOL_TEMP_START && pool != INT64_MIN;
+    return is_temp_pool(pool) && pool != INT64_MIN;
   }
   bool is_meta() const {
-    return pool == POOL_META;
+    return is_meta_pool(pool);
+  }
+  int64_t get_logical_pool() const {
+    if (is_temp_pool(pool))
+      return get_temp_pool(pool);  // it's reversible
+    else
+      return pool;
   }
 
   hobject_t() : snap(0), hash(0), max(false), pool(INT64_MIN) {
@@ -188,7 +206,7 @@ public:
   }
 
   bool is_max() const {
-    assert(!max || (*this == hobject_t(hobject_t::get_max())));
+    ceph_assert(!max || (*this == hobject_t(hobject_t::get_max())));
     return max;
   }
   bool is_min() const {
@@ -222,7 +240,7 @@ public:
 
   // filestore nibble-based key
   uint32_t get_nibblewise_key_u32() const {
-    assert(!max);
+    ceph_assert(!max);
     return nibblewise_key_cache;
   }
   uint64_t get_nibblewise_key() const {//与get_bitwise_key在max!=0时是相同的.如果max=0,则采用nibblewise_key_cache
@@ -231,7 +249,7 @@ public:
 
   // newer bit-reversed key
   uint32_t get_bitwise_key_u32() const {
-    assert(!max);
+    ceph_assert(!max);
     return hash_reverse_bits;
   }
   uint64_t get_bitwise_key() const {
@@ -262,7 +280,8 @@ public:
   hobject_t make_temp_hobject(const string& name) const {
     return hobject_t(object_t(name), "", CEPH_NOSNAP,
 		     hash,
-		     hobject_t::POOL_TEMP_START - pool, "");
+		     get_temp_pool(pool),
+		     "");
   }
 
   void swap(hobject_t &o) {
@@ -278,7 +297,7 @@ public:
   bool parse(const string& s);
 
   void encode(bufferlist& bl) const;
-  void decode(bufferlist::iterator& bl);
+  void decode(bufferlist::const_iterator& bl);
   void decode(json_spirit::Value& v);
   void dump(Formatter *f) const;
   static void generate_test_instances(list<hobject_t*>& o);
@@ -304,8 +323,8 @@ WRITE_CLASS_ENCODER(hobject_t)
 namespace std {
   template<> struct hash<hobject_t> {
     size_t operator()(const hobject_t &r) const {
-      static rjhash<uint64_t> I;
-      return r.get_hash() ^ I(r.snap);
+      static rjhash<uint64_t> RJ;
+      return RJ(r.get_hash() ^ r.snap);
     }
   };
 } // namespace std
@@ -450,7 +469,7 @@ public:
   }
 
   void encode(bufferlist& bl) const;
-  void decode(bufferlist::iterator& bl);
+  void decode(bufferlist::const_iterator& bl);
   void decode(json_spirit::Value& v);
   size_t encoded_size() const;
   void dump(Formatter *f) const;
@@ -477,8 +496,12 @@ WRITE_CLASS_ENCODER(ghobject_t)
 namespace std {
   template<> struct hash<ghobject_t> {
     size_t operator()(const ghobject_t &r) const {
-      static rjhash<uint64_t> I;
-      return r.hobj.get_hash() ^ I(r.hobj.snap);
+      static rjhash<uint64_t> RJ;
+      static hash<hobject_t> HO;
+      size_t hash = HO(r.hobj);
+      hash = RJ(hash ^ r.generation);
+      hash = hash ^ r.shard_id.id;
+      return hash;
     }
   };
 } // namespace std

@@ -30,7 +30,7 @@
 #ifdef HAVE_LIBAIO
 #include "aio.h"
 #endif
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 #include "include/buffer.h"
 #include "include/interval_set.h"
 #define SPDK_PREFIX "spdk:"
@@ -77,7 +77,8 @@ public:
   uint64_t get_num_ios() const;
 
   void try_aio_wake() {//尝试着唤醒
-    if (num_running == 1) {
+    assert(num_running >= 1);
+    if (num_running.fetch_sub(1) == 1) {
 
       // we might have some pending IOs submitted after the check
       // as there is no lock protection for aio_submit.
@@ -85,10 +86,6 @@ public:
       // aio_wait has to handle that hence do not care here.
       std::lock_guard<std::mutex> l(lock);
       cond.notify_all();
-      --num_running;
-      assert(num_running >= 0);
-    } else {
-      --num_running;
     }
   }
 
@@ -137,6 +134,11 @@ public:
 
   uint64_t get_size() const { return size; }
   uint64_t get_block_size() const { return block_size; }
+
+  /// hook to provide utilization of thinly-provisioned device
+  virtual bool get_thin_utilization(uint64_t *total, uint64_t *avail) const {
+    return false;
+  }
 
   virtual int collect_metadata(const std::string& prefix, std::map<std::string,std::string> *pm) const = 0;
 

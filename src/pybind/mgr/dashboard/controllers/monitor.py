@@ -3,18 +3,16 @@ from __future__ import absolute_import
 
 import json
 
-import cherrypy
-
+from . import ApiController, Endpoint, BaseController, ReadPermission
 from .. import mgr
-from ..tools import ApiController, AuthRequired, BaseController
+from ..security import Scope
 
 
-@ApiController('monitor')
-@AuthRequired()
+@ApiController('/monitor', Scope.MONITOR)
 class Monitor(BaseController):
-    @cherrypy.expose
-    @cherrypy.tools.json_out()
-    def default(self):
+    @Endpoint()
+    @ReadPermission
+    def __call__(self):
         in_quorum, out_quorum = [], []
 
         counters = ['mon.num_sessions']

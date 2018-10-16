@@ -17,6 +17,7 @@
 #define SIMPLE_POLICY_MESSENGER_H
 
 #include "Messenger.h"
+#include "Policy.h"
 
 //添加了策略
 class SimplePolicyMessenger : public Messenger
@@ -24,10 +25,8 @@ class SimplePolicyMessenger : public Messenger
 private:
   /// lock protecting policy
   Mutex policy_lock;
-  /// the default Policy we use for Pipes
-  Policy default_policy;
-  /// map specifying different Policies for specific peer types
-  map<int, Policy> policy_map; // entity_name_t::type -> Policy
+  // entity_name_t::type -> Policy
+  ceph::net::PolicySet<Throttle> policy_set;
 
 public:
 
@@ -46,17 +45,12 @@ public:
    */
   Policy get_policy(int t) override {
     Mutex::Locker l(policy_lock);
-    map<int, Policy>::iterator iter =
-      policy_map.find(t);
-    if (iter != policy_map.end())
-      return iter->second;
-    else
-      return default_policy;
+    return policy_set.get(t);
   }
 
   Policy get_default_policy() override {
     Mutex::Locker l(policy_lock);
-    return default_policy;
+    return policy_set.get_default();
   }
 
   /**
@@ -69,7 +63,7 @@ public:
    */
   void set_default_policy(Policy p) override {
     Mutex::Locker l(policy_lock);
-    default_policy = p;
+    policy_set.set_default(p);
   }
   /**
    * Set a policy which is applied to all peers of the given type.
@@ -81,7 +75,7 @@ public:
    */
   void set_policy(int type, Policy p) override {
     Mutex::Locker l(policy_lock);
-    policy_map[type] = p;
+    policy_set.set(type, p);
   }
 
   /**
@@ -96,18 +90,10 @@ public:
    * you destroy SimpleMessenger.
    */
   void set_policy_throttlers(int type,
-			     Throttle *byte_throttle,
-			     Throttle *msg_throttle) override {
+			     Throttle* byte_throttle,
+			     Throttle* msg_throttle) override {
     Mutex::Locker l(policy_lock);
-    map<int, Policy>::iterator iter =
-      policy_map.find(type);
-    if (iter != policy_map.end()) {
-      iter->second.throttler_bytes = byte_throttle;
-      iter->second.throttler_messages = msg_throttle;
-    } else {
-      default_policy.throttler_bytes = byte_throttle;
-      default_policy.throttler_messages = msg_throttle;
-    }
+    policy_set.set_throttlers(type, byte_throttle, msg_throttle);
   }
 
 }; /* SimplePolicyMessenger */

@@ -56,7 +56,7 @@ void HitSet::encode(bufferlist &bl) const
   ENCODE_FINISH(bl);
 }
 
-void HitSet::decode(bufferlist::iterator &bl)
+void HitSet::decode(bufferlist::const_iterator& bl)
 {
   DECODE_START(1, bl);
   decode(sealed, bl);
@@ -116,7 +116,7 @@ HitSet::Params::Params(const Params& o)
     // instead.
     bufferlist bl;
     o.impl->encode(bl);
-    bufferlist::iterator p = bl.begin();
+    auto p = bl.cbegin();
     impl->decode(p);
   } // else we don't need to do anything
 }
@@ -129,7 +129,7 @@ const HitSet::Params& HitSet::Params::operator=(const Params& o)
     // instead.
     bufferlist bl;
     o.impl->encode(bl);
-    bufferlist::iterator p = bl.begin();
+    auto p = bl.cbegin();
     impl->decode(p);
   }
   return *this;
@@ -169,7 +169,7 @@ bool HitSet::Params::create_impl(impl_type_t type)
   return true;
 }
 
-void HitSet::Params::decode(bufferlist::iterator &bl)
+void HitSet::Params::decode(bufferlist::const_iterator& bl)
 {
   DECODE_START(1, bl);
   __u8 type;

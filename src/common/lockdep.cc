@@ -12,6 +12,7 @@
  *
  */
 #include "lockdep.h"
+#include "common/ceph_context.h"
 #include "common/dout.h"
 #include "common/valgrind.h"
 
@@ -305,7 +306,8 @@ static bool does_follow(int a, int b)
 }
 
 //准备加锁时调用（主要检测1.重复上锁;2.循环依赖)
-int lockdep_will_lock(const char *name, int id, bool force_backtrace)
+int lockdep_will_lock(const char *name, int id, bool force_backtrace,
+		      bool recursive)
 {
   pthread_t p = pthread_self();
 
@@ -328,17 +330,19 @@ int lockdep_will_lock(const char *name, int id, bool force_backtrace)
 	//如果在当前线程的索引用栈里，发现其已拥有这把锁，则显示递归加锁
 	//并打log,然后主动挂掉
     if (p->first == id) {
-      lockdep_dout(0) << "\n";
-      *_dout << "recursive lock of " << name << " (" << id << ")\n";
-      BackTrace *bt = new BackTrace(BACKTRACE_SKIP);
-      bt->print(*_dout);
-      if (p->second) {
-	*_dout << "\npreviously locked at\n";
-	p->second->print(*_dout);
+      if (!recursive) {
+	lockdep_dout(0) << "\n";
+	*_dout << "recursive lock of " << name << " (" << id << ")\n";
+	BackTrace *bt = new BackTrace(BACKTRACE_SKIP);
+	bt->print(*_dout);
+	if (p->second) {
+	  *_dout << "\npreviously locked at\n";
+	  p->second->print(*_dout);
+	}
+	delete bt;
+	*_dout << dendl;
+	ceph_abort();
       }
-      delete bt;
-      *_dout << dendl;
-      ceph_abort();
     }
     else if (!(follows[p->first][id/8] & (1 << (id % 8)))) {
       // new dependency
@@ -421,7 +425,7 @@ int lockdep_will_unlock(const char *name, int id)
 
   if (id < 0) {
     //id = lockdep_register(name);
-    assert(id == -1);
+    ceph_assert(id == -1);
     return id;
   }
 

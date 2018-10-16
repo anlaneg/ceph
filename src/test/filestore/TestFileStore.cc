@@ -21,7 +21,7 @@
 
 class TestFileStore {
 public:
-  static void create_backend(FileStore &fs, long f_type) {
+  static void create_backend(FileStore &fs, unsigned long f_type) {
     fs.create_backend(f_type);
   }
 };
@@ -72,8 +72,8 @@ int main(int argc, char **argv) {
 			 CODE_ENVIRONMENT_UTILITY,
 			 CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   common_init_finish(g_ceph_context);
-  g_ceph_context->_conf->set_val("osd_journal_size", "100");
-  g_ceph_context->_conf->apply_changes(NULL);
+  g_ceph_context->_conf.set_val("osd_journal_size", "100");
+  g_ceph_context->_conf.apply_changes(NULL);
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

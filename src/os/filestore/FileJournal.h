@@ -21,6 +21,7 @@
 using std::deque;
 
 #include "Journal.h"
+#include "common/config_fwd.h"
 #include "common/Cond.h"
 #include "common/Mutex.h"
 #include "common/Thread.h"
@@ -33,7 +34,7 @@ using std::deque;
 #endif
 
 // re-include our assert to clobber the system one; fix dout:
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 
 /**
  * Implements journaling on top of block device or file.
@@ -103,13 +104,13 @@ public:
   //返回队首
   completion_item completion_peek_front() {
     Mutex::Locker l(completions_lock);
-    assert(!completions.empty());
+    ceph_assert(!completions.empty());
     return completions.front();
   }
   //丢弃队首
   void completion_pop_front() {
     Mutex::Locker l(completions_lock);
-    assert(!completions.empty());
+    ceph_assert(!completions.empty());
     completions.pop_front();
   }
 
@@ -182,7 +183,7 @@ public:
       }
       encode(em, bl);
     }
-    void decode(bufferlist::iterator& bl) {
+    void decode(bufferlist::const_iterator& bl) {
       using ceph::decode;
       __u32 v;
       decode(v, bl);
@@ -204,7 +205,7 @@ public:
       }
       bufferlist em;
       decode(em, bl);
-      bufferlist::iterator t = em.begin();
+      auto t = em.cbegin();
       decode(flags, t);
       decode(fsid, t);
       decode(block_size, t);
@@ -314,7 +315,7 @@ private:
   int set_throttle_params();
   const char** get_tracked_conf_keys() const override;
   void handle_conf_change(
-    const struct md_config_t *conf,
+    const ConfigProxy& conf,
     const std::set <std::string> &changed) override {
     for (const char **i = get_tracked_conf_keys();
 	 *i;
@@ -405,12 +406,12 @@ private:
   FileJournal(CephContext* cct, uuid_d fsid, Finisher *fin, Cond *sync_cond,
 	      const char *f, bool dio=false, bool ai=true, bool faio=false) :
     Journal(cct, fsid, fin, sync_cond),
-    finisher_lock("FileJournal::finisher_lock", false, true, false, cct),
+    finisher_lock("FileJournal::finisher_lock", false, true, false),
     journaled_seq(0),
     plug_journal_completions(false),
-    writeq_lock("FileJournal::writeq_lock", false, true, false, cct),
+    writeq_lock("FileJournal::writeq_lock", false, true, false),
     completions_lock(
-      "FileJournal::completions_lock", false, true, false, cct),
+      "FileJournal::completions_lock", false, true, false),
     fn(f),
     zero_buf(NULL),
     max_size(0), block_size(0),
@@ -431,7 +432,7 @@ private:
     fd(-1),
     writing_seq(0),
     throttle(cct->_conf->filestore_caller_concurrency),
-    write_lock("FileJournal::write_lock", false, true, false, cct),
+    write_lock("FileJournal::write_lock", false, true, false),
     write_stop(true),
     aio_stop(true),
     write_thread(this),
@@ -449,12 +450,12 @@ private:
       }
 #endif
 
-      cct->_conf->add_observer(this);
+      cct->_conf.add_observer(this);
   }
   ~FileJournal() override {
-    assert(fd == -1);
+    ceph_assert(fd == -1);
     delete[] zero_buf;
-    cct->_conf->remove_observer(this);
+    cct->_conf.remove_observer(this);
   }
 
   int check() override;

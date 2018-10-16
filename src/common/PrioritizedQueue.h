@@ -15,6 +15,8 @@
 #ifndef PRIORITY_QUEUE_H
 #define PRIORITY_QUEUE_H
 
+#include "include/ceph_assert.h"
+
 #include "common/Formatter.h"
 #include "common/OpQueue.h"
 
@@ -120,14 +122,14 @@ class PrioritizedQueue : public OpQueue <T, K> {
       size++;
     }
     std::pair<unsigned, T> &front() const {
-      assert(!(q.empty()));
-      assert(cur != q.end());
+      ceph_assert(!(q.empty()));
+      ceph_assert(cur != q.end());
       return cur->second.front();
     }
     T pop_front() {
       //断言，一定不为空
-      assert(!(q.empty()));
-      assert(cur != q.end());
+      ceph_assert(!(q.empty()));
+      ceph_assert(cur != q.end());
       T ret = std::move(cur->second.front().second);
       cur->second.pop_front();
       if (cur->second.empty()) {
@@ -144,7 +146,7 @@ class PrioritizedQueue : public OpQueue <T, K> {
 
     //返回队列长度
     unsigned length() const {
-      assert(size >= 0);
+      ceph_assert(size >= 0);
       return (unsigned)size;
     }
 
@@ -213,11 +215,10 @@ class PrioritizedQueue : public OpQueue <T, K> {
 
   //移除优先级值为priority的队列
   void remove_queue(unsigned priority) {
-	//断言必须存在
-    assert(queue.count(priority));
-    queue.erase(priority);//移除
-    total_priority -= priority;//优先级之后排除
-    assert(total_priority >= 0);
+    ceph_assert(queue.count(priority));
+    queue.erase(priority);
+    total_priority -= priority;
+    ceph_assert(total_priority >= 0);
   }
 
   void distribute_tokens(unsigned cost) {
@@ -246,7 +247,7 @@ public:
     for (typename SubQueues::const_iterator i = queue.begin();
 	 i != queue.end();
 	 ++i) {
-      assert(i->second.length());
+      ceph_assert(i->second.length());
       total += i->second.length();
     }
 
@@ -254,7 +255,7 @@ public:
     for (typename SubQueues::const_iterator i = high_queue.begin();
 	 i != high_queue.end();
 	 ++i) {
-      assert(i->second.length());
+      ceph_assert(i->second.length());
       total += i->second.length();
     }
     return total;
@@ -320,14 +321,14 @@ public:
 
   //队列是否为空
   bool empty() const final {
-    assert(total_priority >= 0);
-    assert((total_priority == 0) || !(queue.empty()));
+    ceph_assert(total_priority >= 0);
+    ceph_assert((total_priority == 0) || !(queue.empty()));
     return queue.empty() && high_queue.empty();
   }
 
   //出队
   T dequeue() final {
-    assert(!empty());
+    ceph_assert(!empty());
 
     //如果high_queue不为空时，取优先级最高的SubQueue的中的第一个
     //每个SubQueue中的花费是一样的
@@ -350,7 +351,7 @@ public:
 	 i != queue.end();
 	 ++i) {
     	  //出队断言，一定不为空，为空的都被移除掉了
-      assert(!(i->second.empty()));
+      ceph_assert(!(i->second.empty()));
       //如果花费比token值小，则可以出队
       if (i->second.front().first < i->second.num_tokens()) {
 	unsigned cost = i->second.front().first;

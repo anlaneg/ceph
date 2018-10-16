@@ -50,7 +50,7 @@ void Striper::file_to_extents(
   ldout(cct, 10) << "file_to_extents " << offset << "~" << len
 		 << " format " << object_format
 		 << dendl;
-  assert(len > 0);
+  ceph_assert(len > 0);
 
   /*
    * we want only one extent per object!  this means that each extent
@@ -61,7 +61,7 @@ void Striper::file_to_extents(
   __u32 object_size = layout->object_size;
   __u32 su = layout->stripe_unit;
   __u32 stripe_count = layout->stripe_count;
-  assert(object_size >= su);
+  ceph_assert(object_size >= su);
   if (stripe_count == 1) {
     ldout(cct, 20) << " sc is one, reset su to os" << dendl;
     su = object_size;
@@ -171,7 +171,7 @@ void Striper::extent_to_file(CephContext *cct, file_layout_t *layout,
   __u32 object_size = layout->object_size;
   __u32 su = layout->stripe_unit;
   __u32 stripe_count = layout->stripe_count;
-  assert(object_size >= su);
+  ceph_assert(object_size >= su);
   uint64_t stripes_per_object = object_size / su;
   ldout(cct, 20) << " stripes_per_object " << stripes_per_object << dendl;
 
@@ -209,7 +209,7 @@ uint64_t Striper::object_truncate_size(CephContext *cct,
     __u32 object_size = layout->object_size;
     __u32 su = layout->stripe_unit;
     __u32 stripe_count = layout->stripe_count;
-    assert(object_size >= su);
+    ceph_assert(object_size >= su);
     uint64_t stripes_per_object = object_size / su;
 
     uint64_t objectsetno = objectno / stripe_count;
@@ -326,7 +326,7 @@ void Striper::StripedReadResult::add_partial_sparse_result(
 	}
       }
 
-      assert(s->first <= bl_off);
+      ceph_assert(s->first <= bl_off);
       size_t left = (s->first + s->second) - bl_off;
       size_t actual = std::min(left, tlen);
 
@@ -354,36 +354,21 @@ void Striper::StripedReadResult::assemble_result(CephContext *cct,
 {
   ldout(cct, 10) << "assemble_result(" << this << ") zero_tail=" << zero_tail
 		 << dendl;
-
-  // go backwards, so that we can efficiently discard zeros
-  map<uint64_t,pair<bufferlist,uint64_t> >::reverse_iterator p
-    = partial.rbegin();
-  if (p == partial.rend())
-    return;
-
-  uint64_t end = p->first + p->second.second;
-  while (p != partial.rend()) {
-    // sanity check
-    ldout(cct, 20) << "assemble_result(" << this << ") " << p->first << "~"
-		   << p->second.second << " " << p->second.first.length()
-		   << " bytes" << dendl;
-    assert(p->first == end - p->second.second);
-    end = p->first;
-
-    size_t len = p->second.first.length();
-    if (len < p->second.second) {
-      if (zero_tail || bl.length()) {
-        bufferptr bp(p->second.second - len);
-        bp.zero();
-        bl.push_front(std::move(bp));
-	bl.claim_prepend(p->second.first);
-      } else {
-	bl.claim_prepend(p->second.first);
+  size_t zeros = 0;  // zeros preceding current position
+  for (auto& p : partial) {
+    size_t got = p.second.first.length();
+    size_t expect = p.second.second;
+    if (got) {
+      if (zeros) {
+	bl.append_zero(zeros);
+	zeros = 0;
       }
-    } else {
-      bl.claim_prepend(p->second.first);
+      bl.claim_append(p.second.first);
     }
-    ++p;
+    zeros += expect - got;
+  }
+  if (zero_tail && zeros) {
+    bl.append_zero(zeros);
   }
   partial.clear();
 }
@@ -391,7 +376,7 @@ void Striper::StripedReadResult::assemble_result(CephContext *cct,
 void Striper::StripedReadResult::assemble_result(CephContext *cct, char *buffer, size_t length)
 {
 
-  assert(buffer && length == total_intended_len);
+  ceph_assert(buffer && length == total_intended_len);
 
   map<uint64_t,pair<bufferlist,uint64_t> >::reverse_iterator p = partial.rbegin();
   if (p == partial.rend())
@@ -404,11 +389,11 @@ void Striper::StripedReadResult::assemble_result(CephContext *cct, char *buffer,
     ldout(cct, 20) << "assemble_result(" << this << ") " << p->first << "~" << p->second.second
 		   << " " << p->second.first.length() << " bytes"
 		   << dendl;
-    assert(p->first == end - p->second.second);
+    ceph_assert(p->first == end - p->second.second);
     end = p->first;
 
     size_t len = p->second.first.length();
-    assert(curr >= p->second.second);
+    ceph_assert(curr >= p->second.second);
     curr -= p->second.second;
     if (len < p->second.second) {
       if (len)
@@ -420,6 +405,6 @@ void Striper::StripedReadResult::assemble_result(CephContext *cct, char *buffer,
     ++p;
   }
   partial.clear();
-  assert(curr == 0);
+  ceph_assert(curr == 0);
 }
 

@@ -192,7 +192,7 @@ namespace ceph {
 	  return;
 
 	suspended = false;
-	assert(!thread.joinable());
+	ceph_assert(!thread.joinable());
 	thread = std::thread(&timer::timer_thread, this);
       }
 

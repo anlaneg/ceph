@@ -48,8 +48,8 @@ struct CompatSet {
     friend std::ostream& operator<<(std::ostream& out, const CompatSet& compat);
     FeatureSet() : mask(1), names() {}
     void insert(const Feature& f) {
-      assert(f.id > 0);
-      assert(f.id < 64);
+      ceph_assert(f.id > 0);
+      ceph_assert(f.id < 64);
       mask |= ((uint64_t)1<<f.id);//为mask与上其对应的id位
       names[f.id] = f.name;
     }
@@ -68,7 +68,7 @@ struct CompatSet {
     //获取功能id f对应的功能名称
     std::string get_name(uint64_t const f) const {
       std::map<uint64_t, std::string>::const_iterator i = names.find(f);
-      assert(i != names.end());
+      ceph_assert(i != names.end());
       return i->second;
     }
 
@@ -95,7 +95,7 @@ struct CompatSet {
     }
 
     //字节流转换为对象
-    void decode(bufferlist::iterator& bl) {
+    void decode(bufferlist::const_iterator& bl) {
       using ceph::decode;
       decode(mask, bl);
       decode(names, bl);
@@ -239,7 +239,7 @@ struct CompatSet {
     incompat.encode(bl);
   }
   
-  void decode(bufferlist::iterator& bl) {
+  void decode(bufferlist::const_iterator& bl) {
     compat.decode(bl);
     ro_compat.decode(bl);
     incompat.decode(bl);

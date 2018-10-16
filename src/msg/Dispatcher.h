@@ -16,15 +16,17 @@
 #ifndef CEPH_DISPATCHER_H
 #define CEPH_DISPATCHER_H
 
+#include <memory>
 #include "include/buffer_fwd.h"
-#include "include/assert.h"
+#include "include/ceph_assert.h"
+#include "msg/MessageRef.h"
 
 class Messenger;
-class Message;
 class Connection;
 class AuthAuthorizer;
 class CryptoKey;
 class CephContext;
+class AuthAuthorizerChallenge;
 
 //消息分发基础类
 class Dispatcher {
@@ -62,7 +64,10 @@ public:
    * @returns True if the message can be fast dispatched; false otherwise.
    */
   //针对消息检查是否支持快速转发。默认不支持快速转发
-  virtual bool ms_can_fast_dispatch(const Message *m) const { return false;}
+  virtual bool ms_can_fast_dispatch(const Message *m) const { return false; }
+  virtual bool ms_can_fast_dispatch2(const MessageConstRef& m) const {
+    return ms_can_fast_dispatch(m.get());
+  }
   /**
    * This function determines if a dispatcher is included in the
    * list of fast-dispatch capable Dispatchers.
@@ -79,6 +84,13 @@ public:
    */
   //对消息m执行快速转发，默认会挂掉
   virtual void ms_fast_dispatch(Message *m) { ceph_abort(); }
+
+  /* ms_fast_dispatch2 because otherwise the child must define both */
+  virtual void ms_fast_dispatch2(const MessageRef &m) {
+    /* allow old style dispatch handling that expects a Message * with a floating ref */
+    return ms_fast_dispatch(MessageRef(m).detach()); /* XXX N.B. always consumes ref */
+  }
+
   /**
    * Let the Dispatcher preview a Message before it is dispatched. This
    * function is called on *every* Message, prior to the fast/regular dispatch
@@ -96,6 +108,13 @@ public:
    */
   //提供对消息m在分发前，执行一次消息预览
   virtual void ms_fast_preprocess(Message *m) {}
+
+  /* ms_fast_preprocess2 because otherwise the child must define both */
+  virtual void ms_fast_preprocess2(const MessageRef &m) {
+    /* allow old style dispatch handling that expects a Message* */
+    return ms_fast_preprocess(m.get());
+  }
+
   /**
    * The Messenger calls this function to deliver a single message.
    *
@@ -103,7 +122,20 @@ public:
    * are given a single reference count on it.
    */
   //消息投递
-  virtual bool ms_dispatch(Message *m) = 0;
+  virtual bool ms_dispatch(Message *m) {
+    ceph_abort();
+  }
+
+  /* ms_dispatch2 because otherwise the child must define both */
+  virtual bool ms_dispatch2(const MessageRef &m) {
+    /* allow old style dispatch handling that expects a Message * with a floating ref */
+    MessageRef mr(m);
+    if (ms_dispatch(mr.get())) {
+      mr.detach(); /* dispatcher consumed ref */
+      return true;
+    }
+    return false;
+  }
 
   /**
    * This function will be called whenever a Connection is newly-created
@@ -211,7 +243,10 @@ public:
 				    ceph::bufferlist& authorizer,
 				    ceph::bufferlist& authorizer_reply,
 				    bool& isvalid,
-				    CryptoKey& session_key) { return false; }
+				    CryptoKey& session_key,
+				    std::unique_ptr<AuthAuthorizerChallenge> *challenge) {
+    return false;
+  }
   /**
    * @} //Authentication
    */

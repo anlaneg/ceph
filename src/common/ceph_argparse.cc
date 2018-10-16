@@ -11,6 +11,7 @@
  * Foundation.  See file COPYING.
  *
  */
+#include <stdarg.h>
 
 #include "auth/Auth.h"
 #include "common/ceph_argparse.h"
@@ -576,13 +577,26 @@ static void generic_usage(bool is_server)
   cout.flush();
 }
 
+bool ceph_argparse_need_usage(const std::vector<const char*>& args)
+{
+  if (args.empty()) {
+    return true;
+  }
+  for (auto a : args) {
+    if (strcmp(a, "-h") == 0 ||
+	strcmp(a, "--help") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void generic_server_usage()
 {
   generic_usage(true);
-  exit(1);
 }
+
 void generic_client_usage()
 {
   generic_usage(false);
-  exit(1);
 }

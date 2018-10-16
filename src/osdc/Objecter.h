@@ -25,9 +25,7 @@
 
 #include <boost/thread/shared_mutex.hpp>
 
-#include "dmclock/src/dmclock_client.h"
-
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 #include "include/buffer.h"
 #include "include/types.h"
 #include "include/rados/rados_types.hpp"
@@ -35,11 +33,14 @@
 #include "common/admin_socket.h"
 #include "common/ceph_time.h"
 #include "common/ceph_timer.h"
-#include "common/Finisher.h"
+#include "common/config_obs.h"
 #include "common/shunique_lock.h"
 #include "common/zipkin_trace.h"
+#include "common/Finisher.h"
+#include "common/Throttle.h"
 
 #include "messages/MOSDOp.h"
+#include "msg/Dispatcher.h"
 #include "osd/OSDMap.h"
 
 
@@ -88,7 +89,7 @@ struct ObjectOperation {
   }
 
   void set_last_op_flags(int flags) {
-    assert(!ops.empty());
+    ceph_assert(!ops.empty());
     ops.rbegin()->op.flags = flags;
   }
 
@@ -247,7 +248,7 @@ struct ObjectOperation {
       : psize(ps), pmtime(pm), ptime(pt), pts(_pts), prval(prval) {}
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	try {
 	  uint64_t size;
 	  ceph::real_time mtime;
@@ -298,7 +299,7 @@ struct ObjectOperation {
   // object cmpext
   struct C_ObjectOperation_cmpext : public Context {
     int *prval;
-    C_ObjectOperation_cmpext(int *prval)
+    explicit C_ObjectOperation_cmpext(int *prval)
       : prval(prval) {}
 
     void finish(int r) {
@@ -346,7 +347,7 @@ struct ObjectOperation {
 				  int *prval)
       : data_bl(data_bl), extents(extents), prval(prval) {}
     void finish(int r) override {
-      bufferlist::iterator iter = bl.begin();
+      auto iter = bl.cbegin();
       if (r >= 0) {
         // NOTE: it's possible the sub-op has not been executed but the result
         // code remains zeroed. Avoid the costly exception handling on a
@@ -458,7 +459,7 @@ struct ObjectOperation {
     }
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	try {
 	  if (pattrs)
 	    decode(*pattrs, p);
@@ -500,7 +501,7 @@ struct ObjectOperation {
     }
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	try {
 	  if (pattrs)
 	    decode(*pattrs, p);
@@ -535,7 +536,7 @@ struct ObjectOperation {
       : pwatchers(pw), prval(pr) {}
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	try {
 	  obj_list_watch_response_t resp;
 	  decode(resp, p);
@@ -568,7 +569,7 @@ struct ObjectOperation {
       : psnaps(ps), prval(pr) {}
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	try {
 	  obj_list_snap_response_t resp;
 	  decode(resp, p);
@@ -782,7 +783,7 @@ struct ObjectOperation {
       if (r < 0 && r != -ENOENT)
 	return;
       try {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	object_copy_data_t copy_reply;
 	decode(copy_reply, p);
 	if (r == -ENOENT) {
@@ -874,7 +875,7 @@ struct ObjectOperation {
       if (r < 0)
 	return;
       try {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	bool isdirty;
 	decode(isdirty, p);
 	if (pisdirty)
@@ -910,7 +911,7 @@ struct ObjectOperation {
       if (r < 0)
 	return;
       try {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	std::list< std::pair<ceph::real_time, ceph::real_time> > ls;
 	decode(ls, p);
 	if (ptls) {
@@ -1149,26 +1150,32 @@ struct ObjectOperation {
    * Extensible tier
    */
   void set_redirect(object_t tgt, snapid_t snapid, object_locator_t tgt_oloc, 
-		    version_t tgt_version) {
+		    version_t tgt_version, int flag) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_SET_REDIRECT);
     osd_op.op.copy_from.snapid = snapid;
     osd_op.op.copy_from.src_version = tgt_version;
     encode(tgt, osd_op.indata);
     encode(tgt_oloc, osd_op.indata);
+    set_last_op_flags(flag);
   }
 
   void set_chunk(uint64_t src_offset, uint64_t src_length, object_locator_t tgt_oloc,
-		 object_t tgt_oid, uint64_t tgt_offset) {
+		 object_t tgt_oid, uint64_t tgt_offset, int flag) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_SET_CHUNK);
     encode(src_offset, osd_op.indata);
     encode(src_length, osd_op.indata);
     encode(tgt_oloc, osd_op.indata);
     encode(tgt_oid, osd_op.indata);
     encode(tgt_offset, osd_op.indata);
+    set_last_op_flags(flag);
   }
 
   void tier_promote() {
     add_op(CEPH_OSD_OP_TIER_PROMOTE);
+  }
+
+  void unset_manifest() {
+    add_op(CEPH_OSD_OP_UNSET_MANIFEST);
   }
 
   void set_alloc_hint(uint64_t expected_object_size,
@@ -1215,7 +1222,7 @@ class Objecter : public md_config_obs_t, public Dispatcher {
 public:
   // config observer bits
   const char** get_tracked_conf_keys() const override;
-  void handle_conf_change(const struct md_config_t *conf,
+  void handle_conf_change(const ConfigProxy& conf,
                           const std::set <std::string> &changed) override;
 
 public:
@@ -1223,8 +1230,6 @@ public:
   MonClient *monc;
   Finisher *finisher;
   ZTracer::Endpoint trace_endpoint;
-  std::unique_ptr<dmc::ServiceTracker<int>> qos_trk;
-  std::atomic<bool> mclock_service_tracker;
 private:
   OSDMap    *osdmap;
 public:
@@ -1260,7 +1265,7 @@ private:
   version_t last_seen_osdmap_version;
   version_t last_seen_pgmap_version;
 
-  mutable boost::shared_mutex rwlock;
+  mutable std::shared_mutex rwlock;
   using lock_guard = std::lock_guard<decltype(rwlock)>;
   using unique_lock = std::unique_lock<decltype(rwlock)>;
   using shared_lock = boost::shared_lock<decltype(rwlock)>;
@@ -1275,7 +1280,6 @@ private:
   void start_tick();
   void tick();
   void update_crush_location();
-  void update_mclock_service_tracker();
 
   class RequestStateHook;
 
@@ -1313,6 +1317,7 @@ public:
 
     unsigned pg_num = 0; ///< last pg_num we mapped to
     unsigned pg_num_mask = 0; ///< last pg_num_mask we mapped to
+    unsigned pg_num_pending = 0; ///< last pg_num we mapped to
     vector<int> up; ///< set of up osds for last pg we mapped to
     vector<int> acting; ///< set of acting osds for last pg we mapped to
     int up_primary = -1; ///< last up_primary we mapped to
@@ -1336,7 +1341,7 @@ public:
 	base_oloc(oloc)
       {}
 
-    op_target_t(pg_t pgid)
+    explicit op_target_t(pg_t pgid)
       : base_oloc(pgid.pool(), pgid.ps()),
 	precalc_pgid(true),
 	base_pgid(pgid)
@@ -1398,7 +1403,7 @@ public:
 
     epoch_t map_dne_bound;
 
-    bool budgeted;
+    int budget;
 
     /// true if we should resend this message on failure
     bool should_resend;
@@ -1431,7 +1436,7 @@ public:
       objver(ov),
       reply_epoch(NULL),
       map_dne_bound(0),
-      budgeted(false),
+      budget(-1),
       should_resend(true),
       ctx_budgeted(false),
       data_offset(offset) {
@@ -1503,7 +1508,7 @@ public:
       psize(ps), pmtime(pm), fin(c) {}
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	uint64_t s;
 	ceph::real_time m;
 	decode(s, p);
@@ -1525,7 +1530,7 @@ public:
 							   fin(c) {}
     void finish(int r) override {
       if (r >= 0) {
-	bufferlist::iterator p = bl.begin();
+	auto p = bl.cbegin();
 	decode(attrset, p);
       }
       fin->complete(r);
@@ -1615,14 +1620,13 @@ public:
     Context *onfinish;
     uint64_t ontimeout;
     int pool_op;
-    uint64_t auid;
     int16_t crush_rule;
     snapid_t snapid;
     bufferlist *blp;
 
     ceph::coarse_mono_time last_submit;
     PoolOp() : tid(0), pool(0), onfinish(NULL), ontimeout(0), pool_op(0),
-	       auid(0), crush_rule(0), snapid(0), blp(NULL) {}
+	       crush_rule(0), snapid(0), blp(NULL) {}
   };
 
   // -- osd commands --
@@ -1717,7 +1721,7 @@ public:
     bool is_watch;
     ceph::coarse_mono_time watch_valid_thru; ///< send time for last acked ping
     int last_error;  ///< error from last failed ping|reconnect, if any
-    boost::shared_mutex watch_lock;
+    std::shared_mutex watch_lock;
     using lock_guard = std::unique_lock<decltype(watch_lock)>;
     using unique_lock = std::unique_lock<decltype(watch_lock)>;
     using shared_lock = boost::shared_lock<decltype(watch_lock)>;
@@ -1753,11 +1757,11 @@ public:
     }
     void finished_async() {
       unique_lock l(watch_lock);
-      assert(!watch_pending_async.empty());
+      ceph_assert(!watch_pending_async.empty());
       watch_pending_async.pop_front();
     }
 
-    LingerOp(Objecter *o) : linger_id(0),
+    explicit LingerOp(Objecter *o) : linger_id(0),
 			    target(object_t(), object_locator_t(), 0),
 			    snap(CEPH_NOSNAP), poutbl(NULL), pobjver(NULL),
 			    is_watch(false), last_error(0),
@@ -1852,7 +1856,7 @@ public:
   };
 
   struct OSDSession : public RefCountedObject {
-    boost::shared_mutex lock;
+    std::shared_mutex lock;
     using lock_guard = std::lock_guard<decltype(lock)>;
     using unique_lock = std::unique_lock<decltype(lock)>;
     using shared_lock = boost::shared_lock<decltype(lock)>;
@@ -1932,7 +1936,6 @@ public:
   void _send_op(Op *op);
   void _send_op_account(Op *op);
   void _cancel_linger_op(Op *op);
-  void finish_op(OSDSession *session, ceph_tid_t tid);
   void _finish_op(Op *op, int r);
   static bool is_pg_changed(
     int oldprimary,
@@ -2020,7 +2023,7 @@ private:
   int calc_op_budget(const vector<OSDOp>& ops);
   void _throttle_op(Op *op, shunique_lock& sul, int op_size = 0);
   int _take_op_budget(Op *op, shunique_lock& sul) {
-    assert(sul && sul.mutex() == &rwlock);
+    ceph_assert(sul && sul.mutex() == &rwlock);
     int op_budget = calc_op_budget(op->ops);
     if (keep_balanced_budget) {
       _throttle_op(op, sul, op_budget);
@@ -2028,20 +2031,15 @@ private:
       op_throttle_bytes.take(op_budget);
       op_throttle_ops.take(1);
     }
-    op->budgeted = true;
+    op->budget = op_budget;
     return op_budget;
   }
   int take_linger_budget(LingerOp *info);
   friend class WatchContext; // to invoke put_up_budget_bytes
   void put_op_budget_bytes(int op_budget) {
-    assert(op_budget >= 0);
+    ceph_assert(op_budget >= 0);
     op_throttle_bytes.put(op_budget);
     op_throttle_ops.put(1);
-  }
-  void put_op_budget(Op *op) {
-    assert(op->budgeted);
-    int op_budget = calc_op_budget(op->ops);
-    put_op_budget_bytes(op_budget);
   }
   void put_nlist_context_budget(NListContext *list_context);
   Throttle op_throttle_bytes, op_throttle_ops;
@@ -2053,7 +2051,6 @@ private:
 	   double osd_timeout) :
     Dispatcher(cct_), messenger(m), monc(mc), finisher(fin),
     trace_endpoint("0.0.0.0", 0, "Objecter"),
-    mclock_service_tracker(cct->_conf->objecter_mclock_service_tracker),
     osdmap(new OSDMap),
     max_linger_id(0),
     keep_balanced_budget(false), honor_osdmap_full(true), osdmap_full_try(false),
@@ -2068,11 +2065,7 @@ private:
     op_throttle_ops(cct, "objecter_ops", cct->_conf->objecter_inflight_ops),
     epoch_barrier(0),
     retry_writes_after_first_reply(cct->_conf->objecter_retry_writes_after_first_reply)
-  {
-    if (cct->_conf->objecter_mclock_service_tracker) {
-      qos_trk = std::make_unique<dmc::ServiceTracker<int>>();
-    }
-  }
+  { }
   ~Objecter() override;
 
   void init();
@@ -2186,8 +2179,6 @@ private:
   void _op_submit_with_budget(Op *op, shunique_lock& lc,
 			      ceph_tid_t *ptid,
 			      int *ctx_budget = NULL);
-  inline void unregister_op(Op *op);
-
   // public interface
 public:
   void op_submit(Op *op, ceph_tid_t *ptid = NULL, int *ctx_budget = NULL);
@@ -2258,7 +2249,7 @@ public:
   void osd_command(int osd, const std::vector<string>& cmd,
 		  const bufferlist& inbl, ceph_tid_t *ptid,
 		  bufferlist *poutbl, string *prs, Context *onfinish) {
-    assert(osd >= 0);
+    ceph_assert(osd >= 0);
     CommandOp *c = new CommandOp(
       osd,
       cmd,
@@ -2967,11 +2958,10 @@ public:
   int delete_pool_snap(int64_t pool, string& snapName, Context *onfinish);
   int delete_selfmanaged_snap(int64_t pool, snapid_t snap, Context *onfinish);
 
-  int create_pool(string& name, Context *onfinish, uint64_t auid=0,
+  int create_pool(string& name, Context *onfinish,
 		  int crush_rule=-1);
   int delete_pool(int64_t pool, Context *onfinish);
   int delete_pool(const string& name, Context *onfinish);
-  int change_pool_auid(int64_t pool, Context *onfinish, uint64_t auid);
 
   void handle_pool_op_reply(MPoolOpReply *m);
   int pool_op_cancel(ceph_tid_t tid, int r);
@@ -3071,7 +3061,7 @@ public:
 	     bit != p->buffer_extents.end();
 	     ++bit)
 	  bl.copy(bit->first, bit->second, cur);
-	assert(cur.length() == p->length);
+	ceph_assert(cur.length() == p->length);
 	write_trunc(p->oid, p->oloc, p->offset, p->length,
 	      snapc, cur, mtime, flags, p->truncate_size, trunc_seq,
 	      oncommit ? gcom.new_sub():0,

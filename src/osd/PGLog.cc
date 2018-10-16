@@ -26,7 +26,7 @@
 
 static ostream& _prefix(std::ostream *_dout, const PGLog *pglog)
 {
-  return *_dout << pglog->gen_prefix();
+  return pglog->gen_prefix(*_dout);
 }
 
 //////////////////// PGLog::IndexedLog ////////////////////
@@ -50,14 +50,9 @@ void PGLog::IndexedLog::trim(
   set<string>* trimmed_dups,
   eversion_t *write_from_dups)
 {
-  if (complete_to != log.end() &&
-      complete_to->version <= s) {
-    generic_dout(0) << " bad trim to " << s << " when complete_to is "
-		    << complete_to->version
-		    << " on " << *this << dendl;
-  }
-
-  assert(s <= can_rollback_to);
+  ceph_assert(s <= can_rollback_to);
+  if (complete_to != log.end())
+    lgeneric_subdout(cct, osd, 20) << " complete_to " << complete_to->version << dendl;
 
   auto earliest_dup_version =
     log.rbegin()->version.version < cct->_conf->osd_pg_log_dups_tracked
@@ -67,18 +62,18 @@ void PGLog::IndexedLog::trim(
   while (!log.empty()) {
     const pg_log_entry_t &e = *log.begin();
     if (e.version > s)
-      break;//如果队首版本大于s则停止
-    generic_dout(20) << "trim " << e << dendl;
+      break;
+    lgeneric_subdout(cct, osd, 20) << "trim " << e << dendl;
     if (trimmed)
       trimmed->emplace(e.version);//加入到trimmed队列
 
     unindex(e);         // remove from index,//自索引中移除此entity
 
     // add to dup list
-    generic_dout(20) << "earliest_dup_version = " << earliest_dup_version << dendl;
+    lgeneric_subdout(cct, osd, 20) << "earliest_dup_version = " << earliest_dup_version << dendl;
     if (e.version.version >= earliest_dup_version) {
       if (write_from_dups != nullptr && *write_from_dups > e.version) {
-	generic_dout(20) << "updating write_from_dups from " << *write_from_dups << " to " << e.version << dendl;
+	lgeneric_subdout(cct, osd, 20) << "updating write_from_dups from " << *write_from_dups << " to " << e.version << dendl;
 	*write_from_dups = e.version;
       }
       dups.push_back(pg_log_dup_t(e));
@@ -91,6 +86,10 @@ void PGLog::IndexedLog::trim(
       }
     }
 
+    bool reset_complete_to = false;
+    // we are trimming past complete_to, so reset complete_to
+    if (complete_to != log.end() && e.version >= complete_to->version)
+      reset_complete_to = true;
     //移除队列中的entity(另外需要查看riter是否需要更新,防止其空指向)
     if (rollback_info_trimmed_to_riter == log.rend() ||
 	e.version == rollback_info_trimmed_to_riter->version) {
@@ -99,13 +98,24 @@ void PGLog::IndexedLog::trim(
     } else {
       log.pop_front();
     }
+
+    // reset complete_to to the beginning of the log
+    if (reset_complete_to) {
+      complete_to = log.begin();
+      if (complete_to != log.end()) {
+        lgeneric_subdout(cct, osd, 20) << " moving complete_to to "
+                                       << log.begin()->version << dendl;
+      } else {
+        lgeneric_subdout(cct, osd, 20) << " log is now empty" << dendl;
+      }
+    }
   }
 
   while (!dups.empty()) {
     const auto& e = *dups.begin();
     if (e.version.version >= earliest_dup_version)
       break;
-    generic_dout(20) << "trim dup " << e << dendl;
+    lgeneric_subdout(cct, osd, 20) << "trim dup " << e << dendl;
     if (trimmed_dups)
       trimmed_dups->insert(e.get_key_name());
     unindex(e);
@@ -126,7 +136,7 @@ ostream& PGLog::IndexedLog::print(ostream& out) const
     out << *p << " " <<
       (logged_object(p->soid) ? "indexed" : "NOT INDEXED") <<
       std::endl;
-    assert(!p->reqid_is_indexed() || logged_req(p->reqid));
+    ceph_assert(!p->reqid_is_indexed() || logged_req(p->reqid));
   }
 
   for (list<pg_log_dup_t>::const_iterator p = dups.begin();
@@ -165,18 +175,26 @@ void PGLog::clear_info_log(
 //log减小了,所以log.tail要移动
 //其它一些指针可能会发生问题,所以也要移动.
 void PGLog::trim(
-  eversion_t trim_to,//可以trim到这个版本
-  pg_info_t &info)
+  eversion_t trim_to,
+  pg_info_t &info,
+  bool transaction_applied,
+  bool async)
 {
+  dout(10) << __func__ << " proposed trim_to = " << trim_to << dendl;
   // trim?
   //如果trim_to比log.tail小,则不必trim
   if (trim_to > log.tail) {
-    // We shouldn't be trimming the log past last_complete
-    assert(trim_to <= info.last_complete);
+    dout(10) << __func__ << " missing = " << missing.num_missing() << dendl;
+    // Don't assert for async_recovery_targets or backfill_targets
+    // or whenever there are missing items
+    if (transaction_applied && !async && (missing.num_missing() == 0))
+      ceph_assert(trim_to <= info.last_complete);
 
     dout(10) << "trim " << log << " to " << trim_to << dendl;
     log.trim(cct, trim_to, &trimmed, &trimmed_dups, &write_from_dups);
-    info.log_tail = log.tail;//更新info.log_tail
+    info.log_tail = log.tail;
+    if (log.complete_to != log.log.end())
+      dout(10) << " after trim complete_to " << log.complete_to->version << dendl;
   }
 }
 
@@ -199,7 +217,6 @@ void PGLog::proc_replica_log(
 	     << "for divergent objects" << dendl;
     return;
   }
-  assert(olog.head >= log.tail);
 
   /*
     basically what we're doing here is rewinding the remote log,
@@ -340,9 +357,9 @@ void PGLog::merge_log(pg_info_t &oinfo, pg_log_t &olog, pg_shard_t fromosd,
   // Check preconditions
 
   // If our log is empty, the incoming log needs to have not been trimmed.
-  assert(!log.null() || olog.tail == eversion_t());
+  ceph_assert(!log.null() || olog.tail == eversion_t());
   // The logs must overlap.
-  assert(log.head >= olog.tail && olog.head >= log.tail);//日志一定是有交集才能走到这个流程(前面选权威时来保证这点)
+  ceph_assert(log.head >= olog.tail && olog.head >= log.tail);
 
   //missing拿出来显示下.
   for (map<hobject_t, pg_missing_item>::const_iterator i = missing.get_items().begin();
@@ -584,11 +601,11 @@ void PGLog::check() {
       derr << "    " << *i << dendl;
     }
   }
-  assert(log.log.size() == log_keys_debug.size());
+  ceph_assert(log.log.size() == log_keys_debug.size());
   for (list<pg_log_entry_t>::iterator i = log.log.begin();
        i != log.log.end();
        ++i) {
-    assert(log_keys_debug.count(i->get_key_name()));
+    ceph_assert(log_keys_debug.count(i->get_key_name()));
   }
 }
 
@@ -601,7 +618,7 @@ void PGLog::write_log_and_missing(
   bool require_rollback)
 {
   if (is_dirty()) {
-    dout(5) << "write_log_and_missing with: "
+    dout(6) << "write_log_and_missing with: "
 	     << "dirty_to: " << dirty_to
 	     << ", dirty_from: " << dirty_from
 	     << ", writeout_from: " << writeout_from
@@ -734,7 +751,7 @@ void PGLog::_write_log_and_missing_wo_missing(
 	 ++i) {
       if (i->first[0] == '_')
 	continue;
-      assert(!log_keys_debug->count(i->first));
+      ceph_assert(!log_keys_debug->count(i->first));
       log_keys_debug->insert(i->first);
     }
   }
@@ -816,7 +833,7 @@ void PGLog::_write_log_and_missing(
     string key = t.get_key_name();
     if (log_keys_debug) {
       auto it = log_keys_debug->find(key);
-      assert(it != log_keys_debug->end());
+      ceph_assert(it != log_keys_debug->end());
       log_keys_debug->erase(it);
     }
     to_remove.emplace(std::move(key));
@@ -864,7 +881,7 @@ void PGLog::_write_log_and_missing(
 	 ++i) {
       if (i->first[0] == '_')
 	continue;
-      assert(!log_keys_debug->count(i->first));
+      ceph_assert(!log_keys_debug->count(i->first));
       log_keys_debug->insert(i->first);
     }
   }

@@ -39,9 +39,9 @@ int flush(librbd::ImageCtx *image_ctx) {
   return ctx.wait();
 }
 
-void scribble(librbd::ImageCtx *image_ctx, int num_ops, size_t max_size)
+void scribble(librbd::ImageCtx *image_ctx, int num_ops, uint64_t max_size)
 {
-  max_size = std::min(image_ctx->size, max_size);
+  max_size = std::min<uint64_t>(image_ctx->size, max_size);
   for (int i=0; i<num_ops; i++) {
     uint64_t off = rand() % (image_ctx->size - max_size + 1);
     uint64_t len = 1 + rand() % max_size;
@@ -284,12 +284,17 @@ TEST_F(TestImageSync, SnapshotStress) {
   read_local_bl.append(std::string(object_size, '1'));
 
   for (auto &snap_name : snap_names) {
+    uint64_t remote_snap_id;
+    {
+      RWLock::RLocker remote_snap_locker(m_remote_image_ctx->snap_lock);
+      remote_snap_id = m_remote_image_ctx->get_snap_id(
+        cls::rbd::UserSnapshotNamespace{}, snap_name);
+    }
+
     uint64_t remote_size;
     {
       C_SaferCond ctx;
-      m_remote_image_ctx->state->snap_set(cls::rbd::UserSnapshotNamespace(),
-					  snap_name,
-					  &ctx);
+      m_remote_image_ctx->state->snap_set(remote_snap_id, &ctx);
       ASSERT_EQ(0, ctx.wait());
 
       RWLock::RLocker remote_snap_locker(m_remote_image_ctx->snap_lock);
@@ -297,19 +302,25 @@ TEST_F(TestImageSync, SnapshotStress) {
         m_remote_image_ctx->snap_id);
     }
 
+    uint64_t local_snap_id;
+    {
+      RWLock::RLocker snap_locker(m_local_image_ctx->snap_lock);
+      local_snap_id = m_local_image_ctx->get_snap_id(
+        cls::rbd::UserSnapshotNamespace{}, snap_name);
+    }
+
     uint64_t local_size;
     {
       C_SaferCond ctx;
-      m_local_image_ctx->state->snap_set(cls::rbd::UserSnapshotNamespace(),
-					 snap_name,
-					 &ctx);
+      m_local_image_ctx->state->snap_set(local_snap_id, &ctx);
       ASSERT_EQ(0, ctx.wait());
 
       RWLock::RLocker snap_locker(m_local_image_ctx->snap_lock);
       local_size = m_local_image_ctx->get_image_size(
         m_local_image_ctx->snap_id);
       bool flags_set;
-      ASSERT_EQ(0, m_local_image_ctx->test_flags(RBD_FLAG_OBJECT_MAP_INVALID,
+      ASSERT_EQ(0, m_local_image_ctx->test_flags(m_local_image_ctx->snap_id,
+                                                 RBD_FLAG_OBJECT_MAP_INVALID,
                                                  m_local_image_ctx->snap_lock,
                                                  &flags_set));
       ASSERT_FALSE(flags_set);

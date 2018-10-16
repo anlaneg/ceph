@@ -44,7 +44,6 @@
 static void global_init_set_globals(CephContext *cct)
 {
   g_ceph_context = cct;
-  g_conf = cct->_conf;
 }
 
 //显示版本号
@@ -105,7 +104,7 @@ void global_pre_init(
   cct->_conf->cluster = cluster;//设置cluster
   //设置全局变量（配置及context)
   global_init_set_globals(cct);
-  md_config_t *conf = cct->_conf;
+  auto& conf = cct->_conf;
 
   if (flags & (CINIT_FLAG_NO_DEFAULT_CONFIG_FILE|
 	       CINIT_FLAG_NO_MON_CONFIG)) {
@@ -115,13 +114,13 @@ void global_pre_init(
   // alternate defaults
   if (defaults) {
     for (auto& i : *defaults) {
-      conf->set_val_default(i.first, i.second);
+      conf.set_val_default(i.first, i.second);
     }
   }
 
   //解析配置文件
-  int ret = conf->parse_config_files(c_str_or_null(conf_file_list),
-				     &cerr, flags);
+  int ret = conf.parse_config_files(c_str_or_null(conf_file_list),
+				    &cerr, flags);
   if (ret == -EDOM) {
     cct->_log->flush();
     cerr << "global_init: error parsing config file." << std::endl;
@@ -147,15 +146,15 @@ void global_pre_init(
 
   // environment variables override (CEPH_ARGS, CEPH_KEYRING)
   //保证参数优先.
-  conf->parse_env();
+  conf.parse_env();
 
   // command line (as passed by caller)
   //处理参数里的配置（参数配置优先生效）
-  conf->parse_argv(args);
+  conf.parse_argv(args);
 
   if (!conf->no_mon_config) {
     // make sure our mini-session gets legacy values
-    conf->apply_changes(nullptr);
+    conf.apply_changes(nullptr);
 
     MonClient mc_bootstrap(g_ceph_context);
     if (mc_bootstrap.get_monmap_and_config() < 0) {
@@ -167,11 +166,11 @@ void global_pre_init(
   }
 
   // do the --show-config[-val], if present in argv
-  conf->do_argv_commands();
+  conf.do_argv_commands();
 
   // Now we're ready to complain about config file parse errors
   //显示解析过程中的错误
-  g_conf->complain_about_parse_errors(g_ceph_context);
+  g_conf().complain_about_parse_errors(g_ceph_context);
 }
 
 boost::intrusive_ptr<CephContext>
@@ -186,12 +185,12 @@ global_init(const std::map<std::string,std::string> *defaults,
   if (run_pre_init) {
 	//初始化前是否运行pre_init
     // We will run pre_init from here (default).
-    assert(!g_ceph_context && first_run);
     //读取配置文件及解析参数
+    ceph_assert(!g_ceph_context && first_run);
     global_pre_init(defaults, args, module_type, code_env, flags);
   } else {
     // Caller should have invoked pre_init manually.
-    assert(g_ceph_context && first_run);
+    ceph_assert(g_ceph_context && first_run);
   }
   first_run = false;
 
@@ -208,10 +207,12 @@ global_init(const std::map<std::string,std::string> *defaults,
 
   //如果需要安装失败信号处理，则安装，这样后就会显示堆栈信息
   //而不会打core
-  if (g_conf->fatal_signal_handlers)
+  if (g_conf()->fatal_signal_handlers) {
     install_standard_sighandlers();
+  }
+  register_assert_context(g_ceph_context);
 
-  if (g_conf->log_flush_on_exit)
+  if (g_conf()->log_flush_on_exit)
     g_ceph_context->_log->set_flush_on_exit();
 
   // drop privileges?
@@ -220,65 +221,65 @@ global_init(const std::map<std::string,std::string> *defaults,
   // consider --setuser root a no-op, even if we're not root
   //非root启动时，忽略setuser,setgroup参数
   if (getuid() != 0) {
-    if (g_conf->setuser.length()) {
-      cerr << "ignoring --setuser " << g_conf->setuser << " since I am not root"
+    if (g_conf()->setuser.length()) {
+      cerr << "ignoring --setuser " << g_conf()->setuser << " since I am not root"
 	   << std::endl;
     }
-    if (g_conf->setgroup.length()) {
-      cerr << "ignoring --setgroup " << g_conf->setgroup
+    if (g_conf()->setgroup.length()) {
+      cerr << "ignoring --setgroup " << g_conf()->setgroup
 	   << " since I am not root" << std::endl;
     }
-  } else if (g_conf->setgroup.length() ||
-             g_conf->setuser.length()) {
+  } else if (g_conf()->setgroup.length() ||
+             g_conf()->setuser.length()) {
     uid_t uid = 0;  // zero means no change; we can only drop privs here.
     gid_t gid = 0;
     std::string uid_string;
     std::string gid_string;
-    if (g_conf->setuser.length()) {
-      uid = atoi(g_conf->setuser.c_str());
+    if (g_conf()->setuser.length()) {
+      uid = atoi(g_conf()->setuser.c_str());
       if (!uid) {
     	  //非数字形式时，需要转换
 	char buf[4096];
 	struct passwd pa;
 	struct passwd *p = 0;
-	getpwnam_r(g_conf->setuser.c_str(), &pa, buf, sizeof(buf), &p);
+	getpwnam_r(g_conf()->setuser.c_str(), &pa, buf, sizeof(buf), &p);
 	if (!p) {
-	  cerr << "unable to look up user '" << g_conf->setuser << "'"
+	  cerr << "unable to look up user '" << g_conf()->setuser << "'"
 	       << std::endl;
 	  exit(1);
 	}
 	uid = p->pw_uid;
 	gid = p->pw_gid;
-	uid_string = g_conf->setuser;
+	uid_string = g_conf()->setuser;
       }
     }
-    if (g_conf->setgroup.length() > 0) {
-      gid = atoi(g_conf->setgroup.c_str());
+    if (g_conf()->setgroup.length() > 0) {
+      gid = atoi(g_conf()->setgroup.c_str());
       if (!gid) {
     	  //setgroup非数字形式时，需要转换
 	char buf[4096];
 	struct group gr;
 	struct group *g = 0;
-	getgrnam_r(g_conf->setgroup.c_str(), &gr, buf, sizeof(buf), &g);
+	getgrnam_r(g_conf()->setgroup.c_str(), &gr, buf, sizeof(buf), &g);
 	if (!g) {
-	  cerr << "unable to look up group '" << g_conf->setgroup << "'"
+	  cerr << "unable to look up group '" << g_conf()->setgroup << "'"
 	       << ": " << cpp_strerror(errno) << std::endl;
 	  exit(1);
 	}
 	gid = g->gr_gid;
-	gid_string = g_conf->setgroup;
+	gid_string = g_conf()->setgroup;
       }
     }
     if ((uid || gid) &&
-	g_conf->setuser_match_path.length()) {
+	g_conf()->setuser_match_path.length()) {
       // induce early expansion of setuser_match_path config option
-      string match_path = g_conf->setuser_match_path;
-      g_conf->early_expand_meta(match_path, &cerr);
+      string match_path = g_conf()->setuser_match_path;
+      g_conf().early_expand_meta(match_path, &cerr);
       struct stat st;
       int r = ::stat(match_path.c_str(), &st);
       if (r < 0) {
 	cerr << "unable to stat setuser_match_path "
-	     << g_conf->setuser_match_path
+	     << g_conf()->setuser_match_path
 	     << ": " << cpp_strerror(errno) << std::endl;
 	exit(1);
       }
@@ -325,23 +326,21 @@ global_init(const std::map<std::string,std::string> *defaults,
 #endif
 
   // Expand metavariables. Invoke configuration observers. Open log file.
-  g_conf->apply_changes(NULL);
+  g_conf().apply_changes(nullptr);
 
   //创建run目录
-  if (g_conf->run_dir.length() &&
+  if (g_conf()->run_dir.length() &&
       code_env == CODE_ENVIRONMENT_DAEMON &&
       !(flags & CINIT_FLAG_NO_DAEMON_ACTIONS)) {
-    int r = ::mkdir(g_conf->run_dir.c_str(), 0755);
+    int r = ::mkdir(g_conf()->run_dir.c_str(), 0755);
     if (r < 0 && errno != EEXIST) {
-      cerr << "warning: unable to create " << g_conf->run_dir << ": " << cpp_strerror(errno) << std::endl;
+      cerr << "warning: unable to create " << g_conf()->run_dir << ": " << cpp_strerror(errno) << std::endl;
     }
   }
 
-  register_assert_context(g_ceph_context);
-
   // call all observers now.  this has the side-effect of configuring
   // and opening the log file immediately.
-  g_conf->call_all_observers();
+  g_conf().call_all_observers();
 
   //显示权限
   if (priv_ss.str().length()) {
@@ -353,8 +352,8 @@ global_init(const std::map<std::string,std::string> *defaults,
     // Fix ownership on log files and run directories if needed.
     // Admin socket files are chown()'d during the common init path _after_
     // the service thread has been started. This is sadly a bit of a hack :(
-	//变更run_dir,log的owner(原因是，此分支下，之前没有set uid,gid)
-    chown_path(g_conf->run_dir,
+    //变更run_dir,log的owner(原因是，此分支下，之前没有set uid,gid)
+    chown_path(g_conf()->run_dir,
 	       g_ceph_context->get_set_uid(),
 	       g_ceph_context->get_set_gid(),
 	       g_ceph_context->get_set_uid_string(),
@@ -366,11 +365,11 @@ global_init(const std::map<std::string,std::string> *defaults,
 
   // Now we're ready to complain about config file parse errors
   //现在显示解析时的错误
-  g_conf->complain_about_parse_errors(g_ceph_context);
+  g_conf().complain_about_parse_errors(g_ceph_context);
 
   // test leak checking
   //测试代码，制造内存泄露
-  if (g_conf->debug_deliberately_leak_memory) {
+  if (g_conf()->debug_deliberately_leak_memory) {
     derr << "deliberately leaking some memory" << dendl;
     char *s = new char[1234567];
     (void)s;
@@ -408,7 +407,7 @@ int global_init_prefork(CephContext *cct)
   if (g_code_env != CODE_ENVIRONMENT_DAEMON)
     return -1;
 
-  const md_config_t *conf = cct->_conf;
+  const auto& conf = cct->_conf;
   if (!conf->daemonize) {
 
     if (pidfile_write(conf) < 0)
@@ -451,6 +450,30 @@ void global_init_daemonize(CephContext *cct)
 #endif
 }
 
+int reopen_as_null(CephContext *cct, int fd)
+{
+  int newfd = open("/dev/null", O_RDONLY|O_CLOEXEC);
+  if (newfd < 0) {
+    int err = errno;
+    lderr(cct) << __func__ << " failed to open /dev/null: " << cpp_strerror(err)
+	       << dendl;
+    return -1;
+  }
+  // atomically dup newfd to target fd.  target fd is implicitly closed if
+  // open and atomically replaced; see man dup2
+  int r = dup2(newfd, fd);
+  if (r < 0) {
+    int err = errno;
+    lderr(cct) << __func__ << " failed to dup2 " << fd << ": "
+	       << cpp_strerror(err) << dendl;
+    return -1;
+  }
+  // close newfd (we cloned it to target fd)
+  VOID_TEMP_FAILURE_RETRY(close(newfd));
+  // N.B. FD_CLOEXEC is cleared on fd (see dup2(2))
+  return 0;
+}
+
 void global_init_postfork_start(CephContext *cct)
 {
   // restart log thread
@@ -465,15 +488,9 @@ void global_init_postfork_start(CephContext *cct)
    * guarantee that nobody ever writes to stdout, even though they're not
    * supposed to.
    */
-  VOID_TEMP_FAILURE_RETRY(close(STDIN_FILENO));
-  if (open("/dev/null", O_RDONLY) < 0) {
-    int err = errno;
-    derr << "global_init_daemonize: open(/dev/null) failed: error "
-	 << err << dendl;
-    exit(1);
-  }
+  reopen_as_null(cct, STDIN_FILENO);
 
-  const md_config_t *conf = cct->_conf;
+  const auto& conf = cct->_conf;
   if (pidfile_write(conf) < 0)
     exit(1);
 
@@ -499,13 +516,7 @@ void global_init_postfork_finish(CephContext *cct)
     }
   }
 
-  VOID_TEMP_FAILURE_RETRY(close(STDOUT_FILENO));
-  if (open("/dev/null", O_RDONLY) < 0) {
-    int err = errno;
-    derr << "global_init_daemonize: open(/dev/null) failed: error "
-	 << err << dendl;
-    exit(1);
-  }
+  reopen_as_null(cct, STDOUT_FILENO);
 
   ldout(cct, 1) << "finished global_init_daemonize" << dendl;
 }
@@ -513,7 +524,7 @@ void global_init_postfork_finish(CephContext *cct)
 
 void global_init_chdir(const CephContext *cct)
 {
-  const md_config_t *conf = cct->_conf;
+  const auto& conf = cct->_conf;
   if (conf->chdir.empty())
     return;
   if (::chdir(conf->chdir.c_str())) {
@@ -529,20 +540,14 @@ void global_init_chdir(const CephContext *cct)
  */
 int global_init_shutdown_stderr(CephContext *cct)
 {
-  VOID_TEMP_FAILURE_RETRY(close(STDERR_FILENO));
-  if (open("/dev/null", O_RDONLY) < 0) {
-    int err = errno;
-    derr << "global_init_shutdown_stderr: open(/dev/null) failed: error "
-	 << err << dendl;
-    return 1;
-  }
+  reopen_as_null(cct, STDERR_FILENO);
   cct->_log->set_stderr_level(-1, -1);
   return 0;
 }
 
 int global_init_preload_erasure_code(const CephContext *cct)
 {
-  const md_config_t *conf = cct->_conf;
+  const auto& conf = cct->_conf;
   string plugins = conf->osd_erasure_code_plugins;
 
   // validate that this is a not a legacy plugin
@@ -577,7 +582,7 @@ int global_init_preload_erasure_code(const CephContext *cct)
   stringstream ss;
   int r = ErasureCodePluginRegistry::instance().preload(
     plugins,
-    conf->get_val<std::string>("erasure_code_dir"),
+    conf.get_val<std::string>("erasure_code_dir"),
     &ss);
   if (r)
     derr << ss.str() << dendl;

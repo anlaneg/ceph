@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/cache/ObjectCacherObjectDispatch.h"
+#include "common/errno.h"
 #include "common/WorkQueue.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/Journal.h"
@@ -41,7 +42,7 @@ struct ObjectCacherObjectDispatch<I>::C_InvalidateCache : public Context {
   }
 
   void finish(int r) override {
-    assert(dispatcher->m_cache_lock.is_locked());
+    ceph_assert(dispatcher->m_cache_lock.is_locked());
     auto cct = dispatcher->m_image_ctx->cct;
 
     if (r == -EBLACKLISTED) {
@@ -101,38 +102,43 @@ void ObjectCacherObjectDispatch<I>::init() {
     init_max_dirty = 0;
   }
 
+  auto cache_size =
+    m_image_ctx->config.template get_val<Option::size_t>("rbd_cache_size");
+  auto target_dirty =
+    m_image_ctx->config.template get_val<Option::size_t>("rbd_cache_target_dirty");
+  auto max_dirty_age =
+    m_image_ctx->config.template get_val<double>("rbd_cache_max_dirty_age");
+  auto block_writes_upfront =
+    m_image_ctx->config.template get_val<bool>("rbd_cache_block_writes_upfront");
+  auto max_dirty_object =
+    m_image_ctx->config.template get_val<uint64_t>("rbd_cache_max_dirty_object");
+
   ldout(cct, 5) << "Initial cache settings:"
-                << " size=" << m_image_ctx->cache_size
+                << " size=" << cache_size
                 << " num_objects=" << 10
                 << " max_dirty=" << init_max_dirty
-                << " target_dirty=" << m_image_ctx->cache_target_dirty
-                << " max_dirty_age="
-                << m_image_ctx->cache_max_dirty_age << dendl;
+                << " target_dirty=" << target_dirty
+                << " max_dirty_age=" << max_dirty_age << dendl;
 
   m_object_cacher = new ObjectCacher(cct, m_image_ctx->perfcounter->get_name(),
                                      *m_writeback_handler, m_cache_lock,
-                                     nullptr, nullptr, m_image_ctx->cache_size,
-    			             10,  /* reset this in init */
-    			             init_max_dirty,
-    			             m_image_ctx->cache_target_dirty,
-    			             m_image_ctx->cache_max_dirty_age,
-                                     m_image_ctx->cache_block_writes_upfront);
+                                     nullptr, nullptr, cache_size,
+                                     10,  /* reset this in init */
+                                     init_max_dirty, target_dirty,
+                                     max_dirty_age, block_writes_upfront);
 
   // size object cache appropriately
-  uint64_t obj = m_image_ctx->cache_max_dirty_object;
-  if (!obj) {
-    obj = std::min<uint64_t>(2000,
-                             std::max<uint64_t>(
-                               10, m_image_ctx->cache_size / 100 /
+  if (max_dirty_object == 0) {
+    max_dirty_object = std::min<uint64_t>(
+      2000, std::max<uint64_t>(10, cache_size / 100 /
                                  sizeof(ObjectCacher::Object)));
   }
-  ldout(cct, 5) << " cache bytes " << m_image_ctx->cache_size
-                << " -> about " << obj << " objects" << dendl;
-  m_object_cacher->set_max_objects(obj);
+  ldout(cct, 5) << " cache bytes " << cache_size
+                << " -> about " << max_dirty_object << " objects" << dendl;
+  m_object_cacher->set_max_objects(max_dirty_object);
 
   m_object_set = new ObjectCacher::ObjectSet(nullptr,
                                              m_image_ctx->data_ctx.get_id(), 0);
-  m_object_set->return_enoent = true;
   m_object_cacher->start();
   m_cache_lock.Unlock();
 
@@ -215,13 +221,14 @@ bool ObjectCacherObjectDispatch<I>::discard(
   ldout(cct, 20) << "object_no=" << object_no << " " << object_off << "~"
                  << object_len << dendl;
 
-  // discard the cache state after changes are committed to disk
+  ObjectExtents object_extents;
+  object_extents.emplace_back(oid, object_no, object_off, object_len, 0);
+
+  // discard the cache state after changes are committed to disk (and to
+  // prevent races w/ readahead)
   auto ctx = *on_finish;
   *on_finish = new FunctionContext(
-    [this, oid, object_no, object_off, object_len, ctx](int r) {
-      ObjectExtents object_extents;
-      object_extents.emplace_back(oid, object_no, object_off, object_len, 0);
-
+    [this, object_extents, ctx](int r) {
       m_cache_lock.Lock();
       m_object_cacher->discard_set(m_object_set, object_extents);
       m_cache_lock.Unlock();
@@ -229,9 +236,19 @@ bool ObjectCacherObjectDispatch<I>::discard(
       ctx->complete(r);
     });
 
-  // pass-through the discard request since ObjectCacher won't
-  // writeback discards.
-  return false;
+  // ensure we aren't holding the cache lock post-write
+  on_dispatched = util::create_async_context_callback(*m_image_ctx,
+                                                      on_dispatched);
+
+  *dispatch_result = io::DISPATCH_RESULT_CONTINUE;
+
+  // ensure any in-flight writeback is complete before advancing
+  // the discard request
+  m_cache_lock.Lock();
+  m_object_cacher->discard_writeback(m_object_set, object_extents,
+                                     on_dispatched);
+  m_cache_lock.Unlock();
+  return true;
 }
 
 template <typename I>

@@ -20,8 +20,10 @@
 #include "common/ceph_context.h"
 #include "common/valgrind.h"
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+
 // re-include our assert to clobber the system one; fix dout:
-#include "include/assert.h"
+#include "include/ceph_assert.h"
 
 //实现简单的引用计数功能,通过继承此对象,可使得子类获得引入计数功能.
 struct RefCountedObject {
@@ -31,7 +33,7 @@ private:
 public:
   RefCountedObject(CephContext *c = NULL, int n=1) : nref(n), cct(c) {}
   virtual ~RefCountedObject() {
-    assert(nref == 0); //断言，销毁时，必须为0
+    ceph_assert(nref == 0);//断言，销毁时，必须为0
   }
   
   //get时增加引用计数
@@ -98,9 +100,8 @@ struct RefCountedCond : public RefCountedObject {
   RefCountedCond() : complete(false), lock("RefCountedCond"), rval(0) {}
 
   int wait() {
-	//加锁
-    Mutex::Locker l(lock);
-
+    //加锁
+    std::lock_guard<Mutex> l(lock);
     //如果complete不为true,则恒在条件变量上等待
     while (!complete) {
       cond.Wait(lock);
@@ -110,7 +111,7 @@ struct RefCountedCond : public RefCountedObject {
 
   //加锁指定complete为true,并唤醒所有线程
   void done(int r) {
-    Mutex::Locker l(lock);
+    std::lock_guard<Mutex> l(lock);
     rval = r;
     complete = true;
     cond.SignalAll();
@@ -180,8 +181,14 @@ struct RefCountedWaitObject {
 };
 
 //增加引用
-void intrusive_ptr_add_ref(const RefCountedObject *p);
+static inline void intrusive_ptr_add_ref(const RefCountedObject *p) {
+  p->get();
+}
 //减少引用
-void intrusive_ptr_release(const RefCountedObject *p);
+static inline void intrusive_ptr_release(const RefCountedObject *p) {
+  p->put();
+}
+
+using RefCountedPtr = boost::intrusive_ptr<RefCountedObject>;
 
 #endif

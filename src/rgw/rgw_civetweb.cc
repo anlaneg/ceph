@@ -51,12 +51,13 @@ RGWCivetWeb::RGWCivetWeb(mg_connection* const conn)
 
 size_t RGWCivetWeb::read_data(char *buf, size_t len)
 {
-  int c, ret;
+  size_t c;
+  int ret;
   if (got_eof_on_read) {
     return 0;
   }
   for (c = 0; c < len; c += ret) {
-    ret = mg_read(conn, buf, len);
+    ret = mg_read(conn, buf+c, len-c);
     if (ret < 0) {
       throw rgw::io::Exception(EIO, std::system_category());
     }
@@ -75,6 +76,8 @@ void RGWCivetWeb::flush()
 
 size_t RGWCivetWeb::complete_request()
 {
+  perfcounter->inc(l_rgw_qlen, -1);
+  perfcounter->inc(l_rgw_qactive, -1);
   return 0;
 }
 
@@ -89,7 +92,7 @@ int RGWCivetWeb::init_env(CephContext *cct)
   }
 
   for (int i = 0; i < info->num_headers; i++) {
-    const struct mg_request_info::mg_header* header = &info->http_headers[i];
+    const auto header = &info->http_headers[i];
 
     if (header->name == nullptr || header->value==nullptr) {
       lderr(cct) << "client supplied malformatted headers" << dendl;
@@ -128,11 +131,14 @@ int RGWCivetWeb::init_env(CephContext *cct)
     env.set(buf, value);
   }
 
+  perfcounter->inc(l_rgw_qlen);
+  perfcounter->inc(l_rgw_qactive);
+
   env.set("REMOTE_ADDR", info->remote_addr);
   env.set("REQUEST_METHOD", info->request_method);
   env.set("HTTP_VERSION", info->http_version);
   env.set("REQUEST_URI", info->request_uri); // get the full uri, we anyway handle abs uris later
-  env.set("SCRIPT_URI", info->uri); /* FIXME */
+  env.set("SCRIPT_URI", info->local_uri);
   if (info->query_string) {
     env.set("QUERY_STRING", info->query_string);
   }

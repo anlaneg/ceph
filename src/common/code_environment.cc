@@ -16,9 +16,13 @@
 
 #include <iostream>
 
+#include "acconfig.h"
+
 #ifdef HAVE_SYS_PRCTL_H
 #include <sys/prctl.h>
 #endif
+
+#include <string.h>
 
 //代码的执行环境，例如osd进程会将此变量初始化为daemon
 code_environment_t g_code_env = CODE_ENVIRONMENT_UTILITY;
